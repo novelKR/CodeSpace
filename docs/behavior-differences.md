@@ -1,8 +1,9 @@
 # Behavior differences
 
 Product policy is **not** “whatever `codex-apply-patch` does by
-default.” The worker calls the original parser and apply functions, then
-the gateway/runner refuse operations the crate might accept.
+default.” `crates/patch` calls the original parser and apply functions
+in-process, then the gateway/runner refuse operations the crate might
+accept.
 
 | Topic | Codex library / standalone default (0.154 candidate) | CodeSpace product |
 | --- | --- | --- |
@@ -13,7 +14,7 @@ the gateway/runner refuse operations the crate might accept.
 | Move destination | Engine may apply if the hunk says so | **Reject** if the move destination already exists |
 | Newlines | Multiple modes exist; do not assume | **Preserve-newline mode preferred**; parity uses the same mode |
 | `git apply` | Not the V4A engine; other products sometimes fall back | **No silent git-apply fallback** |
-| Sandbox | Standalone `apply_patch` uses sandbox `None` | Worker is **not** the sandbox; Linux runner + gateway policy are |
+| Sandbox | Standalone `apply_patch` uses sandbox `None` | Patch crate is **not** the sandbox; Linux runner + gateway policy are |
 | Unified diff | Different tool elsewhere | Out of MVP (`git_apply_patch` later, never auto-convert) |
 | Rollback | N/A in the crate | Snapshot restore of files; **no** `git reset --hard` |
 
