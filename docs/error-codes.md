@@ -41,5 +41,6 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `TIMEOUT` | Managed process time limit |
 | `CHECK_ONLY_CONFLICT` | `check_only` would not be a no-op |
 
-W03 does not yet execute patch/process tools. The catalog is frozen so
-later packages emit the same strings.
+Apply results use `status` (`applied`, `rejected`, `failed_rolled_back`,
+`failed_partial`, `unknown`). A failed apply never reports `applied`.
+Restart leaves unfinished rows as `unknown` and does not auto-apply.

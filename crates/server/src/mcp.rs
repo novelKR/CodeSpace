@@ -188,22 +188,40 @@ impl CodeSpace {
                 files,
             });
         }
-        let files = crate::patch_helper::apply(&ws.root, &params.patch, false)?;
-        for path in &files {
-            let after = sandbox.read_file(path)?;
-            if after.path != *path {
-                return Err(ErrorBody::new(
-                    ErrorCode::InvalidPatch,
-                    format!("apply listed {path} but read returned {}", after.path),
-                ));
+        let planned = crate::patch_helper::preflight(&ws.root, &params.patch)?;
+        let snaps = crate::rollback::snapshot(&sandbox, &planned)?;
+        match crate::patch_helper::apply(&ws.root, &params.patch, false) {
+            Ok(files) => {
+                for path in &files {
+                    let after = sandbox.read_file(path)?;
+                    if after.path != *path {
+                        return Err(ErrorBody::new(
+                            ErrorCode::InvalidPatch,
+                            format!("apply listed {path} but read returned {}", after.path),
+                        ));
+                    }
+                }
+                Ok(ApplyPatchResult {
+                    status: PatchStatus::Applied,
+                    operation_id,
+                    replayed: false,
+                    files,
+                })
+            }
+            Err(_) => {
+                let complete = crate::rollback::restore(&sandbox, &snaps);
+                Ok(ApplyPatchResult {
+                    status: if complete {
+                        PatchStatus::FailedRolledBack
+                    } else {
+                        PatchStatus::FailedPartial
+                    },
+                    operation_id,
+                    replayed: false,
+                    files: planned,
+                })
             }
         }
-        Ok(ApplyPatchResult {
-            status: PatchStatus::Applied,
-            operation_id,
-            replayed: false,
-            files,
-        })
     }
 }
 
@@ -238,7 +256,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_VERSION,
             ))
             .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. apply_patch records operations but does not write in this package."
+                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. apply_patch never returns applied after a failed rollback."
                     .to_string(),
             )
     }
