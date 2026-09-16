@@ -14,14 +14,14 @@ security boundary, or follow `main`.
 | Tag | `rust-v0.154.0` |
 | Commit | `6b9826e3aa83b1a5947db50f4332cb9c65f1b340` |
 | Intended path | `third_party/codex` git submodule |
-| Crate | `codex-apply-patch` via Cargo path dependency from `native/patch-worker` |
+| Crate | `codex-apply-patch` via Cargo path dependency from `crates/patch` |
 
 This commit is a **candidate**. It becomes a deployment pin only after
 W06 parity tests pass against the original crate with the **same apply
 options** CodeSpace will ship (newline preserve preferred).
 
 W01 does **not** add the submodule. Adding it is W06 unless an
-implementation PR needs it to compile the worker.
+implementation PR needs it to compile the patch crate.
 
 ## Why file-copy vendor is forbidden
 
@@ -33,15 +33,17 @@ crates in the same repo, including:
 - `codex-utils-path-uri`
 - tree-sitter related workspace crates
 
-Copying `apply-patch` sources into `native/` would either fail to build
-or quietly fork the engine. CodeSpace therefore uses:
+Copying `apply-patch` sources into `crates/patch` would either fail to
+build or quietly fork the engine. CodeSpace therefore uses:
 
 ```text
 git submodule add https://github.com/openai/codex.git third_party/codex
 git -C third_party/codex checkout 6b9826e3aa83b1a5947db50f4332cb9c65f1b340
 ```
 
-and a path dependency, not a crates.io moving version, for the worker.
+and a path dependency, not a crates.io moving version, for
+`crates/patch`. The adapter calls `parse_patch` then product policy then
+`apply_patch_with_options` in the same process.
 
 ## What is reused vs rejected
 

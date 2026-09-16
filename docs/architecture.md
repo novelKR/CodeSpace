@@ -25,9 +25,14 @@ Borrowed ideas (not code dumps):
 Not taken: Electron, Chrome extension, ChatGPT DOM, agents spawn, Desktop,
 plugin marketplace, TypeScript `apply-patch` port, `git apply --unsafe-paths`,
 wrapping the standalone `apply_patch` binary as the security boundary
-(that path uses sandbox `None` and follows symlinks by default).
+(that path uses sandbox `None` and follows symlinks by default), a
+TypeScript MCP gateway, or native/patch-worker JSON IPC.
 
 ## Control plane vs execution plane
+
+Both planes are **Rust**. Language is not a security boundary. Isolation is
+gateway policy plus the Linux runner process (in-process for MVP; Unix
+socket later if a split is required).
 
 ```text
 ChatGPT / other MCP client
@@ -35,18 +40,25 @@ ChatGPT / other MCP client
              │ stdio  or  HTTPS + optional Bearer
              ▼
 ┌──────────────────────────────────────────┐
-│ MCP Gateway — TypeScript                 │
+│ MCP Gateway — Rust (rmcp, crates/server) │
 │  tool schemas, auth check, policy        │
 │  operation store, audit, result limits   │
 └───────────────────┬──────────────────────┘
-                    │ internal RPC
+                    │ in-process now;
+                    │ Unix socket later
                     ▼
 ┌──────────────────────────────────────────┐
-│ Workspace Runner — isolated Linux        │
+│ Workspace Runner — isolated Linux, Rust  │
 │  filesystem + process supervisor         │
-│  Rust patch worker (pinned Codex crate)  │
+│  crates/patch calls Codex in-process     │
 │  reachable tree: /workspace              │
 └──────────────────────────────────────────┘
+```
+
+```text
+MCP JSON  →  domain request  →  PatchService / ProcessService  →  domain result  →  MCP
+                 │
+                 └─ rmcp types stay inside crates/server
 ```
 
 The gateway owns **who may do what in which workspace**. Tokens, server
@@ -55,6 +67,11 @@ config, workspace registry, and the operations database live here.
 The runner owns **performing an allowed action**. Model-authored shell and
 patched project files run here. Gateway secrets, `.env`, SQLite, and SSH
 must not be mounted into the runner.
+
+MVP is **one process**: `codespace-mcp`. If isolation needs a process
+boundary later, `crates/server` and `crates/runner` both build from this
+Cargo workspace. Do not reintroduce a TypeScript gateway or a separate
+patch-worker IPC just to call Codex.
 
 Single instance is enough for MVP. SQLite for operations is allowed. No
 message broker.
@@ -94,16 +111,20 @@ validate request
   → auth + workspace policy
   → operation_key replay / conflict
   → workspace write lock
-  → original Codex parser
+  → original Codex parser (`parse_patch`)
   → every source and destination path
   → expected_versions
   → full preflight (no writes)
   → save rollback snapshot
-  → original engine apply
+  → original engine apply (`apply_patch_with_options`)
   → verify disk == claimed result
   → persist operation status
   → MCP response
 ```
+
+`crates/patch` calls `parse_patch`, then product policy, then
+`apply_patch_with_options` **in-process**. It does not wrap the standalone
+`apply_patch` binary and does not reimplement the parser.
 
 `apply_patch` never silently falls back to `git apply`. Status values are
 `applied` / `rejected` / `failed_rolled_back` / `failed_partial` /
@@ -115,9 +136,15 @@ directory tree as a substitute for per-file restore.
 ## Repository layout
 
 ```text
-server/                 TypeScript MCP gateway
-native/patch-worker/    thin Rust adapter (no parser rewrite)
-runner/                 filesystem + process supervisor
+Cargo.toml              workspace root
+crates/server/          bin codespace-mcp: rmcp stdio + Streamable HTTP
+crates/domain/          workspace, capabilities, operation, errors (no rmcp)
+crates/policy/          registry and path policy
+crates/patch/           Codex adapter + rollback (W06)
+crates/fs/              read / find / versions
+crates/exec/            process supervisor
+crates/store/           SQLite operations
+crates/runner/          later process split; MVP called in-process
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{contract,parity,security,recovery,e2e}/
 docs/
@@ -129,4 +156,4 @@ deploy/
 Browser extension, ChatGPT DOM automation, Goal/Loop, multi-agent,
 Desktop control, plugin marketplace, a full OAuth server, automatic
 unified-diff conversion, forwarding the entire Codex App Server RPC,
-internal model calls.
+internal model calls, TypeScript MCP SDK, native/patch-worker IPC.

@@ -1,22 +1,27 @@
 # Security model
 
 CodeSpace is not a kernel sandbox. CoS and cokacremote are not either.
-Authorization is **gateway policy + OS/container isolation**. The Rust
-patch crate does not supply the product boundary.
+Authorization is **gateway policy + OS/container isolation**. The Codex
+patch crate does not supply the product boundary. Gateway and runner are
+both Rust; splitting languages would not add a trust boundary.
 
 ## Trust boundaries
 
 1. **MCP client** — untrusted for authorization. It may send any tool
    arguments, including `workspace_id`, `approved: true`, and absolute
    paths. Those arguments never grant rights.
-2. **Gateway** — trusted to authenticate the transport (optional static
-   Bearer on HTTP experiments), select a registered workspace, and refuse
-   work the profile does not allow.
-3. **Runner** — trusted to enforce filesystem and process isolation for
-   an already-authorized action. Untrusted to see gateway secrets.
-4. **Patch worker** — trusted to parse/verify/apply Codex V4A under
-   options the gateway chooses. Untrusted as a sandbox (upstream
-   standalone apply uses sandbox `None` and may follow symlinks).
+2. **Gateway (`crates/server` + `crates/policy`)** — trusted to
+   authenticate the transport (optional static Bearer on HTTP
+   experiments), select a registered workspace, and refuse work the
+   profile does not allow.
+3. **Runner (`crates/runner`, in-process for MVP)** — trusted to enforce
+   filesystem and process isolation for an already-authorized action.
+   Untrusted to see gateway secrets. A later Unix-socket split keeps the
+   same Rust workspace; it is a process boundary, not a language one.
+4. **Patch crate (`crates/patch`)** — trusted to parse/verify/apply Codex
+   V4A in-process under options the gateway chooses. Untrusted as a
+   sandbox (upstream standalone apply uses sandbox `None` and may follow
+   symlinks).
 
 ## Authentication vs selection
 
