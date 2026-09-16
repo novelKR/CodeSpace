@@ -5,6 +5,7 @@ pub mod config;
 pub mod http;
 pub mod logging;
 pub mod mcp;
+pub mod patch_helper;
 pub mod protocol;
 pub mod stdio;
 

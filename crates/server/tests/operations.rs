@@ -49,7 +49,11 @@ async fn operation_key_replays_and_conflicts_without_rewriting() {
         .serve(
             TokioChildProcess::new(Command::new(bin).configure(|cmd| {
                 cmd.env("CODESPACE_CONFIG", &cfg)
-                    .env("CODESPACE_OPERATIONS_DB", &db);
+                    .env("CODESPACE_OPERATIONS_DB", &db)
+                    .env(
+                        "CODESPACE_PATCH_BIN",
+                        codespace_server::patch_helper::ensure_helper_for_tests(),
+                    );
             }))
             .expect("spawn"),
         )

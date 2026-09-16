@@ -729,6 +729,8 @@ dependencies = [
  "codex-apply-patch",
  "codex-exec-server",
  "codex-utils-path-uri",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

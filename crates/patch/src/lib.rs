@@ -61,12 +61,40 @@ pub fn parse_and_policy(workspace: &Workspace, patch: &str) -> Result<Vec<PathBu
     Ok(files)
 }
 
+/// Parse, enforce path policy, and verify update hunks against current files.
+/// Does not write. A context mismatch on a later file still leaves earlier files untouched.
+pub fn preflight(workspace: &Workspace, patch: &str) -> Result<Vec<PathBuf>, ErrorBody> {
+    let files = parse_and_policy(workspace, patch)?;
+    let parsed = parse_patch(patch)
+        .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+    for hunk in &parsed.hunks {
+        if let Hunk::UpdateFile { path, chunks, .. } = hunk {
+            let dest = resolve_path(workspace, path_str(path)?)?;
+            let body = std::fs::read_to_string(&dest).unwrap_or_default();
+            for chunk in chunks {
+                if chunk.old_lines.is_empty() {
+                    continue;
+                }
+                let lf = chunk.old_lines.join("\n");
+                let crlf = chunk.old_lines.join("\r\n");
+                if !body.contains(&lf) && !body.contains(&crlf) {
+                    return Err(ErrorBody::new(
+                        ErrorCode::InvalidPatch,
+                        format!("context mismatch in {}", path.display()),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
 pub async fn apply_in_workspace(
     workspace: &Workspace,
     patch: &str,
     check_only: bool,
 ) -> Result<ApplyOutcome, ErrorBody> {
-    let files = parse_and_policy(workspace, patch)?;
+    let files = preflight(workspace, patch)?;
     // Codex no-follow I/O walks from `/` with O_NOFOLLOW. On macOS the default
     // temp path goes through `/var` → `/private/var`, so cwd must be canonical.
     let root = workspace
@@ -218,5 +246,23 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::SymlinkRejected);
         assert!(!root.join("outside/pwned.txt").exists());
+    }
+
+    #[test]
+    fn context_mismatch_on_later_file_does_not_change_earlier() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+        let patch = "*** Begin Patch\n*** Update File: a.txt\n@@\n-alpha\n+ALPHA\n*** Update File: b.txt\n@@\n-missing\n+BETA\n*** End Patch\n";
+        let err = preflight(&ws(dir.path()), patch).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidPatch);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "beta\n"
+        );
     }
 }

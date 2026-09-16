@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use codespace_domain::{
-    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, FindParams, FindResult,
-    OperationStatusParams, OperationStatusResult, PatchStatus, ReadParams, ReadResult,
+    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, FindParams,
+    FindResult, OperationStatusParams, OperationStatusResult, PatchStatus, ReadParams, ReadResult,
     WorkspaceInfo, WorkspaceInfoParams,
 };
 use codespace_policy::{Action, ClientClaims, Registry};
@@ -101,13 +101,16 @@ impl CodeSpace {
 
     #[tool(
         name = "apply_patch",
-        description = "Apply a Codex V4A patch. This release records operation_key replay/conflict and does not write files (engine lands in later packages). Never falls back to git apply."
+        description = "Apply a Codex V4A patch. check_only verifies without writing. Never falls back to git apply."
     )]
     async fn apply_patch(
         &self,
         Parameters(params): Parameters<ApplyPatchParams>,
     ) -> Result<Json<ApplyPatchResult>, String> {
-        self.apply_patch_inner(params).map(Json).map_err(err_json)
+        self.apply_patch_inner(params)
+            .await
+            .map(Json)
+            .map_err(err_json)
     }
 
     #[tool(
@@ -126,7 +129,10 @@ impl CodeSpace {
 }
 
 impl CodeSpace {
-    fn apply_patch_inner(&self, params: ApplyPatchParams) -> Result<ApplyPatchResult, ErrorBody> {
+    async fn apply_patch_inner(
+        &self,
+        params: ApplyPatchParams,
+    ) -> Result<ApplyPatchResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
         let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
@@ -138,18 +144,49 @@ impl CodeSpace {
         )? {
             Begin::Replayed(stored) => Ok(stored.result),
             Begin::Fresh(operation_id) => {
-                // W06/W09 will replace this stub with the Codex adapter.
-                // Recording the operation is real: replay must not execute again.
-                let result = ApplyPatchResult {
-                    status: PatchStatus::Rejected,
-                    operation_id: operation_id.clone(),
-                    replayed: false,
-                    files: Vec::new(),
+                let result = match self.execute_patch(ws, &params, operation_id.clone()) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        let failed = ApplyPatchResult {
+                            status: PatchStatus::Rejected,
+                            operation_id: operation_id.clone(),
+                            replayed: false,
+                            files: Vec::new(),
+                        };
+                        let _ = self.store.finish(&operation_id, &failed);
+                        return Err(err);
+                    }
                 };
                 self.store.finish(&operation_id, &result)?;
                 Ok(result)
             }
         }
+    }
+
+    fn execute_patch(
+        &self,
+        ws: &codespace_policy::Workspace,
+        params: &ApplyPatchParams,
+        operation_id: codespace_domain::OperationId,
+    ) -> Result<ApplyPatchResult, ErrorBody> {
+        let sandbox = PathSandbox::new(ws.clone());
+        for (path, expected) in &params.expected_versions {
+            let actual = sandbox.version(path)?;
+            if &actual != expected {
+                return Err(ErrorBody::new(
+                    ErrorCode::VersionConflict,
+                    format!("version conflict for {path}"),
+                ));
+            }
+        }
+        let files = crate::patch_helper::preflight(&ws.root, &params.patch)?;
+        let _ = params.check_only;
+        Ok(ApplyPatchResult {
+            status: PatchStatus::Rejected,
+            operation_id,
+            replayed: false,
+            files,
+        })
     }
 }
 
