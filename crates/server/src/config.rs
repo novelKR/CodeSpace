@@ -32,6 +32,10 @@ pub struct Cli {
     /// Optional static Bearer for HTTP experiments. Never logged.
     #[arg(long, env = "CODESPACE_HTTP_TOKEN")]
     pub token: Option<String>,
+
+    /// JSON workspace registry. If unset, the registry is empty (all ids unknown).
+    #[arg(long, env = "CODESPACE_CONFIG")]
+    pub config: Option<std::path::PathBuf>,
 }
 
 impl Cli {

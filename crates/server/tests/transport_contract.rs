@@ -5,7 +5,6 @@ use rmcp::{
     model::{
         CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
     },
-    object,
     transport::{StreamableHttpClientTransport, TokioChildProcess},
     ClientLifecycleMode, ClientServiceExt, ServiceExt,
 };
@@ -59,20 +58,19 @@ async fn stdio_and_http_share_workspace_info_contract() {
     assert_eq!(stdio_names, http_names);
     assert_eq!(stdio_tools[0].input_schema, http_tools[0].input_schema);
 
-    let args = object!({ "workspace_id": "demo" });
     let stdio_body = payload(
         &stdio
-            .call_tool(CallToolRequestParams::new(TOOL_WORKSPACE_INFO).with_arguments(args.clone()))
+            .call_tool(CallToolRequestParams::new(TOOL_WORKSPACE_INFO))
             .await
             .expect("stdio call"),
     );
     let http_body = payload(
         &http
-            .call_tool(CallToolRequestParams::new(TOOL_WORKSPACE_INFO).with_arguments(args))
+            .call_tool(CallToolRequestParams::new(TOOL_WORKSPACE_INFO))
             .await
             .expect("http call"),
     );
-    assert_eq!(stdio_body["workspace_id"], "demo");
+    assert_eq!(stdio_body["workspace_id"], serde_json::Value::Null);
     assert_eq!(stdio_body["internal_model_calls"], false);
     assert_eq!(stdio_body["workspace_id"], http_body["workspace_id"]);
     assert_eq!(

@@ -1,4 +1,5 @@
-use codespace_domain::{WorkspaceInfo, WorkspaceInfoParams};
+use codespace_domain::{workspace_info, WorkspaceInfo, WorkspaceInfoParams};
+use codespace_policy::Registry;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerConfig},
@@ -9,13 +10,15 @@ use rmcp::{
 pub struct CodeSpace {
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
+    registry: Registry,
 }
 
 #[tool_router]
 impl CodeSpace {
-    pub fn new() -> Self {
+    pub fn new(registry: Registry) -> Self {
         Self {
             tool_router: Self::tool_router(),
+            registry,
         }
     }
 
@@ -27,13 +30,34 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<WorkspaceInfoParams>,
     ) -> Result<Json<WorkspaceInfo>, String> {
-        Ok(Json(codespace_domain::workspace_info(params.workspace_id)))
+        match lookup(&self.registry, params.workspace_id) {
+            Ok(info) => Ok(Json(info)),
+            Err(err) => Err(serde_json::to_string(&err).unwrap_or(err.message)),
+        }
     }
+}
+
+fn lookup(
+    registry: &Registry,
+    workspace_id: Option<String>,
+) -> Result<WorkspaceInfo, codespace_domain::ErrorBody> {
+    let Some(id) = workspace_id.filter(|s| !s.is_empty()) else {
+        return Ok(workspace_info(None));
+    };
+    let ws = registry.get(&id)?;
+    let mut info = workspace_info(Some(id));
+    info.profile = Some(ws.profile);
+    info.root = Some(ws.root.display().to_string());
+    info.note = format!(
+        "workspace_id is a selector, not a credential. profile={:?}",
+        ws.profile
+    );
+    Ok(info)
 }
 
 impl Default for CodeSpace {
     fn default() -> Self {
-        Self::new()
+        Self::new(Registry::new())
     }
 }
 
@@ -46,7 +70,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_VERSION,
             ))
             .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. W03 still exposes only workspace_info; error codes and schemas are frozen."
+                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. Unknown ids are rejected. Client approved/user_id claims are ignored."
                     .to_string(),
             )
     }
