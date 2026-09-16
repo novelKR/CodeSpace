@@ -20,6 +20,7 @@ pub struct ApplyPatchParams {
     pub patch: String,
     #[serde(default)]
     pub expected_versions: BTreeMap<String, String>,
+    #[serde(default)]
     pub operation_key: Option<OperationKey>,
     #[serde(default)]
     pub check_only: bool,

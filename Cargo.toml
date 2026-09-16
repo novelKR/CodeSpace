@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/domain", "crates/policy", "crates/runner", "crates/server"]
+members = [
+  "crates/domain",
+  "crates/policy",
+  "crates/runner",
+  "crates/store",
+  "crates/server",
+]
 exclude = ["crates/patch", "third_party"]
 
 [workspace.package]

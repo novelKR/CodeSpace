@@ -41,5 +41,6 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `TIMEOUT` | Managed process time limit |
 | `CHECK_ONLY_CONFLICT` | `check_only` would not be a no-op |
 
-W03 does not yet execute patch/process tools. The catalog is frozen so
-later packages emit the same strings.
+`operation_status` and `apply_patch` are live as of W08. `apply_patch`
+records idempotent operations; disk apply is W09. Process tools remain
+catalog-only until W10.

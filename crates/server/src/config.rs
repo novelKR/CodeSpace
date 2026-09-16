@@ -36,6 +36,10 @@ pub struct Cli {
     /// JSON workspace registry. If unset, the registry is empty (all ids unknown).
     #[arg(long, env = "CODESPACE_CONFIG")]
     pub config: Option<std::path::PathBuf>,
+
+    /// SQLite operation store. If unset, an in-memory store is used (lost on restart).
+    #[arg(long, env = "CODESPACE_STORE")]
+    pub store: Option<std::path::PathBuf>,
 }
 
 impl Cli {

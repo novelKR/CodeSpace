@@ -41,7 +41,7 @@ pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
         ],
         workspace_id,
         workspace_id_is_credential: false,
-        note: "workspace_info, read, and find are live. Exec and apply_patch are not exposed yet."
+        note: "workspace_info, read, find, apply_patch, and operation_status are live. apply_patch records operations; disk apply is completed in W09."
             .to_string(),
         profile: None,
         root: None,

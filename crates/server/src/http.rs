@@ -30,10 +30,18 @@ pub fn router(config: HttpConfig) -> Router {
 }
 
 pub fn router_with_registry(config: HttpConfig, registry: Registry) -> Router {
-    http_router(&config, registry, CancellationToken::new())
+    http_router_with(&config, CodeSpace::new(registry), CancellationToken::new())
 }
 
 pub fn http_router(config: &HttpConfig, registry: Registry, cancel: CancellationToken) -> Router {
+    http_router_with(config, CodeSpace::new(registry), cancel)
+}
+
+pub fn http_router_with(
+    config: &HttpConfig,
+    server: CodeSpace,
+    cancel: CancellationToken,
+) -> Router {
     let mut allowed_hosts = vec![
         "localhost".into(),
         "127.0.0.1".into(),
@@ -45,9 +53,8 @@ pub fn http_router(config: &HttpConfig, registry: Registry, cancel: Cancellation
     allowed_hosts.sort();
     allowed_hosts.dedup();
 
-    let registry = registry.clone();
     let service = StreamableHttpService::new(
-        move || Ok(CodeSpace::new(registry.clone())),
+        move || Ok(server.clone()),
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default()
             .with_json_response(true)
@@ -66,10 +73,17 @@ pub async fn serve_http(
     config: HttpConfig,
     registry: Registry,
 ) -> anyhow::Result<(std::net::SocketAddr, CancellationToken)> {
+    serve_http_with(config, CodeSpace::new(registry)).await
+}
+
+pub async fn serve_http_with(
+    config: HttpConfig,
+    server: CodeSpace,
+) -> anyhow::Result<(std::net::SocketAddr, CancellationToken)> {
     let addr = format!("{}:{}", config.host, config.port);
     let cancel = CancellationToken::new();
     let bearer_required = config.bearer_token.is_some();
-    let router = http_router(&config, registry, cancel.clone());
+    let router = http_router_with(&config, server, cancel.clone());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound = listener.local_addr()?;
     let child = cancel.clone();
