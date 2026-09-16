@@ -1,4 +1,4 @@
-//! CodeSpace MCP gateway. Live tools: workspace_info, read, find.
+//! CodeSpace MCP gateway. Live tools: workspace_info, read, find, apply_patch, operation_status.
 
 pub mod auth;
 pub mod config;

@@ -1,11 +1,14 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use codespace_domain::{
-    workspace_info, ErrorBody, FindParams, FindResult, ReadParams, ReadResult, WorkspaceInfo,
-    WorkspaceInfoParams,
+    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, FindParams, FindResult,
+    OperationStatusParams, OperationStatusResult, PatchStatus, ReadParams, ReadResult,
+    WorkspaceInfo, WorkspaceInfoParams,
 };
-use codespace_policy::Registry;
+use codespace_policy::{Action, ClientClaims, Registry};
 use codespace_runner::PathSandbox;
+use codespace_store::{Begin, Store};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -23,6 +26,7 @@ pub struct CodeSpace {
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     registry: Registry,
+    store: Arc<Store>,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -32,9 +36,17 @@ fn err_json(err: ErrorBody) -> String {
 #[tool_router]
 impl CodeSpace {
     pub fn new(registry: Registry) -> Self {
+        Self::with_store(
+            registry,
+            Arc::new(Store::memory().expect("in-memory store")),
+        )
+    }
+
+    pub fn with_store(registry: Registry, store: Arc<Store>) -> Self {
         Self {
             tool_router: Self::tool_router(),
             registry,
+            store,
         }
     }
 
@@ -86,6 +98,59 @@ impl CodeSpace {
             .map(Json)
             .map_err(err_json)
     }
+
+    #[tool(
+        name = "apply_patch",
+        description = "Apply a Codex V4A patch. This release records operation_key replay/conflict and does not write files (engine lands in later packages). Never falls back to git apply."
+    )]
+    async fn apply_patch(
+        &self,
+        Parameters(params): Parameters<ApplyPatchParams>,
+    ) -> Result<Json<ApplyPatchResult>, String> {
+        self.apply_patch_inner(params).map(Json).map_err(err_json)
+    }
+
+    #[tool(
+        name = "operation_status",
+        description = "Look up a server-minted operation_id. Does not re-run the operation. Distinct from HTTP request ids."
+    )]
+    async fn operation_status(
+        &self,
+        Parameters(params): Parameters<OperationStatusParams>,
+    ) -> Result<Json<OperationStatusResult>, String> {
+        self.store
+            .status(&params.operation_id)
+            .map(Json)
+            .map_err(err_json)
+    }
+}
+
+impl CodeSpace {
+    fn apply_patch_inner(&self, params: ApplyPatchParams) -> Result<ApplyPatchResult, ErrorBody> {
+        let ws = self.registry.get(&params.workspace_id.0)?;
+        codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
+        let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
+        let fingerprint = Store::fingerprint(&params);
+        match self.store.begin(
+            params.operation_key.as_ref(),
+            &params.workspace_id.0,
+            &fingerprint,
+        )? {
+            Begin::Replayed(stored) => Ok(stored.result),
+            Begin::Fresh(operation_id) => {
+                // W06/W09 will replace this stub with the Codex adapter.
+                // Recording the operation is real: replay must not execute again.
+                let result = ApplyPatchResult {
+                    status: PatchStatus::Rejected,
+                    operation_id: operation_id.clone(),
+                    replayed: false,
+                    files: Vec::new(),
+                };
+                self.store.finish(&operation_id, &result)?;
+                Ok(result)
+            }
+        }
+    }
 }
 
 fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {
@@ -119,7 +184,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_VERSION,
             ))
             .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. read/find stay inside the registered workspace."
+                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. apply_patch records operations but does not write in this package."
                     .to_string(),
             )
     }
