@@ -1,0 +1,33 @@
+[package]
+name = "codespace-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CodeSpace MCP gateway (rmcp stdio + Streamable HTTP)"
+publish = false
+
+[[bin]]
+name = "codespace-mcp"
+path = "src/main.rs"
+
+[dependencies]
+codespace-domain = { path = "../domain" }
+rmcp = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "net"] }
+tokio-util = "0.7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+axum = { version = "0.8", features = ["macros"] }
+http = "1"
+schemars = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+tower = "0.5"
+subtle = "2"
+
+[dev-dependencies]
+rmcp = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process"] }

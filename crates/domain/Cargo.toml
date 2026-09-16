@@ -1,0 +1,12 @@
+[package]
+name = "codespace-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "CodeSpace domain types (no rmcp)"
+
+[dependencies]
+schemars = { workspace = true }
+serde = { workspace = true }

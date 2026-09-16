@@ -22,9 +22,20 @@ apply/rollback reporting, and process lifetime.
 
 ## Status
 
-W01 contracts live in `docs/`. Implementation work packages W02–W13 land
-as GitHub issues and pull requests on `main` via branches. Do not commit
-features directly to `main`.
+W01 contracts live in `docs/`. W02 is a real `codespace-mcp` process
+(`workspace_info` only, stdio + Streamable HTTP). Later tools land per
+work-package PR. Do not commit features directly to `main`.
+
+## Run
+
+```bash
+cargo run -p codespace-server --bin codespace-mcp
+# Streamable HTTP at /mcp (default 127.0.0.1:8787):
+cargo run -p codespace-server --bin codespace-mcp -- --http
+```
+
+Tests: `cargo test --workspace`. ChatGPT Custom Connector steps and what
+is **not** verified: [docs/chatgpt-connector.md](docs/chatgpt-connector.md).
 
 ## License
 
