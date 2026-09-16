@@ -1,4 +1,4 @@
-//! CodeSpace MCP gateway. W02 exposes `workspace_info` only.
+//! CodeSpace MCP gateway. W03 still exposes `workspace_info` only.
 
 pub mod auth;
 pub mod config;
