@@ -101,7 +101,7 @@ impl CodeSpace {
 
     #[tool(
         name = "apply_patch",
-        description = "Apply a Codex V4A patch. check_only verifies without writing. Never falls back to git apply."
+        description = "Apply a Codex V4A patch. check_only verifies without writing. status applied means disk matches. Never falls back to git apply."
     )]
     async fn apply_patch(
         &self,
@@ -179,10 +179,27 @@ impl CodeSpace {
                 ));
             }
         }
-        let files = crate::patch_helper::preflight(&ws.root, &params.patch)?;
-        let _ = params.check_only;
+        if params.check_only {
+            let files = crate::patch_helper::preflight(&ws.root, &params.patch)?;
+            return Ok(ApplyPatchResult {
+                status: PatchStatus::Rejected,
+                operation_id,
+                replayed: false,
+                files,
+            });
+        }
+        let files = crate::patch_helper::apply(&ws.root, &params.patch, false)?;
+        for path in &files {
+            let after = sandbox.read_file(path)?;
+            if after.path != *path {
+                return Err(ErrorBody::new(
+                    ErrorCode::InvalidPatch,
+                    format!("apply listed {path} but read returned {}", after.path),
+                ));
+            }
+        }
         Ok(ApplyPatchResult {
-            status: PatchStatus::Rejected,
+            status: PatchStatus::Applied,
             operation_id,
             replayed: false,
             files,

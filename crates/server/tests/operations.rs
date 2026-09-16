@@ -73,13 +73,14 @@ async fn operation_key_replays_and_conflicts_without_rewriting() {
         .expect("first apply");
     let body = payload(&first);
     assert_eq!(body["replayed"], false);
-    assert_eq!(body["status"], "rejected");
+    assert_eq!(body["status"], "applied");
     let op_id = body["operation_id"].as_str().unwrap().to_string();
     assert!(op_id.starts_with("op-"));
     assert_ne!(op_id, "1");
     let keep = std::fs::read_to_string(root.path().join("ws").join("keep.txt")).unwrap();
     assert_eq!(keep, "keep");
-    assert!(!root.path().join("ws").join("new.txt").exists());
+    let created = std::fs::read_to_string(root.path().join("ws").join("new.txt")).unwrap();
+    assert_eq!(created, "hello\n");
 
     let replay = client
         .call_tool(
@@ -118,7 +119,7 @@ async fn operation_key_replays_and_conflicts_without_rewriting() {
         .await
         .expect("status");
     let status_body = payload(&status);
-    assert_eq!(status_body["status"], "rejected");
+    assert_eq!(status_body["status"], "applied");
     assert_eq!(status_body["replayed"], false);
 
     let missing = client
