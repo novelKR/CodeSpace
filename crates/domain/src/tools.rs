@@ -17,7 +17,9 @@ pub const TRANSPORT_STREAMABLE_HTTP: &str = "streamable-http";
 /// Tools registered in this release. Later work packages append to this list
 /// when they actually register handlers — names here are the catalog, not
 /// a claim that every tool is live.
-pub const W03_EXPOSED_TOOLS: &[&str] = &[TOOL_WORKSPACE_INFO];
+/// Tools registered in this release.
+pub const LIVE_TOOLS: &[&str] = &[TOOL_WORKSPACE_INFO, TOOL_READ, TOOL_FIND];
+pub const W03_EXPOSED_TOOLS: &[&str] = LIVE_TOOLS;
 
 pub const MVP_TOOL_CATALOG: &[&str] = &[
     TOOL_WORKSPACE_INFO,

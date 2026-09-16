@@ -1,4 +1,4 @@
-//! CodeSpace MCP gateway. W03 still exposes `workspace_info` only.
+//! CodeSpace MCP gateway. Live tools: workspace_info, read, find.
 
 pub mod auth;
 pub mod config;

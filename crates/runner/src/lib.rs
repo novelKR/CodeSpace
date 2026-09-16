@@ -62,6 +62,10 @@ impl PathSandbox {
     }
 }
 
+mod files;
+
+pub use files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT, VERSION_ABSENT};
+
 pub fn compose_allows_marker(compose: &str, marker: &str) -> bool {
     compose.contains(marker)
 }

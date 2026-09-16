@@ -41,7 +41,7 @@ pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
         ],
         workspace_id,
         workspace_id_is_credential: false,
-        note: "Harmless probe. Exec and apply_patch are not exposed until later work packages."
+        note: "workspace_info, read, and find are live. Exec and apply_patch are not exposed yet."
             .to_string(),
         profile: None,
         root: None,
@@ -58,7 +58,14 @@ mod tests {
         let info = workspace_info(None);
         assert!(!info.internal_model_calls);
         assert!(!info.workspace_id_is_credential);
-        assert_eq!(info.tools_exposed, vec![TOOL_WORKSPACE_INFO]);
+        assert!(info.tools_exposed.iter().any(|s| s == TOOL_WORKSPACE_INFO));
+        assert_eq!(
+            info.tools_exposed,
+            crate::tools::LIVE_TOOLS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             info.transports,
             vec![TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP]
