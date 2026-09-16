@@ -1,0 +1,8 @@
+{
+  "workspaces": {
+    "demo": {
+      "root": "/workspace",
+      "profile": "read-only"
+    }
+  }
+}

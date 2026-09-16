@@ -1,11 +1,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::profile::Profile;
 use crate::tools::{
     SERVER_NAME, SERVER_VERSION, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP, W03_EXPOSED_TOOLS,
 };
 
-/// Optional selector. Not a credential. Unknown until the W04 registry.
+/// Optional selector. Not a credential.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceInfoParams {
     #[serde(default)]
@@ -22,6 +23,10 @@ pub struct WorkspaceInfo {
     pub workspace_id: Option<String>,
     pub workspace_id_is_credential: bool,
     pub note: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<Profile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
@@ -38,6 +43,8 @@ pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
         workspace_id_is_credential: false,
         note: "Harmless probe. Exec and apply_patch are not exposed until later work packages."
             .to_string(),
+        profile: None,
+        root: None,
     }
 }
 

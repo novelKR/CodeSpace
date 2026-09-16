@@ -1,7 +1,7 @@
 use codespace_domain::{
     SERVER_NAME, TOOL_WORKSPACE_INFO, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
 };
-use rmcp::{model::CallToolRequestParams, object, transport::TokioChildProcess, ServiceExt};
+use rmcp::{model::CallToolRequestParams, transport::TokioChildProcess, ServiceExt};
 use serde_json::Value;
 use tokio::process::Command;
 
@@ -24,10 +24,7 @@ async fn stdio_lists_and_calls_workspace_info() {
     assert_eq!(names, vec![TOOL_WORKSPACE_INFO]);
 
     let result = client
-        .call_tool(
-            CallToolRequestParams::new(TOOL_WORKSPACE_INFO)
-                .with_arguments(object!({ "workspace_id": "demo" })),
-        )
+        .call_tool(CallToolRequestParams::new(TOOL_WORKSPACE_INFO))
         .await
         .expect("tools/call workspace_info");
 
@@ -35,7 +32,7 @@ async fn stdio_lists_and_calls_workspace_info() {
     assert_eq!(body["server"], SERVER_NAME);
     assert_eq!(body["internal_model_calls"], false);
     assert_eq!(body["workspace_id_is_credential"], false);
-    assert_eq!(body["workspace_id"], "demo");
+    assert_eq!(body["workspace_id"], serde_json::Value::Null);
     assert_eq!(
         body["tools_exposed"],
         serde_json::json!([TOOL_WORKSPACE_INFO])

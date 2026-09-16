@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 codespace-domain = { path = "../domain" }
+codespace-policy = { path = "../policy" }
 rmcp = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "net"] }
 tokio-util = "0.7"
@@ -31,3 +32,4 @@ subtle = "2"
 rmcp = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process"] }
+tempfile = "3"

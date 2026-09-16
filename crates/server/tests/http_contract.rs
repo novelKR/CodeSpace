@@ -57,16 +57,13 @@ async fn http_tools_list_matches_stdio_contract() {
     assert_eq!(names, vec![TOOL_WORKSPACE_INFO]);
 
     let result = client
-        .call_tool(
-            rmcp::model::CallToolRequestParams::new(TOOL_WORKSPACE_INFO)
-                .with_arguments(rmcp::object!({ "workspace_id": "demo" })),
-        )
+        .call_tool(rmcp::model::CallToolRequestParams::new(TOOL_WORKSPACE_INFO))
         .await
         .expect("tools/call");
     let body = result.structured_content.clone().unwrap_or_else(|| {
         serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap()
     });
-    assert_eq!(body["workspace_id"], "demo");
+    assert_eq!(body["workspace_id"], serde_json::Value::Null);
     assert_eq!(body["internal_model_calls"], false);
 
     client.cancel().await.expect("cancel http client");
