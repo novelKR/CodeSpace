@@ -46,7 +46,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_VERSION,
             ))
             .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. W02 exposes only workspace_info."
+                "CodeSpace execution-tools MCP. No internal model calls. W03 still exposes only workspace_info; error codes and schemas are frozen."
                     .to_string(),
             )
     }

@@ -1,74 +1,31 @@
 //! Domain types for CodeSpace. No `rmcp` dependency.
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+pub mod error;
+pub mod files;
+pub mod ids;
+pub mod info;
+pub mod patch;
+pub mod process;
+pub mod profile;
+pub mod tools;
 
-pub const SERVER_NAME: &str = "codespace";
-pub const SERVER_VERSION: &str = "0.2.0";
-
-pub const TOOL_WORKSPACE_INFO: &str = "workspace_info";
-
-pub const TRANSPORT_STDIO: &str = "stdio";
-pub const TRANSPORT_STREAMABLE_HTTP: &str = "streamable-http";
-
-/// Optional selector. Not a credential. Unknown until the W04 registry.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceInfoParams {
-    #[serde(default)]
-    pub workspace_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceInfo {
-    pub server: String,
-    pub version: String,
-    pub internal_model_calls: bool,
-    pub tools_exposed: Vec<String>,
-    pub transports: Vec<String>,
-    pub workspace_id: Option<String>,
-    pub workspace_id_is_credential: bool,
-    pub note: String,
-}
-
-pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
-    WorkspaceInfo {
-        server: SERVER_NAME.to_string(),
-        version: SERVER_VERSION.to_string(),
-        internal_model_calls: false,
-        tools_exposed: vec![TOOL_WORKSPACE_INFO.to_string()],
-        transports: vec![
-            TRANSPORT_STDIO.to_string(),
-            TRANSPORT_STREAMABLE_HTTP.to_string(),
-        ],
-        workspace_id,
-        workspace_id_is_credential: false,
-        note: "Harmless probe. Exec and apply_patch are not exposed in W02.".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn workspace_info_contract_fields() {
-        let info = workspace_info(None);
-        assert!(!info.internal_model_calls);
-        assert!(!info.workspace_id_is_credential);
-        assert_eq!(info.tools_exposed, vec![TOOL_WORKSPACE_INFO]);
-        assert_eq!(
-            info.transports,
-            vec![TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP]
-        );
-        assert_eq!(info.workspace_id, None);
-        assert_eq!(info.server, SERVER_NAME);
-        assert_eq!(info.version, SERVER_VERSION);
-    }
-
-    #[test]
-    fn workspace_id_is_echoed_not_trusted() {
-        let info = workspace_info(Some("demo".into()));
-        assert_eq!(info.workspace_id.as_deref(), Some("demo"));
-        assert!(!info.workspace_id_is_credential);
-    }
-}
+pub use error::{
+    classify_http_status, ErrorBody, ErrorCode, FailureClass, TRANSPORT_FAILURE_IS_NOT_OPERATION,
+};
+pub use files::{FindParams, FindResult, ReadParams, ReadResult};
+pub use ids::{OperationId, OperationKey, ProcessId, WorkspaceId};
+pub use info::{workspace_info, WorkspaceInfo, WorkspaceInfoParams};
+pub use patch::{
+    ApplyPatchParams, ApplyPatchResult, OperationStatusParams, OperationStatusResult, PatchStatus,
+};
+pub use process::{
+    ExecCommandParams, ExecCommandResult, ReadProcessParams, ReadProcessResult,
+    TerminateProcessParams, WriteStdinParams,
+};
+pub use profile::Profile;
+pub use tools::{
+    SERVER_NAME, SERVER_VERSION, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_FIND,
+    TOOL_OPERATION_STATUS, TOOL_READ, TOOL_READ_PROCESS, TOOL_TERMINATE_PROCESS,
+    TOOL_WORKSPACE_INFO, TOOL_WRITE_STDIN, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
+    W03_EXPOSED_TOOLS,
+};

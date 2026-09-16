@@ -94,6 +94,7 @@ isolation OS is a Linux container.**
 | `operation_status` | Recover after disconnect; do not re-run blindly |
 
 No internal model-calling tool exists. `git_apply_patch` is out of MVP.
+Error codes and transport-vs-execution rules: [error-codes.md](error-codes.md).
 
 ## IDs
 
