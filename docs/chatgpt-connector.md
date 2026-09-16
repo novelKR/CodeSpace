@@ -1,7 +1,11 @@
 # ChatGPT connector experiment (W02)
 
 CodeSpace is a Rust `rmcp` process. It speaks **stdio** and **Streamable HTTP**
-with the same tool: `workspace_info` only. Exec and patch are not registered yet.
+with the same live tools (`workspace_info`, `read`, `find`). Exec and patch
+are not registered yet.
+
+Core protocol baseline is **MCP 2025-11-25**. See
+[protocol-compatibility.md](protocol-compatibility.md).
 
 ## Local stdio (verified by cargo test)
 
@@ -40,10 +44,15 @@ server. ChatGPT Custom Connectors often expect OAuth or a different auth
 story; **do not assume Bearer works in ChatGPT** until a live account
 check says so.
 
-Protocol revision observed locally with `rmcp` 3.4.0: stdio negotiated
-`2025-11-25`; the HTTP contract test prefers `2026-07-28` with
-`2025-11-25` as legacy. ChatGPT's `MCP-Protocol-Version` header was
-**not** observed.
+Protocol policy: CI forces **2025-11-25** on stdio and HTTP
+(`protocol_compat.rs`). **2026-07-28** is progressive enhancement and is
+also forced in that file with **no** legacy fallback. Auto tests that
+prefer `2026-07-28` and fall back to `2025-11-25` (`http_contract`,
+`transport_contract`) do **not** replace 2025-11-25-only coverage.
+
+ChatGPT's `MCP-Protocol-Version` header was **not** observed. Do not
+assume ChatGPT requires 2026-07-28, MRTR, Tasks, subscriptions, or
+`Mcp-Name` routing.
 
 ## ChatGPT account connection
 

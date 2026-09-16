@@ -42,6 +42,8 @@ async fn stdio_and_http_share_workspace_info_contract() {
     )
     .serve_with_lifecycle(
         StreamableHttpClientTransport::from_uri(format!("http://{addr}{MCP_PATH}")),
+        // Prefers 2026-07-28 and may fall back to 2025-11-25. This is not
+        // 2025-11-25-only coverage; see protocol_compat.rs.
         ClientLifecycleMode::Auto {
             preferred_versions: vec![ProtocolVersion::V_2026_07_28],
             legacy_version: Some(ProtocolVersion::V_2025_11_25),

@@ -41,6 +41,8 @@ async fn http_tools_list_matches_stdio_contract() {
     )
     .serve_with_lifecycle(
         transport,
+        // Prefers 2026-07-28 and may fall back to 2025-11-25. This is not
+        // 2025-11-25-only coverage; see protocol_compat.rs.
         ClientLifecycleMode::Auto {
             preferred_versions: vec![ProtocolVersion::V_2026_07_28],
             legacy_version: Some(ProtocolVersion::V_2025_11_25),

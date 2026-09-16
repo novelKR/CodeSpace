@@ -79,6 +79,21 @@ message broker.
 Gateway unit tests may run on the macOS development host. **Execution
 isolation OS is a Linux container.**
 
+## Protocol compatibility
+
+Core execution is **MCP 2025-11-25** over **stdio** and **Streamable HTTP
+`/mcp`**. Required primitives are `initialize`, `tools/list`, and
+`tools/call`. HTTP's spec floor is 2025-03-26 (Streamable HTTP exists);
+CI pins 2025-11-25. **2026-07-28 is progressive enhancement only.**
+
+Core must not require MRTR, Tasks, subscriptions, `Mcp-Name` routing, or
+0728 stateless lifecycle as application state. Auth stays optional Bearer
+middleware; dispatch is `/mcp` → rmcp tools. `ProtocolVersion` and
+`NegotiatedFeatures` live in `crates/server` only.
+
+2024-11-05 HTTP+SSE is not a goal. Full matrix:
+[protocol-compatibility.md](protocol-compatibility.md).
+
 ## MVP tools (9)
 
 | Tool | Role |
