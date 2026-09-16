@@ -95,6 +95,7 @@ isolation OS is a Linux container.**
 
 No internal model-calling tool exists. `git_apply_patch` is out of MVP.
 Error codes and transport-vs-execution rules: [error-codes.md](error-codes.md).
+Linux runner isolation: [runner-isolation.md](runner-isolation.md).
 
 ## IDs
 

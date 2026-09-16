@@ -1,0 +1,20 @@
+# Isolation example. The only bind mount is the workspace.
+# Forbidden mounts: host home, engine socket, SSH sockets, gateway env files, SQLite.
+
+services:
+  runner:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ${CODESPACE_WORKSPACE:?set CODESPACE_WORKSPACE to the project dir}
+        target: /workspace
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
