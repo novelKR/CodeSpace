@@ -5,7 +5,9 @@ pub mod config;
 pub mod http;
 pub mod logging;
 pub mod mcp;
+pub mod protocol;
 pub mod stdio;
 
 pub use config::{HttpConfig, MCP_PATH};
 pub use mcp::CodeSpace;
+pub use protocol::{NegotiatedFeatures, CORE_BASELINE, ENHANCEMENT, HTTP_FLOOR};

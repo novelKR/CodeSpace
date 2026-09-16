@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use codespace_domain::{
@@ -10,9 +11,15 @@ use codespace_runner::PathSandbox;
 use codespace_store::{Begin, Store};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{Implementation, ServerCapabilities, ServerConfig},
-    tool, tool_handler, tool_router, Json, ServerHandler,
+    model::{
+        Implementation, InitializeRequestParams, InitializeResult, ProtocolVersion,
+        ServerCapabilities, ServerConfig,
+    },
+    service::RequestContext,
+    tool, tool_handler, tool_router, ErrorData as McpError, Json, RoleServer, ServerHandler,
 };
+
+use crate::protocol::{NegotiatedFeatures, CORE_BASELINE, SUPPORTED_PROTOCOL_VERSIONS};
 
 #[derive(Clone)]
 pub struct CodeSpace {
@@ -171,6 +178,7 @@ impl Default for CodeSpace {
 impl ServerHandler for CodeSpace {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(CORE_BASELINE)
             .with_server_info(Implementation::new(
                 codespace_domain::SERVER_NAME,
                 codespace_domain::SERVER_VERSION,
@@ -179,5 +187,31 @@ impl ServerHandler for CodeSpace {
                 "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. apply_patch records operations but does not write in this package."
                     .to_string(),
             )
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        context.peer.set_peer_info(request.clone());
+        let result = self.negotiate_initialize(&request)?;
+        let features = NegotiatedFeatures::from_protocol(result.protocol_version.clone());
+        // Enhancement flags may be true for 2026-07-28. This PR does not take
+        // MRTR / Tasks / subscriptions / SEP-2243 / stateless-HTTP handler paths.
+        tracing::debug!(
+            protocol = %features.protocol,
+            mrtr = features.mrtr,
+            tasks = features.tasks,
+            subscriptions = features.subscriptions,
+            standard_http_headers = features.standard_http_headers,
+            stateless_http = features.stateless_http,
+            "negotiated mcp protocol; handlers stay on tools/call"
+        );
+        Ok(result)
     }
 }
