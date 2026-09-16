@@ -1,4 +1,4 @@
-use codespace_domain::TOOL_WORKSPACE_INFO;
+use codespace_domain::{LIVE_TOOLS, TOOL_WORKSPACE_INFO};
 use codespace_server::config::{HttpConfig, MCP_PATH};
 use codespace_server::http::router;
 use rmcp::{
@@ -52,11 +52,23 @@ async fn stdio_and_http_share_workspace_info_contract() {
 
     let stdio_tools = stdio.list_all_tools().await.expect("stdio list");
     let http_tools = http.list_all_tools().await.expect("http list");
-    let stdio_names: Vec<&str> = stdio_tools.iter().map(|t| t.name.as_ref()).collect();
-    let http_names: Vec<&str> = http_tools.iter().map(|t| t.name.as_ref()).collect();
-    assert_eq!(stdio_names, vec![TOOL_WORKSPACE_INFO]);
+    let mut stdio_names: Vec<&str> = stdio_tools.iter().map(|t| t.name.as_ref()).collect();
+    let mut http_names: Vec<&str> = http_tools.iter().map(|t| t.name.as_ref()).collect();
+    stdio_names.sort();
+    http_names.sort();
+    let mut expected = LIVE_TOOLS.to_vec();
+    expected.sort();
+    assert_eq!(stdio_names, expected);
     assert_eq!(stdio_names, http_names);
-    assert_eq!(stdio_tools[0].input_schema, http_tools[0].input_schema);
+    let stdio_info = stdio_tools
+        .iter()
+        .find(|t| t.name == TOOL_WORKSPACE_INFO)
+        .expect("stdio workspace_info");
+    let http_info = http_tools
+        .iter()
+        .find(|t| t.name == TOOL_WORKSPACE_INFO)
+        .expect("http workspace_info");
+    assert_eq!(stdio_info.input_schema, http_info.input_schema);
 
     let stdio_body = payload(
         &stdio

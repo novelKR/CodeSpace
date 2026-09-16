@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::http::{header, StatusCode};
-use codespace_domain::TOOL_WORKSPACE_INFO;
+use codespace_domain::{LIVE_TOOLS, TOOL_WORKSPACE_INFO};
 use codespace_server::config::{HttpConfig, MCP_PATH};
 use codespace_server::http::router;
 use rmcp::{
@@ -53,8 +53,11 @@ async fn http_tools_list_matches_stdio_contract() {
         .list_tools(Default::default())
         .await
         .expect("tools/list");
-    let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_ref()).collect();
-    assert_eq!(names, vec![TOOL_WORKSPACE_INFO]);
+    let mut names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_ref()).collect();
+    names.sort();
+    let mut expected = LIVE_TOOLS.to_vec();
+    expected.sort();
+    assert_eq!(names, expected);
 
     let result = client
         .call_tool(rmcp::model::CallToolRequestParams::new(TOOL_WORKSPACE_INFO))

@@ -1,5 +1,5 @@
 use codespace_domain::{
-    SERVER_NAME, TOOL_WORKSPACE_INFO, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
+    LIVE_TOOLS, SERVER_NAME, TOOL_WORKSPACE_INFO, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
 };
 use rmcp::{model::CallToolRequestParams, transport::TokioChildProcess, ServiceExt};
 use serde_json::Value;
@@ -20,8 +20,11 @@ async fn stdio_lists_and_calls_workspace_info() {
             .expect("initialize stdio mcp");
 
     let tools = client.list_all_tools().await.expect("tools/list");
-    let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
-    assert_eq!(names, vec![TOOL_WORKSPACE_INFO]);
+    let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+    names.sort();
+    let mut expected = LIVE_TOOLS.to_vec();
+    expected.sort();
+    assert_eq!(names, expected);
 
     let result = client
         .call_tool(CallToolRequestParams::new(TOOL_WORKSPACE_INFO))
@@ -33,10 +36,7 @@ async fn stdio_lists_and_calls_workspace_info() {
     assert_eq!(body["internal_model_calls"], false);
     assert_eq!(body["workspace_id_is_credential"], false);
     assert_eq!(body["workspace_id"], serde_json::Value::Null);
-    assert_eq!(
-        body["tools_exposed"],
-        serde_json::json!([TOOL_WORKSPACE_INFO])
-    );
+    assert_eq!(body["tools_exposed"], serde_json::json!(LIVE_TOOLS));
     assert_eq!(
         body["transports"],
         serde_json::json!([TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP])

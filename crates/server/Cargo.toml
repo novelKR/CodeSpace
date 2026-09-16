@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 codespace-domain = { path = "../domain" }
 codespace-policy = { path = "../policy" }
+codespace-runner = { path = "../runner" }
 rmcp = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "net"] }
 tokio-util = "0.7"

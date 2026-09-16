@@ -1,5 +1,9 @@
-use codespace_domain::{workspace_info, WorkspaceInfo, WorkspaceInfoParams};
+use codespace_domain::{
+    workspace_info, ErrorBody, FindParams, FindResult, ReadParams, ReadResult, WorkspaceInfo,
+    WorkspaceInfoParams,
+};
 use codespace_policy::Registry;
+use codespace_runner::PathSandbox;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerConfig},
@@ -11,6 +15,10 @@ pub struct CodeSpace {
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     registry: Registry,
+}
+
+fn err_json(err: ErrorBody) -> String {
+    serde_json::to_string(&err).unwrap_or(err.message)
 }
 
 #[tool_router]
@@ -30,17 +38,49 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<WorkspaceInfoParams>,
     ) -> Result<Json<WorkspaceInfo>, String> {
-        match lookup(&self.registry, params.workspace_id) {
-            Ok(info) => Ok(Json(info)),
-            Err(err) => Err(serde_json::to_string(&err).unwrap_or(err.message)),
-        }
+        lookup(&self.registry, params.workspace_id)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "read",
+        description = "Read a relative workspace file and return content plus a sha256 version. Rejects symlinks, special files, and path escape."
+    )]
+    async fn read(
+        &self,
+        Parameters(params): Parameters<ReadParams>,
+    ) -> Result<Json<ReadResult>, String> {
+        let ws = self
+            .registry
+            .get(&params.workspace_id.0)
+            .map_err(err_json)?;
+        PathSandbox::new(ws.clone())
+            .read_file(&params.path)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "find",
+        description = "List relative file paths in a workspace. Does not follow symlinks."
+    )]
+    async fn find(
+        &self,
+        Parameters(params): Parameters<FindParams>,
+    ) -> Result<Json<FindResult>, String> {
+        let ws = self
+            .registry
+            .get(&params.workspace_id.0)
+            .map_err(err_json)?;
+        PathSandbox::new(ws.clone())
+            .find(params.glob.as_deref())
+            .map(Json)
+            .map_err(err_json)
     }
 }
 
-fn lookup(
-    registry: &Registry,
-    workspace_id: Option<String>,
-) -> Result<WorkspaceInfo, codespace_domain::ErrorBody> {
+fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {
     let Some(id) = workspace_id.filter(|s| !s.is_empty()) else {
         return Ok(workspace_info(None));
     };
@@ -70,7 +110,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_VERSION,
             ))
             .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. Unknown ids are rejected. Client approved/user_id claims are ignored."
+                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. read/find stay inside the registered workspace."
                     .to_string(),
             )
     }
