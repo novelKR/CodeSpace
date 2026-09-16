@@ -102,7 +102,7 @@ pub fn ensure_helper_for_tests() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../patch/Cargo.toml");
-        let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/patch-helper");
+        let target = std::env::temp_dir().join("codespace-patch-helper");
         let status = Command::new("cargo")
             .arg("build")
             .arg("--manifest-path")

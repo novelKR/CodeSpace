@@ -7,6 +7,7 @@ pub mod logging;
 pub mod mcp;
 pub mod patch_helper;
 pub mod protocol;
+pub mod rollback;
 pub mod stdio;
 
 pub use config::{HttpConfig, MCP_PATH};

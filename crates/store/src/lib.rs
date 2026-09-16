@@ -421,4 +421,33 @@ mod tests {
         assert!(id.0.starts_with("op-"));
         assert_ne!(id.0, "1");
     }
+
+    #[test]
+    fn unfinished_operation_replays_as_unknown_without_new_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.sqlite");
+        let first = params("p", "k-unfinished");
+        let fp = Store::fingerprint(&first);
+        let original;
+        {
+            let store = Store::open(&path).unwrap();
+            let Begin::Fresh(id) = store
+                .begin(first.operation_key.as_ref(), "demo", &fp)
+                .unwrap()
+            else {
+                panic!("fresh");
+            };
+            original = id;
+        }
+        let store = Store::open(&path).unwrap();
+        let Begin::Replayed(replay) = store
+            .begin(first.operation_key.as_ref(), "demo", &fp)
+            .unwrap()
+        else {
+            panic!("replay unfinished");
+        };
+        assert!(replay.replayed);
+        assert_eq!(replay.operation_id, original);
+        assert_eq!(replay.status, PatchStatus::Unknown);
+    }
 }
