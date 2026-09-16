@@ -11,13 +11,14 @@ which is licensed under the Apache License, Version 2.0.
   Intended reuse: MCP server, tool macros, stdio transport, and
   Streamable HTTP server (`StreamableHttpService`) from the `rmcp` crate.
 
-This product will reuse portions of OpenAI Codex, which is licensed
+This product reuses portions of OpenAI Codex, which is licensed
 under the Apache License, Version 2.0.
 
   Project: https://github.com/openai/codex
-  Intended reuse: the pinned Rust crate `codex-apply-patch` (parse,
-  verify, and apply) via a git submodule at a fixed revision.
-  Candidate pin is recorded in docs/upstream-lock.md after W01.
+  Reuse: the pinned Rust crate `codex-apply-patch` (parse, verify, and
+  apply) via git submodule `third_party/codex` at
+  `6b9826e3aa83b1a5947db50f4332cb9c65f1b340` (`rust-v0.154.0`).
+  The pin is recorded in docs/upstream-lock.md.
   File-copy vendoring of a single crate is not used because the crate
   depends on other Codex workspace crates (including
   `codex-exec-server`, path utilities, and tree-sitter bindings).
@@ -31,4 +32,5 @@ rmcp license: Apache License 2.0.
 
 Any later reuse of Codex or rmcp source, tests, or documentation will
 keep the Apache-2.0 notices required by those licenses. The Codex pin
-is promoted to a deployment pin only after parity tests pass.
+is a deployment pin for the W06 parity subset; the full upstream suite
+is not claimed.
