@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/domain", "crates/policy", "crates/runner", "crates/server"]
+exclude = ["crates/patch", "third_party"]
 
 [workspace.package]
 version = "0.5.0"

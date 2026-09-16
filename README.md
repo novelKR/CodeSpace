@@ -23,8 +23,10 @@ apply/rollback reporting, and process lifetime.
 ## Status
 
 W01 contracts live in `docs/`. W02 is a real `codespace-mcp` process
-(`workspace_info` only, stdio + Streamable HTTP). Later tools land per
-work-package PR. Do not commit features directly to `main`.
+(stdio + Streamable HTTP). Live tools grow per work-package PR. Codex
+V4A apply is `crates/patch` calling the pinned submodule in-process
+(see [docs/upstream-lock.md](docs/upstream-lock.md)). Do not commit
+features directly to `main`.
 
 ## Run
 
@@ -34,8 +36,10 @@ cargo run -p codespace-server --bin codespace-mcp
 cargo run -p codespace-server --bin codespace-mcp -- --http
 ```
 
-Tests: `cargo test --workspace`. ChatGPT Custom Connector steps and what
-is **not** verified: [docs/chatgpt-connector.md](docs/chatgpt-connector.md).
+Tests: `cargo test --workspace` and
+`cargo test --manifest-path crates/patch/Cargo.toml`. ChatGPT Custom
+Connector steps and what is **not** verified:
+[docs/chatgpt-connector.md](docs/chatgpt-connector.md).
 
 ## License
 
