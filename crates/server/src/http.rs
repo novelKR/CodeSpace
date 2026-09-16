@@ -4,6 +4,8 @@ use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::Router;
+use codespace_policy::Registry;
+use codespace_store::Store;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio_util::sync::CancellationToken;
@@ -11,7 +13,6 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::authorize_headers;
 use crate::config::HttpConfig;
 use crate::mcp::CodeSpace;
-use codespace_policy::Registry;
 
 #[derive(Clone)]
 struct HttpState {
@@ -30,10 +31,16 @@ pub fn router(config: HttpConfig) -> Router {
 }
 
 pub fn router_with_registry(config: HttpConfig, registry: Registry) -> Router {
-    http_router(&config, registry, CancellationToken::new())
+    let store = Arc::new(Store::memory().expect("in-memory operations store"));
+    http_router(&config, registry, store, CancellationToken::new())
 }
 
-pub fn http_router(config: &HttpConfig, registry: Registry, cancel: CancellationToken) -> Router {
+pub fn http_router(
+    config: &HttpConfig,
+    registry: Registry,
+    store: Arc<Store>,
+    cancel: CancellationToken,
+) -> Router {
     let mut allowed_hosts = vec![
         "localhost".into(),
         "127.0.0.1".into(),
@@ -47,7 +54,7 @@ pub fn http_router(config: &HttpConfig, registry: Registry, cancel: Cancellation
 
     let registry = registry.clone();
     let service = StreamableHttpService::new(
-        move || Ok(CodeSpace::new(registry.clone())),
+        move || Ok(CodeSpace::with_store(registry.clone(), store.clone())),
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default()
             .with_json_response(true)
@@ -65,11 +72,12 @@ pub fn http_router(config: &HttpConfig, registry: Registry, cancel: Cancellation
 pub async fn serve_http(
     config: HttpConfig,
     registry: Registry,
+    store: Arc<Store>,
 ) -> anyhow::Result<(std::net::SocketAddr, CancellationToken)> {
     let addr = format!("{}:{}", config.host, config.port);
     let cancel = CancellationToken::new();
     let bearer_required = config.bearer_token.is_some();
-    let router = http_router(&config, registry, cancel.clone());
+    let router = http_router(&config, registry, store, cancel.clone());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound = listener.local_addr()?;
     let child = cancel.clone();
