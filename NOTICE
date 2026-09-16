@@ -1,0 +1,23 @@
+CodeSpace
+Copyright 2026 novelKR
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+This product will reuse portions of OpenAI Codex, which is licensed
+under the Apache License, Version 2.0.
+
+  Project: https://github.com/openai/codex
+  Intended reuse: the pinned Rust crate `codex-apply-patch` (parse,
+  verify, and apply) via a git submodule at a fixed revision.
+  Candidate pin is recorded in docs/upstream-lock.md after W01.
+  File-copy vendoring of a single crate is not used because the crate
+  depends on other Codex workspace crates (including
+  `codex-exec-server`, path utilities, and tree-sitter bindings).
+
+Codex copyright: OpenAI.
+Codex license: Apache License 2.0.
+
+Any later reuse of Codex source, tests, or documentation will keep
+the Apache-2.0 notices required by that license. The pin is promoted
+to a deployment pin only after parity tests pass.
