@@ -189,12 +189,12 @@ async fn partial_failure_is_never_applied() {
         )
         .await
         .expect("apply returns a status");
-    let status = payload(&result)["status"].as_str().unwrap();
+    let body = payload(&result);
+    let status = body["status"].as_str().unwrap();
     assert_ne!(status, "applied");
     assert!(
         status == "failed_rolled_back" || status == "failed_partial" || status == "unknown",
-        "{}",
-        payload(&result)
+        "{body}"
     );
     assert_eq!(
         std::fs::read_to_string(ws.join("keep.txt")).unwrap(),

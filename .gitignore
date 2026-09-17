@@ -19,5 +19,6 @@ data/
 *.sqlite-*
 .cache/
 tmp/
+compile-out/
 .turbo/
 .direnv/
