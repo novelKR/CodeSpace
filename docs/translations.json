@@ -200,8 +200,8 @@
         "핵심-기준",
         "핵심이-요구하면-안-되는-것"
       ],
-      "source_sha256": "c57a3edebb3be12aefea40e74c9fbd5371eaa44abdecd13ca16223f1dd65763c",
-      "translation_sha256": "4541eb294871102dbbeee2c43a7371b9e3d6148e7369177019f617ff19ca9ba5"
+      "source_sha256": "26e2eaac78752ae4bf511854dcd74d3c9d6e4a5271bec17f9f992ab6f764670f",
+      "translation_sha256": "23a46cb2e6e678d169fbb52fcd2351271afcce1e9852c1736eb76c23526ceed8"
     },
     {
       "id": "behavior-differences",

@@ -85,7 +85,9 @@ MRTR을 요구하기 전에 미래의 `approval_*` 폴백이 옵니다. 대화�
 
 클라이언트 쪽 실행 의미는 그 표면에 남습니다. `initialize.instructions`는
 전역 불변식(요청 수명 ≠ 프로세스 수명, host는 OS sandbox가 아님,
-강제되지 않은 네트워크는 허가가 아님)을 말합니다. `workspace_id`가 있는
+강제되지 않은 네트워크는 허가가 아님)을 말합니다. 네트워크 정책 값을
+단정하지 않습니다. 실제 정책은 `workspace_info.execution.network`가
+보고합니다. `workspace_id`가 있는
 `workspace_info`는 `execution` 객체(권한 대 백엔드 지원,
 `files.*.available`과 `process.available`은 권한과 백엔드 지원이지
 occupancy가 아님, PTY, mutation lease, 격리, 네트워크)를 더합니다.

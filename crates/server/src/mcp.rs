@@ -67,8 +67,8 @@ fixed 24x80 PTY. PTY resize is not currently supported. Use tty=true only \
 when the command requires terminal semantics or an interactive TUI.
 
 Executable workspaces currently use host execution. Host execution is not an \
-OS command sandbox. Network access is not granted by policy and is not \
-currently OS-enforced; absence of enforcement is not permission.
+OS command sandbox. Network policy is reported by workspace_info. OS network \
+enforcement is currently none; absence of enforcement is not permission.
 
 Treat apply_patch status=unknown as possibly executed. Do not blindly retry \
 the mutation with a new operation_key.
@@ -650,9 +650,14 @@ mod tests {
             "{text}"
         );
         assert!(
+            text.contains("Network policy is reported by workspace_info"),
+            "{text}"
+        );
+        assert!(
             text.contains("absence of enforcement is not permission"),
             "{text}"
         );
+        assert!(!text.contains("not granted by policy"), "{text}");
         assert!(
             text.contains("Treat apply_patch status=unknown as possibly executed"),
             "{text}"

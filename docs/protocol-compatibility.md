@@ -85,7 +85,9 @@ work/steer checkpoint (`work_open` → `/inbox` queue → `steer_claim_next`
 
 Client-facing execution semantics stay on that surface. `initialize.instructions`
 states global invariants (request lifetime ≠ process lifetime, host is
-not an OS sandbox, unenforced network is not permission). `workspace_info`
+not an OS sandbox, unenforced network is not permission). It does not
+assert a network policy value; `workspace_info.execution.network` reports
+the effective policy. `workspace_info`
 with a `workspace_id` adds an `execution` object (permissions vs backend
 support, `files.*.available` and `process.available` as permission and
 backend support (not occupancy; `exec_command` or `apply_patch` may still
