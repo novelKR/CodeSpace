@@ -1,4 +1,6 @@
-# Upstream pin update (W13)
+# Upstream pin update
+
+[English](upstream-update.md) | [한국어](ko/upstream-update.md)
 
 Changing the Codex revision is a **deliberate release**, not `git
 submodule update --remote` to `main`. If the parity subset fails, **do

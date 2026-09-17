@@ -1,5 +1,7 @@
 # Codex reuse: product vs primitive
 
+[English](codex-reuse.md) | [한국어](ko/codex-reuse.md)
+
 CodeSpace does **not** embed the Codex agent. It also does **not**
 reimplement every execution mechanism from scratch.
 

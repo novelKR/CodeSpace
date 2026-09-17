@@ -1,5 +1,7 @@
 # Upstream lock
 
+[English](upstream-lock.md) | [한국어](ko/upstream-lock.md)
+
 CodeSpace reuses OpenAI Codex as a **pinned** git submodule. It does
 not vendor a single source file, wrap the standalone `apply_patch`
 binary as the security boundary, or follow `main`.

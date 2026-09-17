@@ -42,8 +42,8 @@
         "find-your-next-step",
         "다음-단계"
       ],
-      "source_sha256": "227dd4a8988a24e87ca6fd883c54bf3b27ed1950318793752db8310ed27ec7f6",
-      "translation_sha256": "d85cece608050fb734a47eeb5f605bb83589ffb58241cac8e240fc41cce18b8f"
+      "source_sha256": "aab2117e9bc7b9181de82b470378177d99c0d893da21666852d3656bde23ee7d",
+      "translation_sha256": "fa275f3ee817600988401c80761fb8749e77abd84a7165f54fe22da4c477dc09"
     },
     {
       "id": "getting-started",
@@ -92,7 +92,7 @@
         "이-문서가-검증하지-않는-것"
       ],
       "source_sha256": "0a31118f3079f05527613e22a57455e5c5ba0159026aa5bbcc3d7b1186461640",
-      "translation_sha256": "b3ff9c3f35400dde8c21f3ad523457990c879baf78fd141179b1de158a6ebd9e"
+      "translation_sha256": "f839d595db274cccfb2790379410062fdb8ccb90f9dc9f3811f1f942774e693f"
     },
     {
       "id": "chatgpt-connector",
@@ -146,7 +146,7 @@
         "현재-배치"
       ],
       "source_sha256": "812858a1a21d31d06f7223e198527442ad8f3c50a635ec6ce96f1cf62a90f24d",
-      "translation_sha256": "cbfabb564943fac7982bc8fe7401ef8271555eec615dbfda964d069fca1ab608"
+      "translation_sha256": "e1d82ce7a1231df987c4bdcba4bd01612810b746f3b605e5fe6073cc844e83da"
     },
     {
       "id": "execution-substrate",
@@ -178,7 +178,7 @@
         "훅과-스킬"
       ],
       "source_sha256": "497c710bdb17ebbfcdad4cca8002f0551fe45af02d929b0520b0861069dc6278",
-      "translation_sha256": "1b950ea6cd7d1155e3c310e536f3dee3a4a0b74a7179e651b7e7924cd4be0d66"
+      "translation_sha256": "a7499a65adaf2e1b6fc93aaa0bf4ed41555535b1f0da906ca1cd4449c252c003"
     },
     {
       "id": "protocol-compatibility",
@@ -222,6 +222,168 @@
       ],
       "source_sha256": "23f9a96282eee32750388bcb05cdae7ce9ad2b461d637cc67fcf4a6f1c39aa30",
       "translation_sha256": "2862a4c4839b8fce67edd2ed40b1ba9e3b0f996e4f26b4dd3bb454d865fc1941"
+    },
+    {
+      "id": "security-model",
+      "section": "security",
+      "order": 0,
+      "route": "/guide/security-model",
+      "source": "docs/security-model.md",
+      "translation": "docs/ko/security-model.md",
+      "anchors": [
+        "authentication-vs-selection",
+        "logging",
+        "patch-honesty",
+        "process-honesty",
+        "product-path-policy-always-even-if-the-crate-would-allow-it",
+        "profiles-mvp",
+        "runner-isolation-linux",
+        "security-model",
+        "trust-boundaries",
+        "workspace-registry",
+        "러너-격리-linux",
+        "로깅",
+        "보안-모델",
+        "신뢰-경계",
+        "워크스페이스-레지스트리",
+        "인증-대-선택",
+        "제품-경로-정책-크레이트가-허용해도-항상",
+        "패치-정직성",
+        "프로세스-정직성",
+        "프로필-mvp"
+      ],
+      "source_sha256": "3e551ed0eb1575787d0d5ea631ca306a7843869397a96e4a04c78ce02a3cbdd6",
+      "translation_sha256": "616620b6f6aca2f279f9f265ae275a7a45097af31394db582c1c8b02f7cd0693"
+    },
+    {
+      "id": "runner-isolation",
+      "section": "security",
+      "order": 1,
+      "route": "/guide/runner-isolation",
+      "source": "docs/runner-isolation.md",
+      "translation": "docs/ko/runner-isolation.md",
+      "anchors": [
+        "compose-픽스처가-하는-일",
+        "later-process-split",
+        "macos-docker-없음",
+        "macos-no-docker",
+        "runner-isolation",
+        "what-the-compose-fixture-does",
+        "러너-격리",
+        "이후-프로세스-분리"
+      ],
+      "source_sha256": "39464d076b856527d363c2031b04eb9228ecc0abbefac4416035fbff807e67f0",
+      "translation_sha256": "80b1342ab219fcc4dfd501f156fe86e8078cb5d107f884314f9c3a0e271d616a"
+    },
+    {
+      "id": "error-codes",
+      "section": "security",
+      "order": 2,
+      "route": "/guide/error-codes",
+      "source": "docs/error-codes.md",
+      "translation": "docs/ko/error-codes.md",
+      "anchors": [
+        "error-codes-and-transport-vs-execution",
+        "execution-error-codes-tool-results",
+        "transport-failures-no-operation",
+        "실행-오류-코드-도구-결과",
+        "오류-코드와-전송-대-실행",
+        "전송-실패-작업-없음"
+      ],
+      "source_sha256": "e5c6d7e5d6c0fc1d07a6f0e16832b2c62cafed465b2f7cd69eb524f0fdc2a029",
+      "translation_sha256": "966d153e562f2cadd83b105063c39b269bef44b13972466a82f93eb7a4f055c0"
+    },
+    {
+      "id": "codex-reuse",
+      "section": "implementation",
+      "order": 0,
+      "route": "/guide/codex-reuse",
+      "source": "docs/codex-reuse.md",
+      "translation": "docs/ko/codex-reuse.md",
+      "anchors": [
+        "apply_patch-패턴-격리이지-크레이트-너비가-아님",
+        "candidates-at-pin-6b9826e",
+        "code-allowed-authority-forbidden",
+        "codespace에-남는-것",
+        "codex-reuse-product-vs-primitive",
+        "codex-재사용-제품과-프리미티브",
+        "conditional-active-evaluation",
+        "core-vs-adapter",
+        "experimental-backend-not-now",
+        "future-environment-not-p0",
+        "internal-protocol-candidate",
+        "isolated-layer-transitive-codex-protocol",
+        "next-implementation-wp",
+        "policy-vs-mechanism",
+        "prefer-reuse-when-that-wp",
+        "reject",
+        "reuse-now-in-code",
+        "staged-take-when-those-wps-exist",
+        "the-apply_patch-pattern-isolation-not-crate-width",
+        "unit-of-reuse-is-a-subgraph",
+        "what-stays-codespace",
+        "why-supervisor-code-still-exists",
+        "감독-코드가-아직-있는-이유",
+        "거절",
+        "격리-층-전이-codex-protocol",
+        "내부-프로토콜-후보",
+        "다음-구현-wp",
+        "단계적-가져오기-그-wp가-생길-때",
+        "실험적-백엔드-지금은-아님",
+        "이후-environment-p0-아님",
+        "재사용-단위는-서브그래프",
+        "재사용-선호-그-wp가-올-때",
+        "정책-대-메커니즘",
+        "조건부-적극-평가",
+        "지금-재사용-코드에서",
+        "코드는-허용-권한은-금지",
+        "핀-6b9826e의-후보",
+        "핵심-대-어댑터"
+      ],
+      "source_sha256": "309d465d5a4b5e09ab34097a6415dc2a1e833e2fd26cf721611d3031580d6feb",
+      "translation_sha256": "f0717d1d40fa67a5117cf5eb0f5d8601d205979c1513d27545a1e1179c35c68b"
+    },
+    {
+      "id": "upstream-lock",
+      "section": "implementation",
+      "order": 1,
+      "route": "/guide/upstream-lock",
+      "source": "docs/upstream-lock.md",
+      "translation": "docs/ko/upstream-lock.md",
+      "anchors": [
+        "deployment-pin-w06",
+        "promotion-rule",
+        "upstream-lock",
+        "what-is-reused-vs-rejected",
+        "why-file-copy-vendor-is-forbidden",
+        "배포-핀-w06",
+        "승격-규칙",
+        "업스트림-고정",
+        "재사용하는-것과-거절하는-것",
+        "파일-복사-벤더가-금지인-이유"
+      ],
+      "source_sha256": "bf539fbb2d8a34af688e99c7fb2db6a748627990d9c95bd65fad9506af28a088",
+      "translation_sha256": "cae3e0c2f07b4a9942afd0f58a0dddefe790784c29dd21ac5dcbff55e74261ab"
+    },
+    {
+      "id": "upstream-update",
+      "section": "implementation",
+      "order": 2,
+      "route": "/guide/upstream-update",
+      "source": "docs/upstream-update.md",
+      "translation": "docs/ko/upstream-update.md",
+      "anchors": [
+        "checklist",
+        "forbidden",
+        "local-gate",
+        "upstream-pin-update",
+        "금지",
+        "로컬-게이트",
+        "업스트림-핀-갱신",
+        "점검-목록"
+      ],
+      "source_sha256": "4eb34720223aff91a19cc8c9c4ab7b67a8cf9261795ee4e151cdb838250f68be",
+      "translation_sha256": "c0dbe1f6ab4f3d7a8ec3ba5605c061a70b605adca505fe0f54a5b7fee7d7ab58"
     },
     {
       "id": "documentation",

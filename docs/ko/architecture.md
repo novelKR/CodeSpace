@@ -27,7 +27,7 @@ Codex V4A 패치를 적용하며, 등록된 워크스페이스에서 관리형 �
   이후 Runner 뒤에 격리된 응집력 있는 **실행 서브그래프**(hardening,
   PTY, UDS, path, filesystem, Linux sandbox, network). Codex는 구현
   의존성이며 제어 평면이 아닙니다
-  ([codex-reuse.md](../codex-reuse.md)).
+  ([codex-reuse.md](codex-reuse.md)).
 
 가져오지 않은 것: Electron, Chrome 확장, ChatGPT DOM, agents spawn,
 Desktop, 플러그인 마켓플레이스, TypeScript `apply-patch` 포트,
@@ -197,9 +197,9 @@ Bearer 미들웨어로 남고, 디스패치는 `/mcp` → rmcp 도구입니다.
 재정렬합니다. 의도 본문은 지시이지 능력이 아닙니다.
 
 내부 모델 호출 도구는 없습니다. `git_apply_patch`는 MVP 밖입니다.
-오류 코드와 전송 대 실행 규칙: [error-codes.md](../error-codes.md).
-Linux 격리 픽스처: [runner-isolation.md](../runner-isolation.md).
-Codex 제품 대 프리미티브: [codex-reuse.md](../codex-reuse.md).
+오류 코드와 전송 대 실행 규칙: [error-codes.md](error-codes.md).
+Linux 격리 픽스처: [runner-isolation.md](runner-isolation.md).
+Codex 제품 대 프리미티브: [codex-reuse.md](codex-reuse.md).
 실행 전용 기반: [execution-substrate.md](execution-substrate.md).
 
 ## ID

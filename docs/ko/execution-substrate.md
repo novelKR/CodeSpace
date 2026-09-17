@@ -33,8 +33,8 @@ CodeSpace 도구로 다시 노출하세요.
 (구현 의존성이지 아키텍처 의존성이 아님). 핵심 크레이트는
 `codex-protocol`을 포함해 Codex 타입을 가져오면 안 됩니다. 어댑터는
 가져도 됩니다. 가져오기/빼기 표:
-[codex-reuse.md](../codex-reuse.md). 핀:
-[upstream-lock.md](../upstream-lock.md) (`6b9826e`, `rust-v0.154.0`).
+[codex-reuse.md](codex-reuse.md). 핀:
+[upstream-lock.md](upstream-lock.md) (`6b9826e`, `rust-v0.154.0`).
 Codex `main` `4701aa4b`를 언급하는 조사 노트는 핀 범프가 **아닙니다**.
 의도적인 W13 갱신 뒤에 그래프를 다시 확인하세요.
 
@@ -118,7 +118,7 @@ exec_command / write_stdin / read_process / terminate_process
 `codex-exec-server-protocol`은 내부 워커 DTO 후보입니다.
 `codex-exec-server`는 실험적 백엔드(`codex-api` / `codex-config`)이며
 영구 거절은 아닙니다
-([codex-reuse.md](../codex-reuse.md)). 샌드박스 정책을 “Codex 사용자
+([codex-reuse.md](codex-reuse.md)). 샌드박스 정책을 “Codex 사용자
 설정”에서 기본값으로 두지 **마세요**. 게이트웨이는 이미 허용된 요청을
 러너 DTO로 매핑합니다. `codex-process-hardening`, `codex-utils-pty`,
 `codex-uds`(전송 프리미티브, RPC는 CodeSpace)를 선호하세요. PathSandbox
@@ -228,4 +228,4 @@ network).
 다음 **코드** WP는 기존 트레이트 뒤의 Runner **전송**으로 남으며,
 `apply_patch`를 게이트웨이 RPC로 쪼개지 않습니다. Sandbox / PTY /
 network는 기본 자체 OS 스택이 아닙니다
-([codex-reuse.md](../codex-reuse.md)).
+([codex-reuse.md](codex-reuse.md)).
