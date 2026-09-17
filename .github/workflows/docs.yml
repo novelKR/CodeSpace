@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT
+name: Documentation site
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: docs-site-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  docs-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+      - run: python3 -B scripts/check_docs.py
+      - run: npm ci --prefix docs-site --ignore-scripts
+      - run: npm test --prefix docs-site
+      - run: npm run build --prefix docs-site
+      - run: python3 -B docs-site/scripts/site.py check
+      - name: Require clean exact-commit publication provenance
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main' && github.repository == 'novelKR/CodeSpace'
+        run: python3 -B docs-site/scripts/site.py check --commit "$GITHUB_SHA"
+      - name: Retain verified site for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: docs-site
+          path: .local/docs-site/dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Package the same verified directory for Pages
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main' && github.repository == 'novelKR/CodeSpace'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          name: github-pages
+          path: .local/docs-site/dist/
+          retention-days: 14
+  docs-pages:
+    needs: docs-build
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' && github.repository == 'novelKR/CodeSpace'
+    permissions:
+      pages: write
+      id-token: write
+    uses: novelKR/docs-actions/.github/workflows/reusable-pages-deploy.yml@95595986ae945fd9fabc4632e6e370adf6709ddf
+    with:
+      artifact-name: github-pages
+      publication-branch: main

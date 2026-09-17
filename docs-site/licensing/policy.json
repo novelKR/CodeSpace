@@ -1,0 +1,28 @@
+{
+  "schema": "docs-actions-web-notices/v1",
+  "packages": {
+    "@vue/reactivity": {"license":"MIT","file":"LICENSE","sha256":"1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175"},
+    "@vue/runtime-core": {"license":"MIT","file":"LICENSE","sha256":"1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175"},
+    "@vue/runtime-dom": {"license":"MIT","file":"LICENSE","sha256":"1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175"},
+    "@vue/shared": {"license":"MIT","file":"LICENSE","sha256":"1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175"},
+    "vue": {"license":"MIT","file":"LICENSE","sha256":"1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175"},
+    "@vueuse/core": {"license":"MIT","file":"LICENSE","sha256":"0f844b1160603552a01662ac2999c14e5fb4df487e65619b9ed4406e43eb3c0b"},
+    "@vueuse/integrations": {"license":"MIT","file":"LICENSE","sha256":"0f844b1160603552a01662ac2999c14e5fb4df487e65619b9ed4406e43eb3c0b"},
+    "@vueuse/shared": {"license":"MIT","file":"LICENSE","sha256":"0f844b1160603552a01662ac2999c14e5fb4df487e65619b9ed4406e43eb3c0b"},
+    "focus-trap": {"license":"MIT","file":"LICENSE","sha256":"b8d0347312c547c22802b39e495bc8f75d1a27bd69a51950fe5dcf8529b05070"},
+    "mark.js": {"license":"MIT","file":"LICENSE","sha256":"402936bcc8f1b6947750eb9193183d7d0c4dbca3c0ba06398571d94ee85c24be"},
+    "minisearch": {"license":"MIT","file":"LICENSE.txt","sha256":"70d37354d6395629fb99edb28cb37a5d356ffa24a48cd02a5def5b83a300a899"},
+    "tabbable": {"license":"MIT","file":"LICENSE","sha256":"8e714750725e75c8b31172ef84c0805f94873f86e3b5cfca8a948553f0778fa1"},
+    "vitepress": {"license":"MIT","file":"LICENSE","sha256":"6db2f08c2112251083b26df3117dde40c5589d337195953531e7e677d1a600e5"},
+    "@docsearch/css": {"license":"MIT","file":"docsearch-3.8.2-LICENSE","sha256":"1e605499213e06118cc81abc00b32bbb33ead185d9b0e190f2662588e8806f02","supplement":true,"source":"https://github.com/algolia/docsearch/blob/a425f6f4e5714e9454ea172dc5ada5e4a0da27af/LICENSE"}
+  },
+  "icons": {
+    "asset": "vitepress/dist/client/theme-default/styles/icons.css",
+    "sha256": "9a66e7f9b1f32899dfdcbf5454b39ade90246bb88cece3f913a0855714719449",
+    "source": "https://github.com/vuejs/vitepress/blob/1fc537b78cda287fa23c1129a815ad9455fd8106/src/client/theme-default/styles/icons.css",
+    "notices": [
+      {"name":"Lucide","file":"lucide-LICENSE","sha256":"1e7290b35280a048667bbf0ebabac1c7fd52a75300e8b2946ac165715997f2bc","source":"https://github.com/lucide-icons/lucide/blob/1eee03451a5447069aceaaafbb1967fc78670bf8/LICENSE"},
+      {"name":"Feather","file":"feather-LICENSE","sha256":"308028e93fcf84972523cdf6e616f73168546b4953895f516d01287f16fe7bee","source":"https://github.com/feathericons/feather/blob/a299aad93bffe2b85ad49d49aa04aff735d52a65/LICENSE"}
+    ]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema": "codespace-docs-site-provenance/v1",
+  "site_implementation_license": "MIT",
+  "documentation_license": "Apache-2.0",
+  "source": {
+    "repository": "novelKR/docs-actions",
+    "commit": "95595986ae945fd9fabc4632e6e370adf6709ddf",
+    "scope": "Copied MIT docs-site toolchain: VitePress, local search, Copy Page, verified output, loopback preview. CodeSpace strings, base path, Apache-2.0 project license, and translations.json registry are local adaptations."
+  },
+  "reference": {
+    "repository": "novelKR/agent-response-gateway",
+    "scope": "Editorial form only: bilingual pairs, stable IDs, groups, recorded hashes. No AGPL docs-site implementation copied."
+  },
+  "third_party_originals": {
+    "location": "licensing/originals/",
+    "terms": "Original MIT/ISC notices retain their own copyrights and terms; sources and hashes in licensing/policy.json."
+  },
+  "build_toolchain": {
+    "node": "24.21.0",
+    "npm": "11.19.0",
+    "vitepress": "1.6.4",
+    "vue": "3.5.42",
+    "shiki": "2.5.0"
+  },
+  "note": "Package and notice digests are integrity evidence, not a commercial-rights approval."
+}

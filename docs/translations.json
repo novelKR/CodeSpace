@@ -1,0 +1,86 @@
+{
+  "schema": "codespace-documentation/v1",
+  "review_method": "paired-editorial-review; hashes detect drift, not semantic equivalence",
+  "groups": [
+    {
+      "id": "start",
+      "en": "Get started",
+      "ko": "시작하기"
+    },
+    {
+      "id": "architecture",
+      "en": "Architecture",
+      "ko": "아키텍처"
+    },
+    {
+      "id": "security",
+      "en": "Security and execution",
+      "ko": "보안과 실행"
+    },
+    {
+      "id": "implementation",
+      "en": "Implementation dependencies",
+      "ko": "구현 의존성"
+    },
+    {
+      "id": "project",
+      "en": "Project",
+      "ko": "프로젝트"
+    }
+  ],
+  "documents": [
+    {
+      "id": "overview",
+      "section": "start",
+      "order": 0,
+      "route": "/guide/overview",
+      "source": "docs/index.md",
+      "translation": "docs/ko/index.md",
+      "anchors": [
+        "codespace-documentation",
+        "codespace-문서",
+        "find-your-next-step",
+        "다음-단계"
+      ],
+      "source_sha256": "ddadbb8f0787233b40a74fca769b54b28d5f3d28453721265a30fa9a9cd8554e",
+      "translation_sha256": "ebb4383530307d6b84032198e6675e22f5043ff004916debb041e473f387be91"
+    },
+    {
+      "id": "getting-started",
+      "section": "start",
+      "order": 1,
+      "route": "/guide/getting-started",
+      "source": "README.md",
+      "translation": "README.ko.md",
+      "anchors": [
+        "codespace",
+        "license",
+        "run",
+        "status",
+        "라이선스",
+        "상태",
+        "실행"
+      ],
+      "source_sha256": "6066cd16dfc9559987a276b484cb2154384e46497b20b078e9263b17cfe5a905",
+      "translation_sha256": "cef4867649f9052da08158a3ce6e941b9e882e77179c799d6afc4c3575d61201"
+    },
+    {
+      "id": "documentation",
+      "section": "project",
+      "order": 0,
+      "route": "/guide/documentation",
+      "source": "docs/documentation.md",
+      "translation": "docs/ko/documentation.md",
+      "anchors": [
+        "documentation-site",
+        "public-documentation-and-the-documentation-site",
+        "publication",
+        "게시",
+        "공개-문서와-문서-사이트",
+        "문서-사이트"
+      ],
+      "source_sha256": "7b1b0c3c3a3ce0931b81c5acba3b097c2e4695852743ee431cea0e8711a2d24a",
+      "translation_sha256": "bca6da943b0b5b73b1850da7f88ec7a3e91fe011e2546930156cc80996ece4da"
+    }
+  ]
+}
