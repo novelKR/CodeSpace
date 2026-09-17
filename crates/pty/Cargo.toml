@@ -1,0 +1,23 @@
+# Isolated workspace (excluded from the repo root workspace) so the pinned
+# Codex crates keep their own workspace.dependencies.
+
+[package]
+name = "codespace-pty"
+version = "0.6.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.88"
+publish = false
+description = "Isolated Codex PTY adapter: interactive spawn without leaking Codex types"
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[dependencies]
+codex-utils-pty = { path = "../../third_party/codex/codex-rs/utils/pty" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "process", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "process", "time"] }

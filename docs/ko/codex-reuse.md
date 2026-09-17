@@ -47,6 +47,8 @@ CodeSpace Core          ← only authorization authority
           │  crates/patch (codespace-patch)
           │  crates/codex-runtime (codespace-codex-runtime)
           │    process-hardening + UDS worker; opt-in
+          │  crates/pty (codespace-pty)
+          │    interactive spawn; runner API에 Codex 타입 없음
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -93,7 +95,7 @@ CodeSpace core
 
 
 isolated adapter (crates/patch today;
-crates/codex-runtime today)
+crates/codex-runtime today; crates/pty today)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
@@ -138,8 +140,8 @@ Runner helper
 - 핀은 [upstream-lock.md](upstream-lock.md)에 남습니다
   (`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`).
 - **격리된** Cargo 워크스페이스에서의 경로 의존성이며 저장소 루트가
-  아닙니다. 오늘: `crates/patch`와 `crates/codex-runtime`
-  (`codespace-codex-runtime`).
+  아닙니다. 오늘: `crates/patch`, `crates/codex-runtime`
+  (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`).
 - NOTICE + Apache-2.0 귀속.
 - 제품 정책은 서브그래프 앞과 뒤에 남습니다.
 - Codex 워크스페이스에서 크레이트를 파일 복사하지 마세요.
@@ -160,7 +162,7 @@ checkout과 cargo가 지배합니다.
 | core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime` | tiny | adapter in the update range; allowlist only |
+| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty` | tiny | adapter in the update range; allowlist only |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 갱신 범위는 `SCAN_BASE`(PR base / 이전 `main`)입니다. 범위를 모르면
@@ -172,7 +174,8 @@ checkout과 cargo가 지배합니다.
 매니페스트는 승인된 서브그래프만 허용합니다(오늘 `crates/patch`:
 `codex-apply-patch`, apply-patch 워크스페이스 그래프로서
 `codex-exec-server`, `codex-utils-path-uri`, `codex-process-hardening`;
-`crates/codex-runtime`: `codex-process-hardening`, `codex-uds`). 소스는 에이전트/모델
+`crates/codex-runtime`: `codex-process-hardening`, `codex-uds`;
+`crates/pty`: `codex-utils-pty`). 소스는 에이전트/모델
 패턴을 유지합니다(`api.openai.com`, Responses, `codex-login`,
 `codex-core`, `codex-app-server`, `async-openai`). 크레이트 이름을
 언급하는 주석은 cargo 의존성이 아닙니다.
@@ -194,8 +197,9 @@ login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전�
 
 ## 단계적 가져오기 (그 WP가 생길 때)
 
-문서화된 순서입니다. **이 WP에서 코드로 가져옴:** process-hardening과
-UDS. **아직 안 가져옴:** PTY, filesystem, linux-sandbox, network.
+문서화된 순서입니다. **이 WP에서 코드로 가져옴:** process-hardening, UDS,
+PTY(`crates/pty` → `codex-utils-pty`). **아직 안 가져옴:** filesystem,
+linux-sandbox, network.
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -220,14 +224,13 @@ Codex `main`이 아니라 핀의 `Cargo.toml` 파일로 판단합니다.
 
 **`codex-uds`** via `codespace-codex-runtime` bind. RPC는 CodeSpace.
 
+**`codex-utils-pty`** via `crates/pty` (`codespace-pty`).
+Unix: `portable-pty`, `tokio`, `libc`. 기본 크기 24x80. 연결해도 PTY
+MCP 도구가 추가되지는 **않습니다**. `exec_command`에 선택적 `tty`(기본
+false)가 있습니다. 게이트웨이가 여전히 `process_id`를 발급합니다.
+Resize는 Runner/MCP 표면에 올리지 않습니다(P1).
+
 ### 재사용 선호 (그 WP가 올 때)
-
-**`codex-utils-pty`**
-([`codex-rs/utils/pty/Cargo.toml`](../../third_party/codex/codex-rs/utils/pty/Cargo.toml))
-
-Unix: `portable-pty`, `tokio`, `libc`. CodeSpace PTY보다 업스트림을
-선호하세요. 연결해도 PTY MCP 도구가 추가되지는 **않습니다**.
-게이트웨이가 여전히 `process_id`를 발급합니다.
 
 **`codex-uds`** (이미 `codespace-codex-runtime`에 있음)
 ([`codex-rs/uds/Cargo.toml`](../../third_party/codex/codex-rs/uds/Cargo.toml))
@@ -341,12 +344,13 @@ rollout, history. 제품 exec 흐름이지 `spawn`이 아닙니다.
 - 호스트/프로세스 내부 프로세스 감독이 기본. UDS 워커는 선택적.
 - 컨테이너 수명주기와 워크스페이스 바인드 마운트 **정책**.
 - 격리된 어댑터 워크스페이스(`crates/patch`,
-  `crates/codex-runtime` / `codespace-codex-runtime`).
+  `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
+  `codespace-pty`).
 
 ## 다음 구현 WP
 
 다음 **코드** 작업 패키지는 기존 `Runner` 트레이트 뒤의 남은 실행
-서브그래프(PTY, filesystem, linux-sandbox, network)입니다.
+서브그래프(filesystem, linux-sandbox, network)입니다.
 `apply_patch`를 게이트웨이가 구동하는 여러 RPC로 쪼개면 안 됩니다.
 
 기본으로 자체 PTY / Landlock / seccomp 스택을 두지 마세요.
@@ -358,4 +362,5 @@ rollout, history. 제품 exec 흐름이지 `spawn`이 아닙니다.
 
 남은 도메인 확장(스케줄러 큐, 승인 도구)은
 [execution-substrate.md](execution-substrate.md)에서 순서를 정합니다.
-이 작업 패키지에서 실제 MCP 스키마는 바뀌지 않습니다.
+실제 MCP 도구 이름은 그대로입니다. `exec_command`에 선택적 `tty`가
+생겼습니다.

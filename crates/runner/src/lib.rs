@@ -177,7 +177,7 @@ impl Runner for InProcessRunner {
         ws: &Workspace,
         req: RunnerExecRequest,
     ) -> Result<RunnerExecResult, RunnerError> {
-        self.spawn_host(ws, req).map_err(RunnerError::from)
+        self.spawn_host(ws, req).await.map_err(RunnerError::from)
     }
 
     async fn write_stdin(&self, req: RunnerWriteStdin) -> Result<(), RunnerError> {

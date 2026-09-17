@@ -55,7 +55,7 @@ P0 UDS는 1:1입니다. 게이트웨이가 워커 자식을 소유합니다(`kil
 `process_id`는 살아남지 않으며 재연결은 없습니다. 러너 `Replay`는 같은
 연결에서만 동작합니다. 그 **전송**은 구현되어 있으며 선택적입니다
 (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). **같은 호스트**이며
-Linux 격리를 주장하지 않습니다. 다음 WP는 PTY / filesystem /
+Linux 격리를 주장하지 않습니다. 다음 WP는 filesystem /
 linux-sandbox / network이며 두 번째 전송 재작성이 아닙니다. 소켓
 프리미티브로 `codex-uds`를 선호하세요. Runner RPC는 CodeSpace 계약으로
 남습니다.

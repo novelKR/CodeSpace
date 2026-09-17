@@ -1,5 +1,5 @@
 use codespace_domain::{
-    TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_READ_PROCESS, TOOL_TERMINATE_PROCESS,
+    LIVE_TOOLS, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_READ_PROCESS, TOOL_TERMINATE_PROCESS,
     TOOL_WRITE_STDIN,
 };
 use codespace_server::config::{HttpConfig, MCP_PATH};
@@ -560,4 +560,83 @@ async fn http_disconnect_is_not_process_death() {
         )
         .await;
     client2.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
+    let (_root, cfg) = write_workspace("workspace-write");
+    let client = spawn_client(&cfg, false, &[]).await;
+    let tools = client.list_all_tools().await.expect("tools/list");
+    let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+    names.sort();
+    let mut expected = LIVE_TOOLS.to_vec();
+    expected.sort();
+    assert_eq!(names, expected, "LIVE_TOOLS must stay unchanged");
+
+    let exec = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == TOOL_EXEC_COMMAND)
+        .expect("exec_command");
+    let schema = serde_json::to_value(&exec.input_schema).unwrap();
+    let dumped = schema.to_string();
+    assert!(
+        dumped.contains("\"tty\""),
+        "exec_command input schema must include tty: {dumped}"
+    );
+    assert!(
+        !dumped.contains("environment_id"),
+        "exec_command must not grow environment_id: {dumped}"
+    );
+    assert!(
+        !dumped.contains("\"cwd\""),
+        "exec_command must not grow cwd: {dumped}"
+    );
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn exec_tty_true_sees_a_tty() {
+    let (_root, cfg) = write_workspace("workspace-write");
+    let client = spawn_client(&cfg, false, &[]).await;
+    let started = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sh", "-c", "if [ -t 0 ]; then echo ISATTY; else echo NOTTY; fi"],
+                "tty": true
+            })),
+        )
+        .await
+        .expect("exec tty");
+    let pid = payload(&started)["process_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut chunk = String::new();
+    for _ in 0..50 {
+        let read = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_READ_PROCESS)
+                    .with_arguments(object!({ "process_id": pid, "cursor": 0 })),
+            )
+            .await
+            .expect("read");
+        let out = payload(&read);
+        chunk = out["chunk"].as_str().unwrap_or("").to_string();
+        if out["eof"] == true || chunk.contains("ISATTY") {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        chunk.contains("ISATTY"),
+        "exec_command tty:true should attach a PTY, got {chunk:?}"
+    );
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_TERMINATE_PROCESS)
+                .with_arguments(object!({ "process_id": pid })),
+        )
+        .await;
+    client.cancel().await.expect("cancel");
 }

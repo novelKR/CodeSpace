@@ -228,3 +228,48 @@ async fn closed_socket_before_call_is_before_dispatch() {
         "{err:?}"
     );
 }
+
+#[tokio::test]
+async fn uds_tty_exec_sees_a_tty() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    let dir = tempdir().unwrap();
+    let ws = workspace(dir.path());
+    let process_id = ProcessId("proc-uds-tty".into());
+    let mut req = RunnerExecRequest::for_host(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "if [ -t 0 ]; then echo ISATTY; else echo NOTTY; fi".into(),
+        ],
+        process_id.clone(),
+        Profile::WorkspaceWrite,
+    );
+    req.tty = true;
+    runner.exec(&ws, req).await.unwrap();
+    let mut chunk = String::new();
+    for _ in 0..50 {
+        let result = runner
+            .read_process(codespace_runner::RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        chunk = result.chunk;
+        if result.eof {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        chunk.contains("ISATTY"),
+        "UDS worker should spawn a PTY when tty is true, got {chunk:?}"
+    );
+}

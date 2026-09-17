@@ -167,7 +167,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. Returns a server-minted process_id. Does not use a login shell. Request end does not kill the process. Host process today."
+        description = "Start a managed argv in the workspace cwd. Returns a server-minted process_id. Does not use a login shell. Request end does not kill the process. Host process today. Optional tty (default false) attaches a PTY at 24x80; omitted or false uses pipes."
     )]
     async fn exec_command(
         &self,
@@ -189,14 +189,9 @@ impl CodeSpace {
         self.store
             .mark_shell_busy(&params.workspace_id.0, &process_id.0)
             .map_err(err_json)?;
-        match self
-            .runner
-            .exec(
-                ws,
-                RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile),
-            )
-            .await
-        {
+        let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
+        req.tty = params.tty;
+        match self.runner.exec(ws, req).await {
             Ok(result) => Ok(Json(ExecCommandResult {
                 process_id: result.process_id,
                 coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
@@ -585,6 +580,7 @@ mod tests {
                 workspace_id: WorkspaceId("demo".into()),
                 command: vec!["/bin/echo".into(), "x".into()],
                 work_id: None,
+                tty: false,
             }))
             .await
             .unwrap();
@@ -628,6 +624,7 @@ mod tests {
             workspace_id: WorkspaceId("demo".into()),
             command: vec!["/bin/echo".into(), "done".into()],
             work_id: None,
+            tty: false,
         }))
         .await
         .unwrap();

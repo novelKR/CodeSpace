@@ -1,16 +1,19 @@
 //! Managed workspace processes. Request lifetime is not process lifetime.
-//! Spawns host `tokio::process::Command`. UDS dispatch lives in
-//! `UdsRunner`; this supervisor stays the host exec engine.
+//! Pipe spawn uses host `tokio::process::Command`. `tty: true` uses the
+//! isolated `codespace-pty` adapter. UDS dispatch lives in `UdsRunner`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use codespace_domain::{ErrorBody, ErrorCode, ProcessId};
 use codespace_policy::Workspace;
+use codespace_pty::PtySession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::{
@@ -58,10 +61,29 @@ pub struct InProcessRunner {
 
 struct Slot {
     workspace_id: String,
-    child: Arc<Mutex<Child>>,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    io: SessionIo,
     output: Arc<Mutex<OutputBuf>>,
     completed_at: Arc<Mutex<Option<Instant>>>,
+}
+
+enum SessionIo {
+    Pipe {
+        child: Arc<Mutex<Child>>,
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+    },
+    Pty {
+        session: Arc<PtySession>,
+        writer: mpsc::Sender<Vec<u8>>,
+    },
+}
+
+struct SpawnCtx {
+    cwd: PathBuf,
+    cap: usize,
+    timeout: Duration,
+    output: Arc<Mutex<OutputBuf>>,
+    completed_at: Arc<Mutex<Option<Instant>>>,
+    process_id: String,
 }
 
 #[derive(Default)]
@@ -112,18 +134,12 @@ impl InProcessRunner {
         }
     }
 
-    pub fn spawn_host(
+    pub async fn spawn_host(
         &self,
         ws: &Workspace,
         req: RunnerExecRequest,
     ) -> Result<RunnerExecResult, ErrorBody> {
         ws.require_host_execution()?;
-        if req.tty {
-            return Err(ErrorBody::new(
-                ErrorCode::Unauthorized,
-                "PTY is not implemented",
-            ));
-        }
         if req.argv.is_empty() || req.argv[0].is_empty() {
             return Err(ErrorBody::new(
                 ErrorCode::InvalidPatch,
@@ -135,6 +151,35 @@ impl InProcessRunner {
         let cwd = match req.cwd {
             RunnerCwd::WorkspaceRoot => ws.root.clone(),
         };
+        let ctx = SpawnCtx {
+            cwd,
+            cap,
+            timeout,
+            output: Arc::new(Mutex::new(OutputBuf::default())),
+            completed_at: Arc::new(Mutex::new(None)),
+            process_id: req.process_id.0.clone(),
+        };
+        if req.tty {
+            self.spawn_pty(ws, req, ctx).await
+        } else {
+            self.spawn_pipe(ws, req, ctx)
+        }
+    }
+
+    fn spawn_pipe(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+        ctx: SpawnCtx,
+    ) -> Result<RunnerExecResult, ErrorBody> {
+        let SpawnCtx {
+            cwd,
+            cap,
+            timeout,
+            output,
+            completed_at,
+            process_id,
+        } = ctx;
         let mut child = Command::new(&req.argv[0]);
         if req.argv.len() > 1 {
             child.args(&req.argv[1..]);
@@ -161,12 +206,12 @@ impl InProcessRunner {
         let stdout = spawned.stdout.take();
         let stderr = spawned.stderr.take();
         let child = Arc::new(Mutex::new(spawned));
-        let output = Arc::new(Mutex::new(OutputBuf::default()));
-        let completed_at = Arc::new(Mutex::new(None));
         let slot = Slot {
             workspace_id: ws.id.0.clone(),
-            child: child.clone(),
-            stdin: Arc::new(Mutex::new(stdin)),
+            io: SessionIo::Pipe {
+                child: child.clone(),
+                stdin: Arc::new(Mutex::new(stdin)),
+            },
             output: output.clone(),
             completed_at: completed_at.clone(),
         };
@@ -180,7 +225,7 @@ impl InProcessRunner {
                     "live process limit reached",
                 ));
             }
-            map.insert(req.process_id.0.clone(), slot);
+            map.insert(process_id.clone(), slot);
         }
 
         let out_handle = stdout.map(|out| {
@@ -195,7 +240,7 @@ impl InProcessRunner {
         let wait_child = child.clone();
         let wait_out = output.clone();
         let wait_release = self.on_release.clone();
-        let wait_process = req.process_id.0.clone();
+        let wait_process = process_id;
         tokio::spawn(async move {
             reap_child(wait_child).await;
             join_pump(out_handle).await;
@@ -227,28 +272,142 @@ impl InProcessRunner {
         })
     }
 
+    async fn spawn_pty(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+        ctx: SpawnCtx,
+    ) -> Result<RunnerExecResult, ErrorBody> {
+        let SpawnCtx {
+            cwd,
+            cap,
+            timeout,
+            output,
+            completed_at,
+            process_id,
+        } = ctx;
+        let mut env = HashMap::new();
+        if req.env.use_runner_defaults {
+            for (key, value) in runner_local_exec_env(&cwd) {
+                env.insert(key, value);
+            }
+            env.insert("TERM".into(), "xterm".into());
+        }
+        for (key, value) in &req.env.overrides {
+            env.insert(key.clone(), value.clone());
+        }
+        let args = if req.argv.len() > 1 {
+            req.argv[1..].to_vec()
+        } else {
+            Vec::new()
+        };
+        let mut session = codespace_pty::spawn(&req.argv[0], &args, &cwd, &env)
+            .await
+            .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err))?;
+        let stdout = session
+            .take_stdout()
+            .ok_or_else(|| ErrorBody::new(ErrorCode::InvalidPatch, "PTY stdout missing"))?;
+        let exit = session
+            .take_exit()
+            .ok_or_else(|| ErrorBody::new(ErrorCode::InvalidPatch, "PTY exit missing"))?;
+        let writer = session.writer();
+        let session = Arc::new(session);
+        let slot = Slot {
+            workspace_id: ws.id.0.clone(),
+            io: SessionIo::Pty {
+                session: session.clone(),
+                writer,
+            },
+            output: output.clone(),
+            completed_at: completed_at.clone(),
+        };
+        {
+            let mut map = self.inner.lock().expect("runner");
+            self.evict_completed(&mut map);
+            if live_count(&map) >= max_processes() {
+                session.kill();
+                return Err(ErrorBody::new(
+                    ErrorCode::WorkspaceBusy,
+                    "live process limit reached",
+                ));
+            }
+            map.insert(process_id.clone(), slot);
+        }
+
+        let out_handle = {
+            let buf = output.clone();
+            Some(tokio::spawn(
+                async move { pump_chunks(stdout, buf, cap).await },
+            ))
+        };
+        let wait_out = output.clone();
+        let wait_release = self.on_release.clone();
+        let wait_process = process_id;
+        tokio::spawn(async move {
+            let _ = exit.await;
+            join_pump(out_handle).await;
+            if let Ok(mut buf) = wait_out.lock() {
+                buf.eof = true;
+            }
+            if let Ok(mut done) = completed_at.lock() {
+                *done = Some(Instant::now());
+            }
+            wait_release(&wait_process);
+        });
+
+        let timeout_session = session;
+        let timeout_out = output;
+        tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            if !timeout_session.has_exited() {
+                timeout_session.kill();
+                if let Ok(mut buf) = timeout_out.lock() {
+                    buf.timed_out = true;
+                }
+            }
+        });
+
+        Ok(RunnerExecResult {
+            process_id: req.process_id,
+        })
+    }
+
     pub async fn write_host_stdin(&self, req: RunnerWriteStdin) -> Result<(), ErrorBody> {
-        let stdin = {
+        enum WriteTarget {
+            Pipe(Arc<Mutex<Option<ChildStdin>>>),
+            Pty(mpsc::Sender<Vec<u8>>),
+        }
+        let target = {
             let mut map = self.inner.lock().expect("runner");
             self.evict_completed(&mut map);
             let slot = map
                 .get(&req.process_id.0)
                 .ok_or_else(|| missing(&req.process_id.0))?;
-            slot.stdin.clone()
+            match &slot.io {
+                SessionIo::Pipe { stdin, .. } => WriteTarget::Pipe(stdin.clone()),
+                SessionIo::Pty { writer, .. } => WriteTarget::Pty(writer.clone()),
+            }
         };
-        let mut pipe = stdin
-            .lock()
-            .expect("stdin")
-            .take()
-            .ok_or_else(|| ErrorBody::new(ErrorCode::ProcessNotFound, "stdin is closed"))?;
-        let result = async {
-            pipe.write_all(req.data.as_bytes()).await?;
-            pipe.flush().await?;
-            Ok::<(), std::io::Error>(())
+        match target {
+            WriteTarget::Pipe(stdin) => {
+                let mut pipe =
+                    stdin.lock().expect("stdin").take().ok_or_else(|| {
+                        ErrorBody::new(ErrorCode::ProcessNotFound, "stdin is closed")
+                    })?;
+                let result = async {
+                    pipe.write_all(req.data.as_bytes()).await?;
+                    pipe.flush().await?;
+                    Ok::<(), std::io::Error>(())
+                }
+                .await;
+                stdin.lock().expect("stdin").replace(pipe);
+                result.map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))
+            }
+            WriteTarget::Pty(writer) => writer
+                .send(req.data.into_bytes())
+                .await
+                .map_err(|_| ErrorBody::new(ErrorCode::ProcessNotFound, "stdin is closed")),
         }
-        .await;
-        stdin.lock().expect("stdin").replace(pipe);
-        result.map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))
     }
 
     pub fn read_host_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, ErrorBody> {
@@ -286,13 +445,7 @@ impl InProcessRunner {
         let slot = map
             .get(&process_id.0)
             .ok_or_else(|| missing(&process_id.0))?;
-        let mut child = slot.child.lock().expect("child");
-        if child.try_wait().ok().flatten().is_some() {
-            return Ok(());
-        }
-        child
-            .start_kill()
-            .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+        request_kill(slot)?;
         Ok(())
     }
 
@@ -310,18 +463,9 @@ impl InProcessRunner {
             if slot.workspace_id != workspace_id {
                 continue;
             }
-            let eof = slot.output.lock().map(|buf| buf.eof).unwrap_or(true);
-            if eof {
-                continue;
+            if request_kill(slot)? {
+                killed += 1;
             }
-            let mut child = slot.child.lock().expect("child");
-            if child.try_wait().ok().flatten().is_some() {
-                continue;
-            }
-            child
-                .start_kill()
-                .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
-            killed += 1;
         }
         Ok(killed)
     }
@@ -342,6 +486,41 @@ async fn reap_child(child: Arc<Mutex<Child>>) {
 async fn join_pump(handle: Option<JoinHandle<()>>) {
     if let Some(handle) = handle {
         let _ = handle.await;
+    }
+}
+
+fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
+    match &slot.io {
+        SessionIo::Pipe { child, .. } => {
+            let mut child = child.lock().expect("child");
+            if child.try_wait().ok().flatten().is_some() {
+                return Ok(false);
+            }
+            child
+                .start_kill()
+                .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+            Ok(true)
+        }
+        SessionIo::Pty { session, .. } => {
+            if session.has_exited() {
+                return Ok(false);
+            }
+            session.kill();
+            Ok(true)
+        }
+    }
+}
+
+async fn pump_chunks(mut rx: mpsc::Receiver<Vec<u8>>, output: Arc<Mutex<OutputBuf>>, cap: usize) {
+    while let Some(chunk) = rx.recv().await {
+        let mut out = output.lock().expect("output");
+        out.total += chunk.len() as u64;
+        out.bytes.extend_from_slice(&chunk);
+        if out.bytes.len() > cap {
+            let extra = out.bytes.len() - cap;
+            out.bytes.drain(..extra);
+            out.dropped += extra as u64;
+        }
     }
 }
 
@@ -390,6 +569,33 @@ mod tests {
     use codespace_policy::Workspace;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
+
+    fn isatty_argv() -> Vec<String> {
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "if [ -t 0 ]; then echo ISATTY; else echo NOTTY; fi".into(),
+        ]
+    }
+
+    async fn wait_chunk(runner: &InProcessRunner, process_id: &ProcessId) -> String {
+        let mut chunk = String::new();
+        for _ in 0..50 {
+            let result = runner
+                .read_process(RunnerReadProcess {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                })
+                .await
+                .unwrap();
+            chunk = result.chunk;
+            if result.eof {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        chunk
+    }
 
     fn workspace(root: &std::path::Path) -> Workspace {
         Workspace::new(
@@ -561,20 +767,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tty_exec_is_rejected() {
+    async fn tty_true_stdin_is_a_tty() {
         let dir = tempdir().unwrap();
         let ws = workspace(dir.path());
         let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-tty".into());
+        let mut req =
+            RunnerExecRequest::for_host(isatty_argv(), process_id.clone(), Profile::WorkspaceWrite);
+        req.tty = true;
+        runner.exec(&ws, req).await.unwrap();
+        let chunk = wait_chunk(&runner, &process_id).await;
+        assert!(
+            chunk.contains("ISATTY"),
+            "tty:true should see a TTY, got {chunk:?}"
+        );
+        assert!(!chunk.contains("NOTTY"), "chunk={chunk:?}");
+    }
+
+    #[tokio::test]
+    async fn tty_false_stdin_is_a_pipe() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-pipe".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    isatty_argv(),
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        let chunk = wait_chunk(&runner, &process_id).await;
+        assert!(
+            chunk.contains("NOTTY"),
+            "omitted/false tty should be a pipe, got {chunk:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tty_write_stdin_roundtrip() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-pty-io".into());
         let mut req = RunnerExecRequest::for_host(
-            vec!["/bin/echo".into()],
-            ProcessId("proc-tty".into()),
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "IFS= read -r line; printf 'got:%s\\n' \"$line\"".into(),
+            ],
+            process_id.clone(),
             Profile::WorkspaceWrite,
         );
         req.tty = true;
-        let err = runner.exec(&ws, req).await.unwrap_err();
-        assert_eq!(
-            err.as_execution().map(|body| body.code),
-            Some(ErrorCode::Unauthorized)
+        runner.exec(&ws, req).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        runner
+            .write_stdin(RunnerWriteStdin {
+                process_id: process_id.clone(),
+                data: "hello\n".into(),
+            })
+            .await
+            .unwrap();
+        let chunk = wait_chunk(&runner, &process_id).await;
+        assert!(
+            chunk.contains("hello"),
+            "PTY write_stdin/read_process roundtrip, got {chunk:?}"
         );
     }
 }
