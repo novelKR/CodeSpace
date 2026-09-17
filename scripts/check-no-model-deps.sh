@@ -55,6 +55,14 @@ runtime_key_allowed() {
   esac
 }
 
+# crates/pty: interactive spawn only.
+pty_key_allowed() {
+  case "$1" in
+    codex-utils-pty) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -67,6 +75,7 @@ scan_root_manifest=0
 scan_tests=0
 scan_patch=0
 scan_runtime=0
+scan_pty=0
 scan_all=0
 
 is_zero_sha() {
@@ -85,6 +94,9 @@ want_all() {
   scan_patch=1
   if [[ -d crates/codex-runtime ]]; then
     scan_runtime=1
+  fi
+  if [[ -d crates/pty ]]; then
+    scan_pty=1
   fi
 }
 
@@ -125,6 +137,11 @@ else
             scan_runtime=1
           fi
           ;;
+        crates/pty|crates/pty/*)
+          if [[ -d crates/pty ]]; then
+            scan_pty=1
+          fi
+          ;;
       esac
     done < <(git diff --name-only "$merge_base"...HEAD)
   else
@@ -141,7 +158,8 @@ if [[ "$scan_all" -eq 0 &&
       "$scan_server" -eq 0 &&
       "$scan_root_manifest" -eq 0 &&
       "$scan_patch" -eq 0 &&
-      "$scan_runtime" -eq 0 ]]; then
+      "$scan_runtime" -eq 0 &&
+      "$scan_pty" -eq 0 ]]; then
   echo "policy-scan skipped (no core crate or adapter changes)"
   exit 0
 fi
@@ -153,7 +171,7 @@ selected=()
 [[ "$scan_store" -eq 1 ]] && selected+=("store")
 [[ "$scan_server" -eq 1 ]] && selected+=("server")
 
-echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime"
+echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime pty=$scan_pty"
 
 scan_manifest() {
   local file="$1"
@@ -190,6 +208,11 @@ scan_adapter_manifest() {
         ;;
       runtime)
         if ! runtime_key_allowed "$key"; then
+          bad+="$line"$'\n'
+        fi
+        ;;
+      pty)
+        if ! pty_key_allowed "$key"; then
           bad+="$line"$'\n'
         fi
         ;;
@@ -259,6 +282,10 @@ fi
 
 if [[ "$scan_runtime" -eq 1 ]]; then
   launch scan_adapter_manifest crates/codex-runtime/Cargo.toml runtime
+fi
+
+if [[ "$scan_pty" -eq 1 ]]; then
+  launch scan_adapter_manifest crates/pty/Cargo.toml pty
 fi
 
 for pid in "${pids[@]+"${pids[@]}"}"; do

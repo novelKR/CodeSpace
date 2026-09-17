@@ -71,7 +71,8 @@ and a path dependency, not a crates.io moving version.
 **On this pin, in code:** parse, hunk verification, apply APIs, and
 selected upstream fixtures for parity (`crates/patch` →
 `codex-apply-patch`); `pre_main_hardening()` (`codex-process-hardening`);
-private socket directory + bind (`codex-uds`).
+private socket directory + bind (`codex-uds`); interactive spawn
+(`crates/pty` → `codex-utils-pty`).
 
 **Rejected as product defaults** even if that crate allows them:
 symlink follow, sandbox `None` standalone CLI, host-absolute paths from
@@ -81,7 +82,7 @@ the model, silent `git apply`.
 dep, including `codex-protocol` types. Product runtime stays out
 everywhere: App Server, `codex-core`, `codex-exec`, login, models.
 See [codex-reuse.md](codex-reuse.md). Prefer-reuse at this SHA, **not
-yet wired:** `codex-utils-pty`, `codex-file-search`. Active evaluation:
+yet wired:** `codex-file-search`. Active evaluation:
 `codex-file-system`, `codex-shell-command`, `codex-linux-sandbox`
 (transitives `codex-sandboxing`, `codex-network-proxy`;
 `codex-protocol` allowed only in the adapter). `codex-exec-server-protocol`

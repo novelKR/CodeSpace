@@ -49,8 +49,10 @@ cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 `InProcessRunner`를 실행합니다. hardening은 워커/헬퍼 **프로세스**
 강화입니다(`main` 첫 줄 `pre_main_hardening()`, `ctor` 없음). command
 sandbox가 아닙니다. 기본 `exec_command`는 여전히 프로세스 내부 호스트
-spawn입니다. Exec DTO cwd는 `WorkspaceRoot`이며 `PATH` / `HOME` /
-`LANG`은 러너 프로세스에서 적용합니다.
+spawn입니다. `exec_command.tty` 기본값은 false(파이프)입니다.
+`tty: true`는 24x80 PTY를 붙입니다. Exec DTO cwd는 `WorkspaceRoot`이며
+`PATH` / `HOME` / `LANG`은 러너 프로세스에서 적용합니다(PTY일 때
+`TERM=xterm`).
 
 ## 워크스페이스 레지스트리
 
@@ -158,7 +160,8 @@ docker compose -f deploy/compose.yml up --build
 ```
 
 게이트웨이는 여전히 호스트에서 실행됩니다. `exec_command`는
-워크스페이스를 cwd로 하는 호스트 `tokio::process::Command`입니다.
+워크스페이스를 cwd로 하는 호스트 프로세스입니다(기본은 파이프,
+`tty: true`이면 PTY).
 
 ## 로그
 

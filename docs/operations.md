@@ -49,8 +49,9 @@ binds a private Unix socket with `codex-process-hardening` and
 `codex-uds`, then runs `InProcessRunner`. Hardening is **worker/helper
 process** hardening (`pre_main_hardening()` as the first line of
 `main`; no `ctor`), not a command sandbox. Default `exec_command` still
-uses in-process host spawn. Exec DTO cwd is `WorkspaceRoot`; `PATH` /
-`HOME` / `LANG` are applied inside the runner process.
+uses in-process host spawn. `exec_command.tty` defaults to false (pipes).
+`tty: true` attaches a PTY at 24x80. Exec DTO cwd is `WorkspaceRoot`; `PATH` /
+`HOME` / `LANG` are applied inside the runner process (`TERM=xterm` for PTY).
 
 ## Workspace registry
 
@@ -155,8 +156,8 @@ export CODESPACE_WORKSPACE=/absolute/path/to/your/project
 docker compose -f deploy/compose.yml up --build
 ```
 
-The gateway still runs on the host. `exec_command` is a host
-`tokio::process::Command` with the workspace as cwd.
+The gateway still runs on the host. `exec_command` is a host process
+(pipes by default; PTY when `tty` is true) with the workspace as cwd.
 
 ## Logs
 

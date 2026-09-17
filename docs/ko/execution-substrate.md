@@ -41,7 +41,7 @@ Codex `main` `4701aa4b`를 언급하는 조사 노트는 핀 범프가 **아닙�
 CI: `policy-scan` job은 서브모듈 **없이** `scripts/check-no-model-deps.sh`를
 `rust`와 병렬로 실행합니다. 핵심 매니페스트는 `codex-*` 의존성을 선언하면
 안 됩니다. 핵심 소스는 에이전트/모델 grep을 유지합니다. 격리된 어댑터
-매니페스트(`crates/patch`, `crates/codex-runtime`)는
+매니페스트(`crates/patch`, `crates/codex-runtime`, `crates/pty`)는
 **허용 목록**을 사용합니다. `third_party/codex` 소스는 절대 스캔하지
 않습니다. `SCAN_BASE`는 트리를 갱신 범위로 제한합니다. 범위를 모르면
 모든 핵심 크레이트와 어댑터 매니페스트를 스캔합니다. Clippy/시험은
@@ -114,11 +114,13 @@ Runner / patch helper
 cwd, env, PTY 크기, `sandboxPolicy` / `permissionProfile`이 있습니다.
 후속: write, resize, terminate. 스트리밍은 `outputDelta`입니다.
 
-그 **형태**가 오늘 Runner DTO에 있습니다(PTY가 생기면 `process_resize`
-포함). 게이트웨이가 `cwd: WorkspaceRoot`, 러너 로컬 env 기본값(`PATH` /
-`HOME` / `LANG`은 러너 프로세스에서 적용, 게이트웨이 `PATH`나 호스트
-절대 cwd를 직렬화하지 않음), 타임아웃, 출력 한도, `tty: false`, 정책
-요약을 채웁니다. 실제 MCP는 그대로입니다.
+그 **형태**가 오늘 Runner DTO에 있습니다. PTY spawn은 같은
+`process_id` 뒤에 연결됩니다(`exec_command.tty`, 기본 false, 어댑터
+크기 24x80). `process_resize` / `tty_size`는 **P1**로 남습니다.
+게이트웨이가 `cwd: WorkspaceRoot`, 러너 로컬 env 기본값(`PATH` /
+`HOME` / `LANG`은 러너 프로세스에서 적용, PTY일 때만 `TERM=xterm`,
+게이트웨이 `PATH`나 호스트 절대 cwd를 직렬화하지 않음), 타임아웃,
+출력 한도, 정책 요약을 채웁니다. 실제 MCP는 그대로입니다.
 
 ```text
 exec_command / write_stdin / read_process / terminate_process
@@ -230,15 +232,16 @@ Approval → policy + human, Attachment → artifact 리소스.
 (`RunnerCwd::WorkspaceRoot`, 러너 로컬 env 기본값),
 `crates/policy`의 `PermissionProfile`(`process_exec`)과 Environment,
 자원 직렬화기(요청 vs 프로세스 소유), 선택적 `UdsRunner` +
-`codespace-codex-runtime`(process-hardening + UDS). MCP 스키마는
-그대로입니다.
+`codespace-codex-runtime`(process-hardening + UDS), 격리된
+`crates/pty` → `codex-utils-pty`. 실제 MCP 도구 **이름**은 그대로입니다.
+`exec_command`에 선택적 `tty`(기본 false)가 있습니다.
 
 **P0** — 착수했거나 다음 서브그래프 WP: `codex-apply-patch`(완료),
 Runner DTO의 exec 런타임 **형태**(완료), `crates/policy`의
 PermissionProfile 도메인(완료), Environment 도메인(운영자 등록, 도구
 인자 아님)(완료), 자원 직렬화기(완료), process-hardening + UDS를 받는
-전송(`UdsRunner`)(완료, 선택적). 아직 밖: PTY → filesystem →
-linux-sandbox → network.
+전송(`UdsRunner`)(완료, 선택적), PTY I/O 백엔드(완료). 아직 밖:
+filesystem → linux-sandbox → network.
 
 **P1** — 작업 상태 기계 / diff 원장, 승인 폴백 도구, 내부 watch, 더
 풍부한 프로세스 핸들(resize, caps), 연결 끊김 정책.
@@ -249,6 +252,6 @@ linux-sandbox → network.
 **P3** — 원격 환경, MCP 연합, 아티팩트 레지스트리.
 
 다음 **코드** WP는 기존 트레이트 뒤의 남은 실행 서브그래프이며,
-`apply_patch`를 게이트웨이 RPC로 쪼개지 않습니다. Sandbox / PTY /
-network는 기본 자체 OS 스택이 아닙니다
+`apply_patch`를 게이트웨이 RPC로 쪼개지 않습니다. filesystem부터
+시작합니다. Sandbox / network는 기본 자체 OS 스택이 아닙니다
 ([codex-reuse.md](codex-reuse.md)).

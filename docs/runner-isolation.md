@@ -56,7 +56,7 @@ disconnect or gateway shutdown kills the worker and host children;
 `process_id` does not survive; there is no reconnect. Runner `Replay`
 is same-connection only. That **transport** is implemented; it
 is opt-in (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`) on the
-**same host**. It does not claim Linux isolation. Next WPs are PTY /
+**same host**. It does not claim Linux isolation. Next WPs are
 filesystem / linux-sandbox / network, not a second transport rewrite.
 Prefer `codex-uds` as the socket primitive; the Runner RPC stays a
 CodeSpace contract.
