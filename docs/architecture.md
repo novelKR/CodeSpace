@@ -40,39 +40,48 @@ CURRENT
 MCP Client
    │
    ▼
-codespace-mcp  (host)
-   ├─ policy / store / rollback
+codespace-mcp  (host gateway)
+   ├─ policy / store / coordination / operation persist
    ├─ structured logging (stderr tracing)
-   ├─ read/find via PathSandbox
-   ├─ exec_command ──────────────> host process
-   │                                 (tokio::process::Command,
-   │                                  workspace cwd, env_clear)
-   └─ patch_helper
-          │ JSON stdin/stdout
-          ▼
-      codespace-patch (host child)
-          └─ Codex Rust crate in-process
+   │
+   │  Runner execution DTO
+   │  (no work_id / operation_id / coordination)
+   ▼
+InProcessRunner
+   ├─ read / find / version (PathSandbox)
+   ├─ apply_patch (one transaction)
+   │      expected versions → preflight → snapshot
+   │      → helper apply → verify → rollback
+   │              │ JSON stdin/stdout
+   │              ▼
+   │         codespace-patch (host child)
+   │              └─ Codex Rust crate in-process
+   └─ exec / stdin / read / terminate
+          └─ host process (tokio::process::Command,
+             workspace cwd, env_clear)
 
 deploy/compose.yml
    └─ isolation fixture only; not connected to exec_command
 ```
 
 ```text
-MCP JSON  →  domain request  →  gateway handlers  →  domain result  →  MCP
+MCP JSON  →  domain params  →  gateway (policy/store)  →  Runner DTO  →  InProcessRunner
                  │
-                 └─ rmcp types stay inside crates/server
+                 └─ rmcp / JsonSchema stay on MCP types, not on runner DTOs
 ```
 
 The gateway owns **who may do what in which workspace**. Tokens, server
-config, workspace registry, and the operations database live here.
+config, workspace registry, and the operations database live here. It
+maps MCP params onto runner DTOs and does **not** pass
+`ExecCommandParams` into the runner.
 
-`crates/runner` currently owns path sandboxing, the in-process host
-process supervisor, and compose-fixture checks. It does **not** start a
-container or open a control socket.
+`crates/runner` owns the in-process `Runner` (filesystem, one
+`apply_patch` transaction, host process supervisor) plus compose-fixture
+checks. It does **not** start a container or open a control socket.
 
 `codespace-patch` is a product helper process, not the upstream
 standalone `apply_patch` binary and not `native/patch-worker`.
-Gateway ↔ helper is JSON stdin/stdout. Codex itself runs in-process
+Runner ↔ helper is JSON stdin/stdout. Codex itself runs in-process
 **inside that helper**.
 
 Single instance is enough for MVP. SQLite stores **patch operations**
@@ -108,9 +117,10 @@ Runner process boundary
    isolated Linux workspace
 ```
 
-The next isolated-exec work package inserts a process boundary behind
-the existing `Runner` / `InProcessRunner` types. It must **not** split
-patch apply into multiple gateway-driven RPCs:
+The next work package is **transport** (Unix socket / `ContainerRunner`).
+This change is not that. A later isolated-exec split inserts a process
+boundary behind the existing `Runner` / `InProcessRunner` types. It must
+**not** split patch apply into multiple gateway-driven RPCs:
 
 ```text
 Runner.apply_patch(request)
@@ -191,24 +201,24 @@ ignored. User-intent text does not raise the permission profile.
 
 ## Patch apply pipeline
 
-Today the gateway still orchestrates the transaction and talks to the
-helper for Codex parse/preflight/apply. The **contract** is that this
-whole sequence is one execution-plane operation and will move behind
-`Runner.apply_patch` later as a single call.
+Gateway keeps authorization, `operation_key` replay, the write lock,
+and persistence. `InProcessRunner.apply_patch` runs the execution
+transaction as a single call. Gateway does not split it into preflight /
+snapshot / apply RPCs.
 
 ```text
 validate request
   → auth + workspace policy
   → operation_key replay / conflict
   → workspace write lock
-  → original Codex parser (`parse_patch`)
-  → every source and destination path
-  → expected_versions
-  → full preflight (no writes)
-  → save rollback snapshot
-  → original engine apply (`apply_patch_with_options`)
-  → verify disk hash == helper claimed after_version
-  → persist operation status
+  → Runner.apply_patch
+        expected_versions
+        → full preflight (no writes)
+        → save rollback snapshot
+        → original engine apply (`apply_patch_with_options`)
+        → verify disk hash == helper claimed after_version
+        → rollback on failure
+  → persist operation status (gateway fills operation_id)
   → MCP response
 ```
 
@@ -235,7 +245,7 @@ crates/domain/          workspace, capabilities, operation, errors (no rmcp)
 crates/policy/          registry and path policy
 crates/patch/           Codex adapter + codespace-patch helper (own workspace)
 crates/store/           SQLite operations, works, and intents
-crates/runner/          PathSandbox, in-process process supervisor, fixture checks
+crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host process supervisor, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
 docs/                   including operations.md (W12)

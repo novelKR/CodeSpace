@@ -6,14 +6,15 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use codespace_domain::{
-    ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ProcessId, ReadProcessParams,
-    ReadProcessResult, TerminateProcessParams, WriteStdinParams,
-};
+use codespace_domain::{ErrorBody, ErrorCode, ProcessId};
 use codespace_policy::Workspace;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::task::JoinHandle;
+
+use crate::{
+    RunnerExecRequest, RunnerExecResult, RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
+};
 
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -57,23 +58,6 @@ fn max_processes() -> usize {
 
 fn child_path() -> String {
     std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into())
-}
-
-pub trait Runner: Send + Sync {
-    fn exec(
-        &self,
-        ws: &Workspace,
-        process_id: ProcessId,
-        params: &ExecCommandParams,
-    ) -> Result<ExecCommandResult, ErrorBody>;
-    fn write_stdin(
-        &self,
-        params: WriteStdinParams,
-    ) -> impl std::future::Future<Output = Result<(), ErrorBody>> + Send;
-    fn read_process(&self, params: ReadProcessParams) -> Result<ReadProcessResult, ErrorBody>;
-    fn terminate(&self, params: TerminateProcessParams) -> Result<(), ErrorBody>;
-    fn workspace_of(&self, process_id: &str) -> Option<String>;
-    fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody>;
 }
 
 #[derive(Clone)]
@@ -138,24 +122,21 @@ impl InProcessRunner {
             map.remove(&id);
         }
     }
-}
 
-impl Runner for InProcessRunner {
-    fn exec(
+    pub fn spawn_host(
         &self,
         ws: &Workspace,
-        process_id: ProcessId,
-        params: &ExecCommandParams,
-    ) -> Result<ExecCommandResult, ErrorBody> {
-        if params.command.is_empty() || params.command[0].is_empty() {
+        req: RunnerExecRequest,
+    ) -> Result<RunnerExecResult, ErrorBody> {
+        if req.argv.is_empty() || req.argv[0].is_empty() {
             return Err(ErrorBody::new(
                 ErrorCode::InvalidPatch,
                 "command must be a non-empty argv (no shell)",
             ));
         }
-        let mut child = Command::new(&params.command[0]);
-        if params.command.len() > 1 {
-            child.args(&params.command[1..]);
+        let mut child = Command::new(&req.argv[0]);
+        if req.argv.len() > 1 {
+            child.args(&req.argv[1..]);
         }
         child
             .current_dir(&ws.root)
@@ -177,7 +158,7 @@ impl Runner for InProcessRunner {
         let output = Arc::new(Mutex::new(OutputBuf::default()));
         let completed_at = Arc::new(Mutex::new(None));
         let slot = Slot {
-            workspace_id: params.workspace_id.0.clone(),
+            workspace_id: ws.id.0.clone(),
             child: child.clone(),
             stdin: Arc::new(Mutex::new(stdin)),
             output: output.clone(),
@@ -193,7 +174,7 @@ impl Runner for InProcessRunner {
                     "live process limit reached",
                 ));
             }
-            map.insert(process_id.0.clone(), slot);
+            map.insert(req.process_id.0.clone(), slot);
         }
 
         let out_handle = stdout.map(|out| {
@@ -208,7 +189,7 @@ impl Runner for InProcessRunner {
         let wait_child = child.clone();
         let wait_out = output.clone();
         let wait_release = self.on_release.clone();
-        let wait_ws = params.workspace_id.0.clone();
+        let wait_ws = ws.id.0.clone();
         tokio::spawn(async move {
             reap_child(wait_child).await;
             join_pump(out_handle).await;
@@ -235,19 +216,18 @@ impl Runner for InProcessRunner {
             }
         });
 
-        Ok(ExecCommandResult {
-            process_id,
-            coordination: None,
+        Ok(RunnerExecResult {
+            process_id: req.process_id,
         })
     }
 
-    async fn write_stdin(&self, params: WriteStdinParams) -> Result<(), ErrorBody> {
+    pub async fn write_host_stdin(&self, req: RunnerWriteStdin) -> Result<(), ErrorBody> {
         let stdin = {
             let mut map = self.inner.lock().expect("runner");
             self.evict_completed(&mut map);
             let slot = map
-                .get(&params.process_id.0)
-                .ok_or_else(|| missing(&params.process_id.0))?;
+                .get(&req.process_id.0)
+                .ok_or_else(|| missing(&req.process_id.0))?;
             slot.stdin.clone()
         };
         let mut pipe = stdin
@@ -256,7 +236,7 @@ impl Runner for InProcessRunner {
             .take()
             .ok_or_else(|| ErrorBody::new(ErrorCode::ProcessNotFound, "stdin is closed"))?;
         let result = async {
-            pipe.write_all(params.data.as_bytes()).await?;
+            pipe.write_all(req.data.as_bytes()).await?;
             pipe.flush().await?;
             Ok::<(), std::io::Error>(())
         }
@@ -265,20 +245,20 @@ impl Runner for InProcessRunner {
         result.map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))
     }
 
-    fn read_process(&self, params: ReadProcessParams) -> Result<ReadProcessResult, ErrorBody> {
+    pub fn read_host_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, ErrorBody> {
         let mut map = self.inner.lock().expect("runner");
         self.evict_completed(&mut map);
         let slot = map
-            .get(&params.process_id.0)
-            .ok_or_else(|| missing(&params.process_id.0))?;
+            .get(&req.process_id.0)
+            .ok_or_else(|| missing(&req.process_id.0))?;
         let buf = slot.output.lock().expect("output");
-        if buf.timed_out && params.cursor >= buf.total {
+        if buf.timed_out && req.cursor >= buf.total {
             return Err(ErrorBody::new(
                 ErrorCode::Timeout,
                 "managed process exceeded time limit",
             ));
         }
-        let start = params.cursor.max(buf.dropped);
+        let start = req.cursor.max(buf.dropped);
         let skip = (start - buf.dropped) as usize;
         let chunk = if skip >= buf.bytes.len() {
             Vec::new()
@@ -286,21 +266,20 @@ impl Runner for InProcessRunner {
             buf.bytes[skip..].to_vec()
         };
         let next = start + chunk.len() as u64;
-        Ok(ReadProcessResult {
-            process_id: params.process_id,
+        Ok(RunnerReadResult {
+            process_id: req.process_id,
             cursor: next,
             chunk: String::from_utf8_lossy(&chunk).into_owned(),
             eof: buf.eof && next >= buf.total,
-            coordination: None,
         })
     }
 
-    fn terminate(&self, params: TerminateProcessParams) -> Result<(), ErrorBody> {
+    pub fn kill_host(&self, process_id: &ProcessId) -> Result<(), ErrorBody> {
         let mut map = self.inner.lock().expect("runner");
         self.evict_completed(&mut map);
         let slot = map
-            .get(&params.process_id.0)
-            .ok_or_else(|| missing(&params.process_id.0))?;
+            .get(&process_id.0)
+            .ok_or_else(|| missing(&process_id.0))?;
         let mut child = slot.child.lock().expect("child");
         if child.try_wait().ok().flatten().is_some() {
             return Ok(());
@@ -311,13 +290,13 @@ impl Runner for InProcessRunner {
         Ok(())
     }
 
-    fn workspace_of(&self, process_id: &str) -> Option<String> {
+    pub fn host_workspace_of(&self, process_id: &str) -> Option<String> {
         let mut map = self.inner.lock().ok()?;
         self.evict_completed(&mut map);
         map.get(process_id).map(|slot| slot.workspace_id.clone())
     }
 
-    fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody> {
+    pub fn kill_host_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody> {
         let mut map = self.inner.lock().expect("runner");
         self.evict_completed(&mut map);
         let mut killed = 0u32;
@@ -399,6 +378,7 @@ fn missing(id: &str) -> ErrorBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Runner;
     use codespace_domain::{ProcessId, Profile, WorkspaceId};
     use codespace_policy::Workspace;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -427,13 +407,16 @@ mod tests {
             },
         );
         let ws = workspace(dir.path());
-        let params = ExecCommandParams {
-            workspace_id: WorkspaceId("demo".into()),
-            command: vec!["/bin/echo".into(), "hi".into()],
-            work_id: None,
-        };
         let process_id = ProcessId("proc-ttl".into());
-        runner.exec(&ws, process_id.clone(), &params).unwrap();
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest {
+                    argv: vec!["/bin/echo".into(), "hi".into()],
+                    process_id: process_id.clone(),
+                },
+            )
+            .unwrap();
         for _ in 0..50 {
             if released.load(Ordering::SeqCst) >= 1 {
                 break;
@@ -442,14 +425,14 @@ mod tests {
         }
         assert!(released.load(Ordering::SeqCst) >= 1);
         runner
-            .read_process(ReadProcessParams {
+            .read_process(RunnerReadProcess {
                 process_id: process_id.clone(),
                 cursor: 0,
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         let err = runner
-            .read_process(ReadProcessParams {
+            .read_process(RunnerReadProcess {
                 process_id,
                 cursor: 0,
             })
@@ -473,17 +456,15 @@ mod tests {
         runner
             .exec(
                 &ws,
-                first.clone(),
-                &ExecCommandParams {
-                    workspace_id: WorkspaceId("demo".into()),
-                    command: vec!["/bin/echo".into(), "one".into()],
-                    work_id: None,
+                RunnerExecRequest {
+                    argv: vec!["/bin/echo".into(), "one".into()],
+                    process_id: first.clone(),
                 },
             )
             .unwrap();
         for _ in 0..50 {
             if runner
-                .read_process(ReadProcessParams {
+                .read_process(RunnerReadProcess {
                     process_id: first.clone(),
                     cursor: 0,
                 })
@@ -497,17 +478,15 @@ mod tests {
         runner
             .exec(
                 &ws,
-                second.clone(),
-                &ExecCommandParams {
-                    workspace_id: WorkspaceId("demo".into()),
-                    command: vec!["/bin/echo".into(), "two".into()],
-                    work_id: None,
+                RunnerExecRequest {
+                    argv: vec!["/bin/echo".into(), "two".into()],
+                    process_id: second.clone(),
                 },
             )
             .unwrap();
         for _ in 0..50 {
             if runner
-                .read_process(ReadProcessParams {
+                .read_process(RunnerReadProcess {
                     process_id: second.clone(),
                     cursor: 0,
                 })
@@ -519,12 +498,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         // Trigger eviction of the oldest completed slot.
-        let _ = runner.read_process(ReadProcessParams {
+        let _ = runner.read_process(RunnerReadProcess {
             process_id: second,
             cursor: 0,
         });
         let err = runner
-            .read_process(ReadProcessParams {
+            .read_process(RunnerReadProcess {
                 process_id: first,
                 cursor: 0,
             })

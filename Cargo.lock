@@ -325,6 +325,8 @@ dependencies = [
  "codespace-domain",
  "codespace-policy",
  "hex",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tokio",

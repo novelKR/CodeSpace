@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::{PathSandbox, VERSION_ABSENT};
 use codespace_domain::{ErrorBody, ErrorCode, FileChange, FileChangeKind};
-use codespace_runner::{PathSandbox, VERSION_ABSENT};
 
 pub fn verify_disk_matches_claimed(
     sandbox: &PathSandbox,

@@ -28,7 +28,7 @@ codespace-policy = { path = "../policy" }
 codespace-runner = { path = "../runner" }
 codespace-store = { path = "../store" }
 rmcp = { workspace = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "io-util", "net", "process", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "io-util", "net", "time"] }
 tokio-util = "0.7"
 serde = { workspace = true }
 serde_json = { workspace = true }

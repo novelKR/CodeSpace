@@ -33,7 +33,7 @@ unverified.
 
 ## Later process split
 
-Today `codespace-mcp` is one process. `crates/runner` already hosts
-`PathSandbox` and the in-process host supervisor (`InProcessRunner`).
+Today `codespace-mcp` is one process. `crates/runner` hosts the in-process
+`Runner` (`PathSandbox`, one `apply_patch` transaction, host supervisor).
 A later Unix-socket / `ContainerRunner` worker would live in the same
-crate; both sides remain Rust.
+crate; both sides remain Rust. That transport split is not this change.
