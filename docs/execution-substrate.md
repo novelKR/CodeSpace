@@ -125,6 +125,12 @@ output cap, and a policy summary. Live MCP remains:
 exec_command / write_stdin / read_process / terminate_process
 ```
 
+The model learns this from MCP, not from adapter topology.
+`initialize.instructions` holds global invariants. `workspace_info.execution`
+(when a workspace is selected) holds effective capabilities. `exec_command`
+results carry `dispatch_status`. Do not inject architecture manuals,
+Codex crate graphs, or UDS wire details into the client contract.
+
 Do **not** take `codex-exec` (product exec flow) or embed App Server.
 `codex-exec-server-protocol` is an internal worker-DTO candidate;
 `codex-exec-server` is an experimental backend (`codex-api` /

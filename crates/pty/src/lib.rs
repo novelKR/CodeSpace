@@ -40,8 +40,10 @@ impl PtySession {
     }
 }
 
-/// Spawn `program` + `args` on a PTY. Default size is 24x80.
-/// `env` is the full environment after the caller applied runner-local defaults.
+/// Spawn `program` + `args` on a PTY. Default size is 24x80, matching the
+/// advertised `workspace_info.execution.process.tty` initial size. Resize
+/// is not exposed on this API. `env` is the full environment after the
+/// caller applied runner-local defaults.
 pub async fn spawn(
     program: &str,
     args: &[String],

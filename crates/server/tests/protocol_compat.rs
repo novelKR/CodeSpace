@@ -45,6 +45,7 @@ fn assert_workspace_info_contract(body: &Value) {
         body["transports"],
         serde_json::json!([TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP])
     );
+    assert!(body.get("execution").is_none() || body["execution"].is_null());
 }
 
 fn assert_live_tools(names: impl IntoIterator<Item = impl AsRef<str>>) {

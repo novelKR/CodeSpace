@@ -126,6 +126,12 @@ cwd, env, PTY 크기, `sandboxPolicy` / `permissionProfile`이 있습니다.
 exec_command / write_stdin / read_process / terminate_process
 ```
 
+모델은 어댑터 토폴로지가 아니라 MCP에서 이것을 배웁니다.
+`initialize.instructions`는 전역 불변식입니다. 워크스페이스를 고르면
+`workspace_info.execution`이 실제 capability입니다. `exec_command` 결과는
+`dispatch_status`를 실습니다. architecture 매뉴얼, Codex crate 그래프,
+UDS 와이어를 클라이언트 계약에 넣지 마세요.
+
 `codex-exec`(제품 exec 흐름)를 가져오거나 App Server를 넣지 **마세요**.
 `codex-exec-server-protocol`은 내부 워커 DTO 후보입니다.
 `codex-exec-server`는 실험적 백엔드(`codex-api` / `codex-config`)이며

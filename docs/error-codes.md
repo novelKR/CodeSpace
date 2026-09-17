@@ -56,6 +56,11 @@ failed apply never reports `applied`. `applied` requires disk hashes to
 match the helper's claimed `after_version`. Restart leaves unfinished
 rows as `unknown` and does not auto-apply.
 
+`exec_command` can return a successful result with
+`dispatch_status=unknown` when spawn may have occurred. That is not a
+transport error body. Keep the returned `process_id`; do not start a
+duplicate process.
+
 After `begin` mints an `operation_id`, tool errors include that id on
 `ErrorBody.operation_id`. Policy / lock / key-conflict refusals before
 `begin` do not.

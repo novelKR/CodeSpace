@@ -16,9 +16,19 @@ pub struct ExecCommandParams {
     pub tty: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecDispatchStatus {
+    /// Backend confirmed the spawn request result. The process may already have exited.
+    Confirmed,
+    /// Spawn may have occurred. Do not start a duplicate process.
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecCommandResult {
     pub process_id: ProcessId,
+    pub dispatch_status: ExecDispatchStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordination: Option<CoordinationHint>,
 }
@@ -100,6 +110,33 @@ mod tests {
         assert!(
             !dumped.contains("\"cwd\""),
             "exec_command schema must not include cwd: {dumped}"
+        );
+        assert!(
+            !dumped.contains("tty_size"),
+            "exec_command params must not include tty_size: {dumped}"
+        );
+    }
+
+    #[test]
+    fn exec_command_result_always_serializes_dispatch_status() {
+        let json = serde_json::to_value(ExecCommandResult {
+            process_id: ProcessId("proc-1".into()),
+            dispatch_status: ExecDispatchStatus::Confirmed,
+            coordination: None,
+        })
+        .unwrap();
+        assert_eq!(json["dispatch_status"], "confirmed");
+        let unknown = serde_json::to_value(ExecCommandResult {
+            process_id: ProcessId("proc-1".into()),
+            dispatch_status: ExecDispatchStatus::Unknown,
+            coordination: None,
+        })
+        .unwrap();
+        assert_eq!(unknown["dispatch_status"], "unknown");
+        let schema = serde_json::to_value(schemars::schema_for!(ExecCommandResult)).unwrap();
+        assert!(
+            schema.to_string().contains("dispatch_status"),
+            "result schema must include dispatch_status: {schema}"
         );
     }
 }

@@ -71,6 +71,17 @@ async fn info_read_patch_exec_flow() {
     let info_body = payload(&info);
     assert_eq!(info_body["internal_model_calls"], false);
     assert_eq!(info_body["workspace_id_is_credential"], false);
+    assert_eq!(info_body["execution"]["environment"]["kind"], "host");
+    assert_eq!(info_body["execution"]["permissions"]["write"], true);
+    assert_eq!(
+        info_body["execution"]["process"]["tty"]["resize_supported"],
+        false
+    );
+    assert_eq!(
+        info_body["execution"]["isolation"]["command_sandbox"],
+        "none"
+    );
+    assert_eq!(info_body["execution"]["network"]["enforcement"], "none");
 
     let read = client
         .call_tool(
@@ -111,6 +122,7 @@ async fn info_read_patch_exec_flow() {
         .unwrap()
         .to_string();
     assert!(pid.starts_with("proc-"));
+    assert_eq!(payload(&started)["dispatch_status"], "confirmed");
 
     let mut chunk = String::new();
     for _ in 0..50 {

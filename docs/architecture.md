@@ -195,7 +195,7 @@ Execution tools:
 
 | Tool | Role |
 | --- | --- |
-| `workspace_info` | Selector metadata, profile, roots (not a credential) |
+| `workspace_info` | Identity, selector metadata, and effective execution contract (not a credential) |
 | `read` | File contents + version |
 | `find` | Relative-path search |
 | `apply_patch` | Codex V4A only |

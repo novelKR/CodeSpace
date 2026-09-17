@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::execution::WorkspaceExecutionInfo;
 use crate::profile::Profile;
 use crate::tools::{
     SERVER_NAME, SERVER_VERSION, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP, W03_EXPOSED_TOOLS,
@@ -27,6 +28,8 @@ pub struct WorkspaceInfo {
     pub profile: Option<Profile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution: Option<WorkspaceExecutionInfo>,
 }
 
 pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
@@ -45,6 +48,7 @@ pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
             .to_string(),
         profile: None,
         root: None,
+        execution: None,
     }
 }
 
@@ -73,6 +77,10 @@ mod tests {
         assert_eq!(info.workspace_id, None);
         assert_eq!(info.server, SERVER_NAME);
         assert_eq!(info.version, SERVER_VERSION);
+        assert!(info.execution.is_none());
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("execution").is_none());
+        assert!(json.get("environment_id").is_none());
     }
 
     #[test]
@@ -80,5 +88,6 @@ mod tests {
         let info = workspace_info(Some("demo".into()));
         assert_eq!(info.workspace_id.as_deref(), Some("demo"));
         assert!(!info.workspace_id_is_credential);
+        assert!(info.execution.is_none());
     }
 }

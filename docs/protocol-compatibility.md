@@ -82,3 +82,12 @@ matches the existing payload contract. Forced 2025-11-25 also covers
 `read` / `apply_patch` / `exec_command` / `operation_status` and the
 work/steer checkpoint (`work_open` → `/inbox` queue → `steer_claim_next`
 → `work_finish`). Forced 2026-07-28 uses the same `tools/call` surface.
+
+Client-facing execution semantics stay on that surface. `initialize.instructions`
+states global invariants (request lifetime ≠ process lifetime, host is
+not an OS sandbox, unenforced network is not permission). `workspace_info`
+with a `workspace_id` adds an `execution` object (permissions vs backend
+support, PTY, mutation lease, isolation, network). `exec_command` results
+add `dispatch_status` (`confirmed` or `unknown`). Tool **names** do not
+grow. `environment_id`, `cwd`, `tty_size`, and `process_resize` stay off
+the client schema.

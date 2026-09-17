@@ -59,6 +59,10 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 주장한 `after_version`과 일치해야 합니다. 재시작은 미완료 행을
 `unknown`으로 남기고 자동 적용하지 않습니다.
 
+`exec_command`는 spawn이 일어났을 수 있을 때 성공 결과에
+`dispatch_status=unknown`을 실을 수 있습니다. 그것은 전송 오류 본문이
+아닙니다. 반환된 `process_id`를 유지하고 새 프로세스를 시작하지 마세요.
+
 `begin`이 `operation_id`를 발급한 뒤, 도구 오류는 그 id를
 `ErrorBody.operation_id`에 포함합니다. `begin` 전의 정책 / 잠금 /
 키 충돌 거절은 포함하지 않습니다.
