@@ -21,8 +21,10 @@ codex-uds = { path = "../../third_party/codex/codex-rs/uds" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync", "process", "time"] }
 
 [dev-dependencies]
+codespace-runner = { path = "../runner" }
 serde_json = "1"
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "process"] }
 
 [[bin]]
 name = "codespace-codex-runtime"
