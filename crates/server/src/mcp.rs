@@ -204,7 +204,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown."
     )]
     async fn exec_command(
         &self,
@@ -218,7 +218,7 @@ impl CodeSpace {
         ws.require_exec().map_err(err_json)?;
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(ErrorBody::new(
-                ErrorCode::InvalidPatch,
+                ErrorCode::InvalidCommand,
                 "command must be a non-empty argv (no shell)",
             )));
         }
@@ -941,6 +941,120 @@ mod tests {
             .unwrap();
         assert_eq!(started.0.dispatch_status, ExecDispatchStatus::Confirmed);
         assert!(started.0.process_id.0.starts_with("proc-"));
+    }
+
+    fn parse_exec_err(result: Result<Json<ExecCommandResult>, String>) -> ErrorBody {
+        match result {
+            Err(err) => serde_json::from_str(&err)
+                .unwrap_or_else(|parse| panic!("exec err json ({parse}): {err}")),
+            Ok(ok) => panic!("expected exec error, got process_id={}", ok.0.process_id.0),
+        }
+    }
+
+    async fn exec_echo(cs: &CodeSpace) -> ExecCommandResult {
+        cs.exec_command(Parameters(ExecCommandParams {
+            workspace_id: WorkspaceId("demo".into()),
+            command: vec!["/bin/echo".into(), "ok".into()],
+            work_id: None,
+            tty: false,
+        }))
+        .await
+        .unwrap()
+        .0
+    }
+
+    #[tokio::test]
+    async fn invalid_command_does_not_hold_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let cs = CodeSpace::new(write_registry(ws_root));
+        let err = parse_exec_err(
+            cs.exec_command(Parameters(ExecCommandParams {
+                workspace_id: WorkspaceId("demo".into()),
+                command: vec![],
+                work_id: None,
+                tty: false,
+            }))
+            .await,
+        );
+        assert_eq!(err.code, ErrorCode::InvalidCommand);
+        let started = exec_echo(&cs).await;
+        assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+    }
+
+    #[tokio::test]
+    async fn confirmed_spawn_failure_releases_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let cs = CodeSpace::new(write_registry(ws_root));
+        let err = parse_exec_err(
+            cs.exec_command(Parameters(ExecCommandParams {
+                workspace_id: WorkspaceId("demo".into()),
+                command: vec!["/no/such/codespace-exec".into()],
+                work_id: None,
+                tty: false,
+            }))
+            .await,
+        );
+        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        let started = exec_echo(&cs).await;
+        assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+    }
+
+    #[tokio::test]
+    async fn tty_confirmed_spawn_failure_is_process_spawn_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let cs = CodeSpace::new(write_registry(ws_root));
+        let err = parse_exec_err(
+            cs.exec_command(Parameters(ExecCommandParams {
+                workspace_id: WorkspaceId("demo".into()),
+                command: vec!["/no/such/codespace-exec".into()],
+                work_id: None,
+                tty: true,
+            }))
+            .await,
+        );
+        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        let started = exec_echo(&cs).await;
+        assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+    }
+
+    #[tokio::test]
+    async fn uds_spawn_failure_releases_lease_and_propagates_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
+        let (worker, events) = host_worker();
+        tokio::spawn(async move {
+            serve_runner_connection(server, worker, events)
+                .await
+                .expect("serve");
+        });
+        let store = Arc::new(Store::memory().unwrap());
+        let store_for_lease = store.clone();
+        let runner = RuntimeBackend::Uds(UdsRunner::from_stream(
+            client,
+            Arc::new(move |process_id: &str| {
+                store_for_lease.release_process(process_id);
+            }),
+        ));
+        let cs = CodeSpace::with_store_and_runner(write_registry(ws_root), store.clone(), runner);
+        let err = parse_exec_err(
+            cs.exec_command(Parameters(ExecCommandParams {
+                workspace_id: WorkspaceId("demo".into()),
+                command: vec!["/no/such/codespace-exec".into()],
+                work_id: None,
+                tty: false,
+            }))
+            .await,
+        );
+        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        let _lease = store.try_acquire_write("demo").expect("lease released");
     }
 
     #[tokio::test]

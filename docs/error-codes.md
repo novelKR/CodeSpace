@@ -29,7 +29,9 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
 | `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
 | `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | Codex parse failure (W06 / W09). Empty `exec_command` argv and confirmed spawn failures currently reuse this code. |
+| `INVALID_PATCH` | Primarily patch parsing/validation (W06 / W09); leftover internal uses remain |
+| `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
+| `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
 | `PATH_ESCAPE` | `..` or absolute path outside the workspace |
 | `SYMLINK_REJECTED` | Symlink file or escape |
 | `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
@@ -63,10 +65,14 @@ attempt. Do not start a duplicate process. Use `read_process` or
 `terminate_process` when the backend remains reachable; do not assume
 unknown means the process did not start.
 
-`INVALID_COMMAND` and `PROCESS_SPAWN_FAILED` are not product codes yet.
-Empty argv and confirmed spawn failures still serialize as
-`INVALID_PATCH`. Reclassifying those cases is a follow-up PR; this
-execution-contract surface does not add the new codes.
+`INVALID_PATCH` is no longer used for exec command validation or confirmed
+process-spawn failures.
+
+`INVALID_COMMAND` is a structurally invalid argv. The gateway rejects it
+before minting a `process_id` or taking a mutation lease. The runner
+repeats the same check. `PROCESS_SPAWN_FAILED` means the backend
+**confirmed** that no managed process was established; the gateway
+releases any lease. Neither code is `dispatch_status=unknown`.
 
 After `begin` mints an `operation_id`, tool errors include that id on
 `ErrorBody.operation_id`. Policy / lock / key-conflict refusals before

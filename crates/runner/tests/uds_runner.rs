@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use codespace_domain::{ProcessId, Profile, WorkspaceId};
+use codespace_domain::{ErrorCode, ProcessId, Profile, WorkspaceId};
 use codespace_policy::Workspace;
 use codespace_runner::{
     host_worker, serve_runner_connection, Runner, RunnerError, RunnerExecRequest, UdsRunner,
@@ -161,6 +161,37 @@ async fn uds_exec_lost_response_is_ambiguous() {
         matches!(err, RunnerError::TransportAmbiguous { .. }),
         "{err:?}"
     );
+}
+
+#[tokio::test]
+async fn uds_spawn_failure_is_process_spawn_failed() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    let dir = tempdir().unwrap();
+    let ws = workspace(dir.path());
+    let err = runner
+        .exec(
+            &ws,
+            RunnerExecRequest::for_host(
+                vec!["/no/such/codespace-exec".into()],
+                ProcessId("proc-uds-missing".into()),
+                Profile::WorkspaceWrite,
+            ),
+        )
+        .await
+        .unwrap_err();
+    match err {
+        RunnerError::Execution(body) => {
+            assert_eq!(body.code, ErrorCode::ProcessSpawnFailed, "{body:?}");
+        }
+        other => panic!("expected Execution(ProcessSpawnFailed), got {other:?}"),
+    }
 }
 
 #[tokio::test]

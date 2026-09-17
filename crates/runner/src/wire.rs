@@ -19,7 +19,7 @@ use crate::{
     ShellRelease,
 };
 
-pub const WIRE_PROTOCOL: u32 = 1;
+pub const WIRE_PROTOCOL: u32 = 2;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
 

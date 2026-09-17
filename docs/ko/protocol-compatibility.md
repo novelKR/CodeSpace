@@ -99,9 +99,13 @@ occupancy가 아님, PTY, mutation lease, 격리, 네트워크)를 더합니다.
 `output_combined=true`는 `read_process`가 하나의 combined stream만
 노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
 `exec_command` 결과는
-`dispatch_status`(`confirmed` 또는 `unknown`)를 더합니다. 빈 argv와
-확인된 spawn 실패는 여전히 `INVALID_PATCH`로 직렬화됩니다.
-`INVALID_COMMAND`와 `PROCESS_SPAWN_FAILED`는 후속 재분류이며, 이 표면은
-그 코드를 추가하지 않습니다. 도구 **이름**은
+`dispatch_status`(`confirmed` 또는 `unknown`)를 더합니다. 빈 argv는
+`INVALID_COMMAND`입니다(프로세스 dispatch 전 거절). 확인된 spawn 실패는
+`PROCESS_SPAWN_FAILED`입니다. 백엔드가 managed process가 만들어지지
+않았음을 확정한 것이며 `dispatch_status=unknown`과 구분됩니다. Runner
+UDS 와이어는 `WIRE_PROTOCOL` 2입니다. `ErrorBody` 제품 코드가 그 JSON을
+타므로 오류 어휘가 바뀌면 protocol number도 바뀝니다. handshake mismatch는
+before-dispatch입니다. Gateway와 worker는 같은 CodeSpace build이며 skew는
+허용하지 않고 탐지합니다. 도구 **이름**은
 늘지 않습니다. `environment_id`, `cwd`, `tty_size`, `process_resize`는
 클라이언트 스키마에 없습니다.

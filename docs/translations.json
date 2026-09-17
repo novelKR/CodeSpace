@@ -200,8 +200,8 @@
         "핵심-기준",
         "핵심이-요구하면-안-되는-것"
       ],
-      "source_sha256": "26e2eaac78752ae4bf511854dcd74d3c9d6e4a5271bec17f9f992ab6f764670f",
-      "translation_sha256": "23a46cb2e6e678d169fbb52fcd2351271afcce1e9852c1736eb76c23526ceed8"
+      "source_sha256": "25cfdebec3310ede8b82f0b9bfc8990b30ad17df778bb69a79b514994155952d",
+      "translation_sha256": "e71d813acc066d1cf31ede011459ab85d1110f294735eb24059699fd50fb803a"
     },
     {
       "id": "behavior-differences",
@@ -272,8 +272,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "f5265d23392ee92073bec4c8e71f237d209c734bd632fb877cdcaf415e6eb143",
-      "translation_sha256": "f02b9219f86b86c128060c2b82670e071dbd0f640500410b289521c85ae042b3"
+      "source_sha256": "72f70843875b258ad45e1aabad259ea34ccb716890efc69f883af1cc6aa3f761",
+      "translation_sha256": "8b5ceaa2d5e1435d609ab1a765559f4df26d4aa73097a231001075ffcb3ab889"
     },
     {
       "id": "error-codes",
@@ -290,8 +290,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "9496139f5f88329f2168f78b505bde931dd1e56b1a84c3f6aca3cf7ad48f3b53",
-      "translation_sha256": "138d01aa85f7d46ad621d6c039ca9e19b39276c5869aa506559f4afd9a846616"
+      "source_sha256": "82f484be8346e895ffc78752751cb290c4df0e036219c13bdf5a3bd2529aef72",
+      "translation_sha256": "e578d1778f91f2ac7be0b008fbbb23440535aa0840d7a87c25aa5dd1fb5adbe5"
     },
     {
       "id": "codex-reuse",

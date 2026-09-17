@@ -99,10 +99,14 @@ exec permission and backend support and does not include transient
 occupancy; tool existence is `tools_exposed`.
 `output_combined=true` means `read_process` exposes one combined stream;
 stdout/stderr identity is not preserved. `exec_command` results add
-`dispatch_status` (`confirmed` or `unknown`).
-Empty argv and confirmed spawn failures still serialize as
-`INVALID_PATCH`. `INVALID_COMMAND` and `PROCESS_SPAWN_FAILED` are a
-follow-up reclassification; this surface does not add them.
+`dispatch_status` (`confirmed` or `unknown`). Empty argv is
+`INVALID_COMMAND` (rejected before process dispatch). Confirmed spawn
+failure is `PROCESS_SPAWN_FAILED`: the backend confirmed that no managed
+process was established. That is distinct from `dispatch_status=unknown`.
+Runner UDS wire is `WIRE_PROTOCOL` 2. `ErrorBody` product codes travel on
+that JSON, so a changed error vocabulary is a protocol bump. Handshake
+mismatch is before-dispatch. Gateway and worker are the same CodeSpace
+build; skew is detected, not tolerated.
 Tool **names** do not
 grow. `environment_id`, `cwd`, `tty_size`, and `process_resize` stay off
 the client schema.
