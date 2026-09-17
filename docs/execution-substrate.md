@@ -27,16 +27,18 @@ catalog, leave it out. Do not translate App Server JSON-RPC into MCP.
 Extract substrate; re-expose it as CodeSpace tools.
 
 Authorization (**WHO MAY**) stays the Gateway. Safe execution (**HOW
-SAFE**) prefers a Codex **execution subgraph** isolated behind the
-Runner. The reuse unit is that subgraph, not “as narrow as
-`codex-apply-patch`.” Take/leave table:
+SAFE**) is supplied by a pinned Codex **execution subgraph** behind
+the Runner (implementation dependency, not an architectural one).
+Core crates must not import Codex types, including `codex-protocol`.
+The adapter may. Take/leave table:
 [codex-reuse.md](codex-reuse.md). Pin:
 [upstream-lock.md](upstream-lock.md) (`6b9826e`, `rust-v0.154.0`).
 Survey notes that mention Codex `main` `4701aa4b` are **not** a pin
 bump. Re-check graphs after a deliberate W13 update.
 
 CI: `scripts/check-no-model-deps.sh` (root workspace crates only;
-future `crates/codex-runtime` is excluded like `crates/patch`).
+future `crates/codex-runtime` is excluded like `crates/patch` and may
+take an approved subgraph). This WP does not change scan patterns.
 
 ## Invariant
 
@@ -81,9 +83,9 @@ Process / Patch / FS
 ```text
 MCP virtual path
       ↓
-WorkspaceResolver
+WorkspaceResolver / CodeSpace path scope
       ↓
-absolute path (internal)
+absolute path (internal; later Codex AbsolutePath / PathUri in the adapter)
       ↓
 Runner / patch helper
 ```
@@ -105,15 +107,17 @@ exec_command / write_stdin / read_process / terminate_process
 ```
 
 Do **not** take `codex-exec` (product exec flow) or embed App Server.
-`codex-exec-server` is a **reference / future backend**, not a forever
-reject — later measure Gateway→adapter→exec-server against
-ContainerRunner + low-level crates
+`codex-exec-server-protocol` is an internal worker-DTO candidate;
+`codex-exec-server` is an experimental backend (`codex-api` /
+`codex-config`) — not a forever reject
 ([codex-reuse.md](codex-reuse.md)). Do **not** default sandbox policy
 from “the Codex user’s config.” Gateway maps an already-allowed
-request onto runner DTOs. Prefer `codex-utils-pty`. Actively evaluate
-`codex-linux-sandbox` (and transitives `codex-sandboxing`,
-`codex-network-proxy`) as defense-in-depth; a container does not
-replace that subgraph.
+request onto runner DTOs. Prefer `codex-process-hardening`,
+`codex-utils-pty`, and `codex-uds` (transport primitive; RPC stays
+CodeSpace). Actively evaluate `codex-file-system` under PathSandbox
+scope, then `codex-linux-sandbox` (dev-dep includes `codex-core`;
+keep that out of the product graph) plus `codex-network-proxy` when a
+network axis exists. A container does not replace that subgraph.
 
 App Server streaming processes are connection-scoped and die when that
 connection closes. CodeSpace keeps **request lifetime ≠ process
@@ -159,9 +163,9 @@ external editor bump invalidates versions and `apply_patch` can fail
 `expected_versions` / a future `STALE_READ`.
 
 Fuzzy search **sessions** are TUI typing UX. Keep MCP as `find` /
-later `find_files(query, workspace_id, limit)`. Reuse an engine later
-if the subgraph is execution-focused and isolatable behind the Runner;
-drop the session protocol.
+later `find_files(query, workspace_id, limit)`. Prefer
+`codex-file-search` as the engine behind that contract; drop the
+session protocol.
 
 ## Hooks and skills
 
@@ -181,7 +185,8 @@ but auth and tool-name collision are expensive.
 | --- | --- |
 | V4A parse/verify/apply | `thread/*`, `turn/*`, steer-as-turn |
 | Standalone command/exec **shape** | `codex-exec` crate, App Server embed |
-| PTY / linux-sandbox / hardening subgraph | Homegrown Landlock/seccomp/PTY by default |
+| PTY / UDS / linux-sandbox / hardening subgraph | Homegrown Landlock/seccomp/PTY/UDS by default |
+| Filesystem mechanics under PathSandbox scope | Replacing PathSandbox wholesale; `codex-protocol` in core |
 | Process manager / PTY helper | Connection-scoped process death |
 | Sandbox **policy object** (gateway fills) | User Codex config as default allow |
 | Permission profile **shape** in `crates/policy` | `permissionProfile` from the model or Codex session |
@@ -204,15 +209,16 @@ This work package is documentation and a dependency check only.
 **P0** — already or next code WPs: `codex-apply-patch` (done), exec
 runtime **shape** on Runner DTOs, PermissionProfile domain in
 `crates/policy`, Environment domain (operator-registered; not a tool
-arg yet), resource serializer, execution-subgraph **evaluation**
-(PTY / linux-sandbox / hardening) then transport (`ContainerRunner`).
+arg yet), resource serializer, then transport (`ContainerRunner`)
+taking the staged subgraph (process-hardening → PTY → UDS/path →
+filesystem → linux-sandbox → network).
 
 **P1** — operation state machine / diff ledger, approval fallback
 tools, internal watch, richer process handles (resize, caps),
 disconnect policy.
 
-**P2** — `find` quality / index, deterministic hooks, skills as
-resources or prompts.
+**P2** — `find` quality via `codex-file-search` behind the existing
+MCP contract, deterministic hooks, skills as resources or prompts.
 
 **P3** — remote environment, MCP federation, artifact registry.
 

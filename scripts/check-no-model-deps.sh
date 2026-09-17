@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Root workspace crates must not grow a model / Responses / Codex-agent
-# dependency (codex-core, login, app-server, Responses). crates/patch
-# and third_party/codex are out of scope (apply-patch isolation).
-# A future crates/codex-runtime isolated workspace is excluded the same
-# way as crates/patch — it is not created in this WP and must never be
-# added to CRATES= below. Local HTTP reqwest in codespace-server is OK.
+# Policy (docs/codex-reuse.md): CodeSpace core must not take Codex crate
+# deps (agent/product *or* execution types). crates/patch is the isolated
+# adapter today. A future crates/codex-runtime (codespace-codex-runtime)
+# is excluded the same way and may take an *approved* execution subgraph
+# (including transitive codex-protocol). It is not created in this WP and
+# must never be added to CRATES= below.
+# This script's scan patterns still target model / Responses / Codex-agent
+# (codex-core, login, app-server, Responses). Do not expand them in this
+# WP. Local HTTP reqwest in codespace-server is OK.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"

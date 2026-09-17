@@ -21,8 +21,9 @@ Borrowed ideas (not code dumps):
 - From CoS: approved workspaces, per-hunk path resolve before the engine,
   preflight, best-effort rollback, split tool surface.
 - From Codex: original Rust `codex-apply-patch` parse / verify / apply,
-  and later a cohesive **execution subgraph** (PTY, Linux sandbox,
-  hardening) isolated behind the Runner
+  and later a cohesive **execution subgraph** (hardening, PTY, UDS,
+  path, filesystem, Linux sandbox, network) isolated behind the
+  Runner. Codex is an implementation dependency, not the control plane
   ([codex-reuse.md](codex-reuse.md)).
 
 Not taken: Electron, Chrome extension, ChatGPT DOM, agents spawn, Desktop,
@@ -141,10 +142,11 @@ Runner.apply_patch(request)
 Gateway keeps authorization, `operation_key` replay, the write lock,
 dispatch, and persistence. There is no runner control socket today.
 
-Sandbox, PTY, and network isolation are **not** “reimplement Codex OS
-engineering by default.” Prefer a cohesive execution subgraph isolated
-behind the Runner, same pattern as `crates/patch` (later
-`crates/codex-runtime`). Do not embed App Server or `codex-exec`.
+Sandbox, PTY, UDS, and network isolation are **not** “reimplement
+Codex OS engineering by default.” Prefer a cohesive execution
+subgraph isolated behind the Runner, same pattern as `crates/patch`
+(later `crates/codex-runtime` / `codespace-codex-runtime`). Codex
+types stay in the adapter. Do not embed App Server or `codex-exec`.
 `codex-exec-server` is a future measurement, not a current backend.
 
 ## Protocol compatibility

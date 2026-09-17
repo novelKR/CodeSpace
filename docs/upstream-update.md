@@ -26,13 +26,16 @@ NOTICE must keep the Apache-2.0 Codex attribution.
    options, symlink policy, or parse errors changed.
 8. Update [NOTICE](../NOTICE) if the reuse description or pin string
    changed.
-9. Judge the pin’s **execution subgraph** (not crate width) against
+9. Judge the pin’s **execution subgraph** against
    [codex-reuse.md](codex-reuse.md): cohesive execution vs agent /
-   model semantics vs Gateway allow bypass. Update the candidate
-   table. Do not add a Codex path dep to the root workspace.
-   Isolation stays in `crates/patch` and, when it exists,
-   `crates/codex-runtime`.
-10. When `crates/codex-runtime` exists, also require: runtime adapter
+   model semantics vs Gateway allow bypass. Treat diffs in
+   process-hardening, PTY, UDS, filesystem, linux-sandbox, and
+   network-proxy as an execution/security changelog. Update the
+   candidate table. Do not add a Codex path dep to the root
+   workspace. Isolation stays in `crates/patch` and, when it exists,
+   `crates/codex-runtime` (`codespace-codex-runtime`).
+10. Until that runtime workspace exists, the gate is SHA + patch
+    parity only. When it exists, also require: runtime adapter
     compile, plus PTY / sandbox / process regressions. This work
     package does not add that suite.
 11. Open a PR. CI must run the pin check **and** `crates/patch` tests.
