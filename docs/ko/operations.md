@@ -77,11 +77,12 @@ spawn입니다. `exec_command.tty` 기본값은 false(파이프)입니다.
 `linux-container`는 exec 경로가 아닙니다. 도구와 `workspace_info`에는
 `environment_id`가 없습니다. `workspace_id`로 `workspace_info`를 호출하면
 실제 execution 계약(`execution`)을 읽습니다. 정책 대 백엔드 지원,
-`process.available`(exec 권한과 백엔드 지원만, occupancy 아님 —
-`exec_command`는 여전히 `WORKSPACE_BUSY`일 수 있음; 도구 존재는
-`tools_exposed`), process가 가능할 때 resize 없는 고정 24x80 PTY,
-mutation lease / `WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대
-command sandbox 없음, OS 강제 없는 restricted 네트워크 정책입니다.
+`files.*.available`과 `process.available`(권한과 백엔드 지원만,
+occupancy 아님 — `exec_command`나 `apply_patch`는 여전히
+`WORKSPACE_BUSY`일 수 있음; 도구 존재는 `tools_exposed`), process가
+가능할 때 resize 없는 고정 24x80 PTY, mutation lease /
+`WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대 command sandbox 없음,
+OS 강제 없는 restricted 네트워크 정책입니다.
 `output_combined=true`는 `read_process`가 하나의 combined stream만
 노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
 `exec_command`는 `dispatch_status`(`confirmed` 또는

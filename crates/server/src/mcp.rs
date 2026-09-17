@@ -119,7 +119,7 @@ impl CodeSpace {
 
     #[tool(
         name = "workspace_info",
-        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. process.available reflects permission and backend support only. It does not include transient workspace occupancy; exec_command may still return WORKSPACE_BUSY. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
+        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. files.*.available and process.available reflect permission and backend support only. They do not include transient workspace occupancy; exec_command or apply_patch may still return WORKSPACE_BUSY. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
     )]
     async fn workspace_info(
         &self,
@@ -391,7 +391,7 @@ impl CodeSpace {
     ) -> Result<ApplyPatchResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
-        ws.require_patch()?;
+        ws.require_file_write()?;
         let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
         let fingerprint = Store::fingerprint(&params);
         match self.store.begin(
@@ -503,7 +503,8 @@ fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
         kind: client_environment_kind(ws.environment_kind),
         client_selectable: false,
         exec_supported: ws.environment_kind.exec_supported(),
-        patch_supported: ws.environment_kind.patch_supported(),
+        file_read_supported: ws.environment_kind.file_read_supported(),
+        file_write_supported: ws.environment_kind.file_write_supported(),
     };
     WorkspaceExecutionInfo::from_effective(
         environment,
@@ -607,8 +608,28 @@ mod tests {
             ws.environment_kind.exec_supported()
         );
         assert_eq!(
-            exec.environment.patch_supported,
-            ws.environment_kind.patch_supported()
+            exec.environment.file_read_supported,
+            ws.environment_kind.file_read_supported()
+        );
+        assert_eq!(
+            exec.environment.file_write_supported,
+            ws.environment_kind.file_write_supported()
+        );
+        assert_eq!(
+            exec.files.read.available,
+            exec.permissions.read && exec.environment.file_read_supported
+        );
+        assert_eq!(
+            exec.files.find.available,
+            exec.permissions.read && exec.environment.file_read_supported
+        );
+        assert_eq!(
+            exec.files.patch.available,
+            exec.permissions.write && exec.environment.file_write_supported
+        );
+        assert_eq!(
+            exec.process.available,
+            exec.permissions.exec && exec.environment.exec_supported
         );
     }
 
@@ -671,8 +692,12 @@ mod tests {
         assert_eq!(exec.environment.kind, ClientEnvironmentKind::Host);
         assert!(!exec.environment.client_selectable);
         assert!(exec.environment.exec_supported);
-        assert!(exec.environment.patch_supported);
+        assert!(exec.environment.file_read_supported);
+        assert!(exec.environment.file_write_supported);
         assert!(exec.permissions.read && exec.permissions.write && exec.permissions.exec);
+        assert!(
+            exec.files.read.available && exec.files.find.available && exec.files.patch.available
+        );
         assert!(exec.process.available);
         let tty = &exec
             .process
@@ -708,7 +733,10 @@ mod tests {
         assert!(!exec.permissions.write);
         assert!(!exec.permissions.exec);
         assert!(exec.environment.exec_supported);
-        assert!(exec.environment.patch_supported);
+        assert!(exec.environment.file_read_supported);
+        assert!(exec.environment.file_write_supported);
+        assert!(exec.files.read.available && exec.files.find.available);
+        assert!(!exec.files.patch.available);
         assert!(!exec.process.available);
         assert!(exec.process.capabilities.is_none());
         let json = serde_json::to_value(&exec).unwrap();
@@ -733,8 +761,13 @@ mod tests {
             .expect("execution");
         assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
         assert!(exec.permissions.exec);
+        assert!(exec.permissions.read && exec.permissions.write);
         assert!(!exec.environment.exec_supported);
-        assert!(!exec.environment.patch_supported);
+        assert!(!exec.environment.file_read_supported);
+        assert!(!exec.environment.file_write_supported);
+        assert!(!exec.files.read.available);
+        assert!(!exec.files.find.available);
+        assert!(!exec.files.patch.available);
         assert!(!exec.process.available);
         assert!(exec.process.capabilities.is_none());
         let json = serde_json::to_value(&exec).unwrap();
@@ -759,8 +792,13 @@ mod tests {
             .expect("execution");
         assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
         assert!(!exec.permissions.exec);
+        assert!(exec.permissions.read);
         assert!(!exec.environment.exec_supported);
-        assert!(!exec.environment.patch_supported);
+        assert!(!exec.environment.file_read_supported);
+        assert!(!exec.environment.file_write_supported);
+        assert!(!exec.files.read.available);
+        assert!(!exec.files.find.available);
+        assert!(!exec.files.patch.available);
         assert!(!exec.process.available);
         assert!(exec.process.capabilities.is_none());
     }

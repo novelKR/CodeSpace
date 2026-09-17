@@ -9,17 +9,17 @@ use crate::PathSandbox;
 
 impl InProcessRunner {
     pub fn read_file(&self, ws: &Workspace, path: &str) -> Result<ReadResult, ErrorBody> {
-        ws.require_patch()?;
+        ws.require_file_read()?;
         PathSandbox::new(ws.clone()).read_file(path)
     }
 
     pub fn find_files(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, ErrorBody> {
-        ws.require_patch()?;
+        ws.require_file_read()?;
         PathSandbox::new(ws.clone()).find(glob)
     }
 
     pub fn file_version(&self, ws: &Workspace, path: &str) -> Result<String, ErrorBody> {
-        ws.require_patch()?;
+        ws.require_file_read()?;
         PathSandbox::new(ws.clone()).version(path)
     }
 
@@ -28,7 +28,7 @@ impl InProcessRunner {
         ws: &Workspace,
         req: RunnerApplyPatchRequest,
     ) -> Result<RunnerApplyPatchResult, ErrorBody> {
-        ws.require_patch()?;
+        ws.require_file_write()?;
         let sandbox = PathSandbox::new(ws.clone());
         for (path, expected) in &req.expected_versions {
             let actual = sandbox.version(path)?;

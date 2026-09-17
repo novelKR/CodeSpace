@@ -17,9 +17,9 @@ pub use error::{
 };
 pub use execution::{
     ClientEnvironmentKind, CommandSandboxState, EffectivePermissionInfo, EnvironmentExecutionInfo,
-    IsolationInfo, NetworkEnforcementState, NetworkInfo, NetworkPolicyState, ProcessCapabilityInfo,
-    ProcessExecutionInfo, PtyCapabilityInfo, WorkspaceExecutionInfo, WorkspaceSerializationInfo,
-    PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
+    FileExecutionInfo, FileOperationInfo, IsolationInfo, NetworkEnforcementState, NetworkInfo,
+    NetworkPolicyState, ProcessCapabilityInfo, ProcessExecutionInfo, PtyCapabilityInfo,
+    WorkspaceExecutionInfo, WorkspaceSerializationInfo, PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
 };
 pub use files::{FindParams, FindResult, ReadParams, ReadResult};
 pub use ids::{IntentId, OperationId, OperationKey, ProcessId, WorkId, WorkspaceId};

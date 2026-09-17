@@ -87,9 +87,12 @@ Client-facing execution semantics stay on that surface. `initialize.instructions
 states global invariants (request lifetime ≠ process lifetime, host is
 not an OS sandbox, unenforced network is not permission). `workspace_info`
 with a `workspace_id` adds an `execution` object (permissions vs backend
-support, `process.available` as permission and backend support (not
-occupancy; `exec_command` may still return `WORKSPACE_BUSY`), PTY,
-mutation lease, isolation, network). `process.available` requires both
+support, `files.*.available` and `process.available` as permission and
+backend support (not occupancy; `exec_command` or `apply_patch` may still
+return `WORKSPACE_BUSY`), PTY, mutation lease, isolation, network).
+`files.read.available` and `files.find.available` require read permission
+and `file_read_supported`. `files.patch.available` requires write
+permission and `file_write_supported`. `process.available` requires both
 exec permission and backend support and does not include transient
 occupancy; tool existence is `tools_exposed`.
 `output_combined=true` means `read_process` exposes one combined stream;

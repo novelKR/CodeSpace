@@ -11,8 +11,8 @@ use codespace_domain::{ErrorBody, ErrorCode, Profile, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 pub use environment::{
-    require_exec, require_patch, Environment, EnvironmentDispatchError, EnvironmentKind,
-    DEFAULT_ENVIRONMENT_ID,
+    require_exec, require_file_read, require_file_write, Environment, EnvironmentDispatchError,
+    EnvironmentKind, DEFAULT_ENVIRONMENT_ID,
 };
 pub use permission::{NetworkAxis, PathAccess, PathRule, PermissionProfile};
 
@@ -62,8 +62,12 @@ impl Workspace {
         require_exec(self.environment_kind).map_err(EnvironmentDispatchError::into_error_body)
     }
 
-    pub fn require_patch(&self) -> Result<(), ErrorBody> {
-        require_patch(self.environment_kind).map_err(EnvironmentDispatchError::into_error_body)
+    pub fn require_file_read(&self) -> Result<(), ErrorBody> {
+        require_file_read(self.environment_kind).map_err(EnvironmentDispatchError::into_error_body)
+    }
+
+    pub fn require_file_write(&self) -> Result<(), ErrorBody> {
+        require_file_write(self.environment_kind).map_err(EnvironmentDispatchError::into_error_body)
     }
 }
 
@@ -366,10 +370,15 @@ mod tests {
         ));
         assert_eq!(ws.require_exec().unwrap_err().code, ErrorCode::Unauthorized);
         assert_eq!(
-            ws.require_patch().unwrap_err().code,
+            ws.require_file_read().unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            ws.require_file_write().unwrap_err().code,
             ErrorCode::Unauthorized
         );
         assert!(ws.require_exec().unwrap_err().operation_id.is_none());
-        assert!(ws.require_patch().unwrap_err().operation_id.is_none());
+        assert!(ws.require_file_read().unwrap_err().operation_id.is_none());
+        assert!(ws.require_file_write().unwrap_err().operation_id.is_none());
     }
 }

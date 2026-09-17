@@ -24,8 +24,10 @@ pub struct EnvironmentExecutionInfo {
     pub client_selectable: bool,
     /// Backend currently supports exec for this environment.
     pub exec_supported: bool,
-    /// Backend currently supports apply_patch for this environment.
-    pub patch_supported: bool,
+    /// Backend currently supports workspace file reads.
+    pub file_read_supported: bool,
+    /// Backend currently supports workspace file writes / apply_patch.
+    pub file_write_supported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -59,6 +61,28 @@ pub struct ProcessCapabilityInfo {
     /// master stream.
     pub output_combined: bool,
     pub tty: PtyCapabilityInfo,
+}
+
+/// Static eligibility of a file operation in this workspace.
+///
+/// Availability combines effective permission with backend support.
+/// It does not include transient workspace occupancy; `apply_patch`
+/// may still return `WORKSPACE_BUSY`. Occupancy rules are in
+/// `serialization`. Tool existence is reported separately by
+/// `tools_exposed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileOperationInfo {
+    /// Permission and backend support only. Not current occupancy.
+    pub available: bool,
+}
+
+/// Effective file-tool eligibility. Nested so later capability fields
+/// can be additive without renaming `available`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileExecutionInfo {
+    pub read: FileOperationInfo,
+    pub find: FileOperationInfo,
+    pub patch: FileOperationInfo,
 }
 
 /// Static eligibility of a managed process in this workspace.
@@ -123,6 +147,7 @@ pub struct NetworkInfo {
 pub struct WorkspaceExecutionInfo {
     pub environment: EnvironmentExecutionInfo,
     pub permissions: EffectivePermissionInfo,
+    pub files: FileExecutionInfo,
     pub process: ProcessExecutionInfo,
     pub serialization: WorkspaceSerializationInfo,
     pub isolation: IsolationInfo,
@@ -131,12 +156,24 @@ pub struct WorkspaceExecutionInfo {
 
 impl WorkspaceExecutionInfo {
     /// Assemble the advertised contract from already-evaluated axes.
-    /// `process.available` is permission and backend support, not occupancy.
+    /// `files.*.available` and `process.available` are permission and
+    /// backend support, not occupancy.
     pub fn from_effective(
         environment: EnvironmentExecutionInfo,
         permissions: EffectivePermissionInfo,
         network_policy: NetworkPolicyState,
     ) -> Self {
+        let files = FileExecutionInfo {
+            read: FileOperationInfo {
+                available: permissions.read && environment.file_read_supported,
+            },
+            find: FileOperationInfo {
+                available: permissions.read && environment.file_read_supported,
+            },
+            patch: FileOperationInfo {
+                available: permissions.write && environment.file_write_supported,
+            },
+        };
         let process_available = permissions.exec && environment.exec_supported;
         let process = ProcessExecutionInfo {
             available: process_available,
@@ -159,6 +196,7 @@ impl WorkspaceExecutionInfo {
         Self {
             environment,
             permissions,
+            files,
             process,
             serialization: WorkspaceSerializationInfo {
                 live_process_holds_mutation_lease: true,
@@ -185,22 +223,28 @@ impl WorkspaceExecutionInfo {
 mod tests {
     use super::*;
 
-    fn environment(kind: ClientEnvironmentKind, supported: bool) -> EnvironmentExecutionInfo {
+    fn environment(
+        kind: ClientEnvironmentKind,
+        exec: bool,
+        file_read: bool,
+        file_write: bool,
+    ) -> EnvironmentExecutionInfo {
         EnvironmentExecutionInfo {
             kind,
             client_selectable: false,
-            exec_supported: supported,
-            patch_supported: supported,
+            exec_supported: exec,
+            file_read_supported: file_read,
+            file_write_supported: file_write,
         }
     }
 
     fn compose(
         kind: ClientEnvironmentKind,
-        supported: bool,
+        backend: bool,
         permissions: EffectivePermissionInfo,
     ) -> WorkspaceExecutionInfo {
         WorkspaceExecutionInfo::from_effective(
-            environment(kind, supported),
+            environment(kind, backend, backend, backend),
             permissions,
             NetworkPolicyState::Restricted,
         )
@@ -212,6 +256,16 @@ mod tests {
         let json = serde_json::to_value(exec).unwrap();
         assert_eq!(json["process"]["available"], false);
         assert!(json["process"].get("capabilities").is_none());
+    }
+
+    fn assert_files(exec: &WorkspaceExecutionInfo, read: bool, find: bool, patch: bool) {
+        assert_eq!(exec.files.read.available, read);
+        assert_eq!(exec.files.find.available, find);
+        assert_eq!(exec.files.patch.available, patch);
+        let json = serde_json::to_value(exec).unwrap();
+        assert_eq!(json["files"]["read"]["available"], read);
+        assert_eq!(json["files"]["find"]["available"], find);
+        assert_eq!(json["files"]["patch"]["available"], patch);
     }
 
     #[test]
@@ -228,7 +282,9 @@ mod tests {
         assert_eq!(exec.environment.kind, ClientEnvironmentKind::Host);
         assert!(!exec.environment.client_selectable);
         assert!(exec.environment.exec_supported);
-        assert!(exec.environment.patch_supported);
+        assert!(exec.environment.file_read_supported);
+        assert!(exec.environment.file_write_supported);
+        assert_files(&exec, true, true, true);
         assert!(exec.process.available);
         let caps = exec.process.capabilities.as_ref().expect("capabilities");
         assert!(caps.tty.supported);
@@ -246,6 +302,11 @@ mod tests {
         assert_eq!(json["serialization"]["conflict_error"], "WORKSPACE_BUSY");
         assert!(json.get("environment_id").is_none());
         assert_eq!(json["environment"]["kind"], "host");
+        assert_eq!(json["environment"]["file_read_supported"], true);
+        assert_eq!(json["environment"]["file_write_supported"], true);
+        assert!(json["environment"].get("patch_supported").is_none());
+        assert_eq!(json["files"]["read"]["available"], true);
+        assert_eq!(json["files"]["patch"]["available"], true);
         assert_eq!(json["isolation"]["command_sandbox"], "none");
         assert_eq!(json["network"]["enforcement"], "none");
         assert_eq!(json["process"]["available"], true);
@@ -264,7 +325,9 @@ mod tests {
             },
         );
         assert!(exec.environment.exec_supported);
-        assert!(exec.environment.patch_supported);
+        assert!(exec.environment.file_read_supported);
+        assert!(exec.environment.file_write_supported);
+        assert_files(&exec, true, true, false);
         assert_process_unavailable(&exec);
     }
 
@@ -281,8 +344,10 @@ mod tests {
         );
         assert!(exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
-        assert!(!exec.environment.patch_supported);
+        assert!(!exec.environment.file_read_supported);
+        assert!(!exec.environment.file_write_supported);
         assert_eq!(exec.environment.kind, ClientEnvironmentKind::LinuxContainer);
+        assert_files(&exec, false, false, false);
         assert_process_unavailable(&exec);
         let json = serde_json::to_value(&exec).unwrap();
         assert_eq!(json["environment"]["kind"], "linux-container");
@@ -302,8 +367,11 @@ mod tests {
             },
         );
         assert!(!exec.permissions.exec);
+        assert!(exec.permissions.read);
         assert!(!exec.environment.exec_supported);
-        assert!(!exec.environment.patch_supported);
+        assert!(!exec.environment.file_read_supported);
+        assert!(!exec.environment.file_write_supported);
+        assert_files(&exec, false, false, false);
         assert_process_unavailable(&exec);
     }
 }

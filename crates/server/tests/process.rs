@@ -665,6 +665,7 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         .expect("workspace_info");
     let info_desc = info_tool.description.as_deref().unwrap_or("");
     assert!(info_desc.contains("process.available"), "{info_desc}");
+    assert!(info_desc.contains("files.*.available"), "{info_desc}");
     assert!(info_desc.contains("occupancy"), "{info_desc}");
     assert!(info_desc.contains("WORKSPACE_BUSY"), "{info_desc}");
     let patch = tools
@@ -708,7 +709,11 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     let exec = &payload(&info)["execution"];
     assert_eq!(exec["permissions"]["exec"], true);
     assert_eq!(exec["environment"]["exec_supported"], true);
-    assert_eq!(exec["environment"]["patch_supported"], true);
+    assert_eq!(exec["environment"]["file_read_supported"], true);
+    assert_eq!(exec["environment"]["file_write_supported"], true);
+    assert_eq!(exec["files"]["read"]["available"], true);
+    assert_eq!(exec["files"]["find"]["available"], true);
+    assert_eq!(exec["files"]["patch"]["available"], true);
     assert_eq!(exec["process"]["available"], true);
     assert_eq!(exec["process"]["capabilities"]["tty"]["supported"], true);
     assert_eq!(
