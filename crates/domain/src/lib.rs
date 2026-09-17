@@ -20,7 +20,7 @@ pub use patch::{
 };
 pub use process::{
     ExecCommandParams, ExecCommandResult, ReadProcessParams, ReadProcessResult,
-    TerminateProcessParams, WriteStdinParams,
+    TerminateProcessParams, TerminateProcessResult, WriteStdinParams, WriteStdinResult,
 };
 pub use profile::Profile;
 pub use tools::{

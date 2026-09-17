@@ -140,12 +140,16 @@ impl Store {
         Ok(())
     }
 
-    pub fn clear_shell(&self, workspace_id: &str) {
-        self.leases
-            .lock()
-            .expect("lease mutex")
-            .busy_shell
-            .remove(workspace_id);
+    /// Drop the busy-shell flag only when it still names this process.
+    /// A timed-out handle must not clear a newer shell on the same workspace.
+    pub fn clear_shell(&self, workspace_id: &str, process_id: &str) {
+        let mut leases = self.leases.lock().expect("lease mutex");
+        match leases.busy_shell.get(workspace_id) {
+            Some(current) if current == process_id => {
+                leases.busy_shell.remove(workspace_id);
+            }
+            _ => {}
+        }
     }
 
     pub fn begin(
@@ -396,12 +400,28 @@ mod tests {
             store.try_acquire_write("demo").err().map(|e| e.code),
             Some(ErrorCode::WorkspaceBusy)
         );
-        store.clear_shell("demo");
+        store.clear_shell("demo", "proc-1");
         let _guard = store.try_acquire_write("demo").unwrap();
         assert_eq!(
             store.try_acquire_write("demo").err().map(|e| e.code),
             Some(ErrorCode::WorkspaceBusy)
         );
+    }
+
+    #[test]
+    fn stale_shell_clear_does_not_unlock_newer_process() {
+        let store = Store::memory().unwrap();
+        store.mark_shell_busy("demo", "proc-old").unwrap();
+        store.clear_shell("demo", "proc-old");
+        store.mark_shell_busy("demo", "proc-new").unwrap();
+        store.clear_shell("demo", "proc-old");
+        store.clear_shell("demo", "proc-stale");
+        assert_eq!(
+            store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+        store.clear_shell("demo", "proc-new");
+        let _guard = store.try_acquire_write("demo").unwrap();
     }
 
     #[test]

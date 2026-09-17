@@ -1,8 +1,9 @@
 # ChatGPT connector experiment (W02)
 
 CodeSpace is a Rust `rmcp` process. It speaks **stdio** and **Streamable HTTP**
-with the same live tools (`workspace_info`, `read`, `find`). Exec and patch
-are not registered yet.
+with the same nine MVP tools (`workspace_info`, `read`, `find`, `apply_patch`,
+`exec_command`, `write_stdin`, `read_process`, `terminate_process`,
+`operation_status`).
 
 Core protocol baseline is **MCP 2025-11-25**. See
 [protocol-compatibility.md](protocol-compatibility.md).

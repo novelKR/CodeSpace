@@ -101,7 +101,23 @@ pub fn ensure_helper_for_tests() -> PathBuf {
     use std::sync::OnceLock;
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../patch/Cargo.toml");
+        if let Some(path) = std::env::var_os("CODESPACE_PATCH_BIN") {
+            let existing = PathBuf::from(path);
+            if existing.is_file() {
+                return existing;
+            }
+        }
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let known = [
+            manifest_dir.join("../../target/patch-helper/debug/codespace-patch"),
+            std::env::temp_dir().join("codespace-patch-helper/debug/codespace-patch"),
+        ];
+        for candidate in known {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        let manifest = manifest_dir.join("../patch/Cargo.toml");
         let target = std::env::temp_dir().join("codespace-patch-helper");
         let status = Command::new("cargo")
             .arg("build")

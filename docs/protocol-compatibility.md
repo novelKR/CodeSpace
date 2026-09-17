@@ -13,9 +13,9 @@ do. This process never calls a model.
 | Progressive enhancement | **2026-07-28** | Optional. Same tool semantics. Never required for core. |
 
 Required primitives for core execution: `initialize`, `tools/list`,
-`tools/call`. Live tools today are `workspace_info`, `read`, and `find`.
-Later packages (`apply_patch`, `exec_*`, `operation_status`) add rows to
-the same forced-version matrix. They still use `tools/call`.
+`tools/call`. The nine MVP tools are live: `workspace_info`, `read`,
+`find`, `apply_patch`, `exec_command`, `write_stdin`, `read_process`,
+`terminate_process`, `operation_status`. They still use `tools/call`.
 
 ## What core must not require
 
@@ -42,8 +42,8 @@ true.
 ## 2026-07-28
 
 When a client negotiates 2026-07-28, the server may advertise enhancement
-flags. Semantics of `workspace_info` / `read` / `find` stay identical to
-2025-11-25. This revision is **progressive enhancement only**.
+flags. Semantics of the nine MVP tools stay identical to 2025-11-25.
+This revision is **progressive enhancement only**.
 
 Existing Auto tests that prefer 2026-07-28 and fall back to 2025-11-25
 prove fallback. They do **not** replace 2025-11-25-only coverage.

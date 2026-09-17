@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::authorize_headers;
 use crate::config::HttpConfig;
 use crate::mcp::CodeSpace;
+use crate::process::ProcessSupervisor;
 
 #[derive(Clone)]
 struct HttpState {
@@ -53,8 +54,15 @@ pub fn http_router(
     allowed_hosts.dedup();
 
     let registry = registry.clone();
+    let processes = ProcessSupervisor::new(store.clone());
     let service = StreamableHttpService::new(
-        move || Ok(CodeSpace::with_store(registry.clone(), store.clone())),
+        move || {
+            Ok(CodeSpace::with_parts(
+                registry.clone(),
+                store.clone(),
+                processes.clone(),
+            ))
+        },
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default()
             .with_json_response(true)

@@ -2,9 +2,11 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use codespace_domain::{
-    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, FindParams,
-    FindResult, OperationStatusParams, OperationStatusResult, PatchStatus, ReadParams, ReadResult,
-    WorkspaceInfo, WorkspaceInfoParams,
+    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, ExecCommandParams,
+    ExecCommandResult, FindParams, FindResult, OperationStatusParams, OperationStatusResult,
+    PatchStatus, ReadParams, ReadProcessParams, ReadProcessResult, ReadResult,
+    TerminateProcessParams, TerminateProcessResult, WorkspaceInfo, WorkspaceInfoParams,
+    WriteStdinParams, WriteStdinResult,
 };
 use codespace_policy::{Action, ClientClaims, Registry};
 use codespace_runner::PathSandbox;
@@ -19,6 +21,7 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData as McpError, Json, RoleServer, ServerHandler,
 };
 
+use crate::process::ProcessSupervisor;
 use crate::protocol::{NegotiatedFeatures, CORE_BASELINE, SUPPORTED_PROTOCOL_VERSIONS};
 
 #[derive(Clone)]
@@ -27,6 +30,7 @@ pub struct CodeSpace {
     tool_router: ToolRouter<Self>,
     registry: Registry,
     store: Arc<Store>,
+    processes: ProcessSupervisor,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -43,10 +47,16 @@ impl CodeSpace {
     }
 
     pub fn with_store(registry: Registry, store: Arc<Store>) -> Self {
+        let processes = ProcessSupervisor::new(store.clone());
+        Self::with_parts(registry, store, processes)
+    }
+
+    pub fn with_parts(registry: Registry, store: Arc<Store>, processes: ProcessSupervisor) -> Self {
         Self {
             tool_router: Self::tool_router(),
             registry,
             store,
+            processes,
         }
     }
 
@@ -123,6 +133,66 @@ impl CodeSpace {
     ) -> Result<Json<OperationStatusResult>, String> {
         self.store
             .status(&params.operation_id)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "exec_command",
+        description = "Start a managed argv process in a workspace-write workspace. Returns a server-minted process_id. HTTP request lifetime is not process lifetime."
+    )]
+    async fn exec_command(
+        &self,
+        Parameters(params): Parameters<ExecCommandParams>,
+    ) -> Result<Json<ExecCommandResult>, String> {
+        self.processes
+            .exec(&self.registry, params)
+            .await
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "write_stdin",
+        description = "Write bytes to a server-minted process_id. Invented handles are rejected."
+    )]
+    async fn write_stdin(
+        &self,
+        Parameters(params): Parameters<WriteStdinParams>,
+    ) -> Result<Json<WriteStdinResult>, String> {
+        self.processes
+            .write_stdin(params)
+            .await
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "read_process",
+        description = "Read capped stdout/stderr from a cursor. Does not keep unlimited output."
+    )]
+    async fn read_process(
+        &self,
+        Parameters(params): Parameters<ReadProcessParams>,
+    ) -> Result<Json<ReadProcessResult>, String> {
+        self.processes
+            .read(params)
+            .await
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "terminate_process",
+        description = "Kill a server-minted process_id. Does not accept client-invented handles."
+    )]
+    async fn terminate_process(
+        &self,
+        Parameters(params): Parameters<TerminateProcessParams>,
+    ) -> Result<Json<TerminateProcessResult>, String> {
+        self.processes
+            .terminate(params)
+            .await
             .map(Json)
             .map_err(err_json)
     }
