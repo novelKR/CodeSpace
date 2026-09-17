@@ -10,4 +10,6 @@ workspace.
 ## Find your next step
 
 - [Getting started](../README.md) — tools, run commands, and license
+- [Operations](operations.md) — install, run, logs, and recovery
+- [ChatGPT connector](chatgpt-connector.md) — stdio, HTTP, and unverified account checks
 - [Documentation site](documentation.md) — bilingual registry and Pages

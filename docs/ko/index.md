@@ -10,4 +10,6 @@ Codex 형식 패치를 적용하며, 등록된 워크스페이스에서 관리�
 ## 다음 단계
 
 - [시작하기](../../README.ko.md) — 도구, 실행 명령, 라이선스
+- [운영](operations.md) — 설치, 실행, 로그, 복구
+- [ChatGPT 커넥터](chatgpt-connector.md) — stdio, HTTP, 미검증 계정 검사
 - [문서 사이트](documentation.md) — 영·한 레지스트리와 Pages
