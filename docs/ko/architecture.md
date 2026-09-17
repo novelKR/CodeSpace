@@ -61,13 +61,14 @@ codespace-mcp  (host gateway)
    ▼
 RuntimeBackend
    ├─ default: InProcessRunner
-   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds)
-          │ length-prefixed CodeSpace JSON (protocol 1, request_id rrpc-…)
+   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds, 1:1)
+          │ length-prefixed CodeSpace JSON (protocol 1, Hello, request_id rrpc-…)
           ▼
-     codespace-codex-runtime
-          ├─ codex-process-hardening
-          ├─ codex-uds bind
-          └─ InProcessRunner (same methods as default)
+     codespace-codex-runtime  (게이트웨이 RuntimeProcess가 소유)
+          ├─ unique 0700 dir + runner.sock (bind only; 부모 chmod 없음)
+          ├─ codex-process-hardening (main 첫 줄, command sandbox 아님)
+          ├─ 연결 끊김 / 게이트웨이 종료 → 워커 종료 (호스트 자식도 죽음)
+          └─ InProcessRunner 하나
                  ├─ read / find / version (PathSandbox)
                  ├─ apply_patch (one transaction)
                  │      expected versions → preflight → snapshot
@@ -161,8 +162,12 @@ Runner.apply_patch(request)
 
 게이트웨이는 인가, `operation_key` 재실행, 쓰기 잠금, 디스패치,
 영속을 유지합니다. 기본은 `InProcessRunner`입니다. 선택적
-`CODESPACE_RUNNER=uds`는 비공개 Unix 소켓을 쓰며 compose 픽스처가
-아닙니다.
+`CODESPACE_RUNNER=uds`는 비공개 Unix 소켓(unique 0700 leaf,
+`runner.sock`)을 쓰며 compose 픽스처가 아닙니다. 게이트웨이가 워커를
+1:1로 소유합니다(`RuntimeProcess`, `kill_on_drop`). 재연결은 없습니다.
+살아있는 소켓은 connect-probe로 확인하고 leftover는
+`ConnectionRefused`일 때만 unlink합니다. 러너 `Replay`는 같은 연결에서만
+동작합니다.
 
 Sandbox, PTY, 네트워크 격리는 **“기본적으로 Codex OS 공학을
 재구현”이 아닙니다.** `crates/patch`와 `crates/codex-runtime` /

@@ -25,7 +25,11 @@ It does not mount:
 There is no runner control socket on the compose fixture. Do not add a
 host Docker socket or a future control socket to this fixture by
 accident. Opt-in `CODESPACE_RUNNER=uds` uses a **private** gateway↔worker
-Unix socket off this fixture.
+Unix socket off this fixture. The gateway creates a unique 0700 leaf
+(`$TMPDIR/codespace-runner-<pid>-<rand>/` or
+`$CODESPACE_RUNNER_DIR/run-<pid>-<rand>/`) and binds `$dir/runner.sock`.
+Live sockets are probed with `connect`; only `ConnectionRefused`
+leftovers are unlinked. `/tmp` itself is never chmodded.
 
 ## macOS / no Docker
 
@@ -43,10 +47,14 @@ supervisor) and the opt-in Unix-socket `UdsRunner` client. The
 worker is isolated `crates/codex-runtime` (`codespace-codex-runtime`):
 `codex_process_hardening::pre_main_hardening()` stays the first line of
 `main` (process hardening of the worker/helper, **not** a command
-sandbox; no `ctor`). Then `codex-uds` bind, then the same
-`InProcessRunner` methods. Wire format is **u32 length-prefix +
-CodeSpace JSON** (`protocol: 1`, `request_id` `rrpc-…`, events include
-`ProcessExited`), not App Server. That **transport** is implemented; it
+sandbox; no `ctor`). Then bind `$dir/runner.sock` (no parent chmod),
+then **one** `InProcessRunner` for the process. Wire format is **u32
+length-prefix + CodeSpace JSON** (`protocol: 1`, Hello handshake,
+`request_id` `rrpc-…`, events include `ProcessExited`), not App Server.
+P0 UDS is 1:1: the gateway owns the worker child (`kill_on_drop`);
+disconnect or gateway shutdown kills the worker and host children;
+`process_id` does not survive; there is no reconnect. Runner `Replay`
+is same-connection only. That **transport** is implemented; it
 is opt-in (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`) on the
 **same host**. It does not claim Linux isolation. Next WPs are PTY /
 filesystem / linux-sandbox / network, not a second transport rewrite.

@@ -32,6 +32,19 @@ async fn drop_after_one_frame(stream: UnixStream) {
 }
 
 #[tokio::test]
+async fn hello_handshake_succeeds() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    runner.handshake().await.expect("hello");
+}
+
+#[tokio::test]
 async fn uds_runner_read_and_exec_over_length_prefix() {
     let (client, server) = UnixStream::pair().expect("unix pair");
     let (worker, events) = host_worker();

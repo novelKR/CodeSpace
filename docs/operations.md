@@ -107,11 +107,17 @@ If `CODESPACE_OPERATIONS_DB` is unset, operations and the intent queue
 live in memory and **do not survive restart**. Process handles never
 survive restart.
 
-Opt-in runner worker (still host exec, not Linux isolation):
+Opt-in runner worker (still host exec, not Linux isolation). UDS is
+1:1: the gateway owns `RuntimeProcess` (child, private 0700 directory,
+`$dir/runner.sock`). There is no reconnect. `--runner-dir` /
+`CODESPACE_RUNNER_DIR` may name a parent for that unique leaf; `/`,
+`/tmp`, `/var/tmp`, and `$HOME` are rejected as the directory itself.
+`--runner-socket` is only for connecting to an already-running worker
+and does not chmod the parent path.
 
 ```bash
 export CODESPACE_RUNNER=uds
-export CODESPACE_RUNNER_SOCKET="$PWD/data/runner.sock"
+export CODESPACE_RUNNER_DIR="$PWD/data/runner"
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ./dist/codespace-mcp
 ```
@@ -180,8 +186,11 @@ response is not an execution failure.
   `read_process` / `terminate_process` with the issued `process_id`.
   Ambiguous transport keeps the process-owned lease. `ProcessExited`
   from the worker calls `release_process` so `WORKSPACE_BUSY` does not
-  stick forever. After gateway restart, old OS PIDs are not reused as
-  CodeSpace handles.
+  stick forever. UDS disconnect or gateway shutdown **kills the worker**
+  (host children die with it). Confirmed worker death releases
+  process-owned leases; `process_id` does not survive. Runner `Replay`
+  is a same-connection primitive, not disconnect recovery. After
+  gateway restart, old OS PIDs are not reused as CodeSpace handles.
 
 ## What this document does not verify
 

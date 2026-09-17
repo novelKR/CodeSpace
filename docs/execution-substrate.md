@@ -137,10 +137,13 @@ keep that out of the product graph) plus `codex-network-proxy` when a
 network axis exists. A container does not replace that subgraph.
 
 App Server streaming processes are connection-scoped and die when that
-connection closes. CodeSpace keeps **request lifetime ≠ process
+connection closes. CodeSpace keeps **MCP request lifetime ≠ process
 lifetime**. `process_id` is server-minted and stored as application
-state. Later disconnect policy may be continue / terminate /
-grace-period — not “socket closed ⇒ kill.”
+state. Ending an MCP request does not kill a live process. The opt-in
+UDS path is different: it is 1:1 Gateway ↔ worker. UDS disconnect or
+gateway shutdown kills the worker (host children die). `process_id`
+does not survive worker death. Runner `Replay` is a same-connection
+primitive, not disconnect recovery.
 
 ## Approval and MCP revision
 
@@ -175,7 +178,9 @@ not Thread. `crates/store` now uses an in-memory resource serializer
 for those keys. SQLite schema is unchanged. MVP takes request-owned
 exclusive for `apply_patch` and process-owned exclusive for live shells
 (`WORKSPACE_BUSY`); `ProcessExited` (or in-process exit) calls
-`release_process`. `read` / `find` stay unlocked. Shared-read is typed
+`release_process`. Confirmed UDS worker death releases **all**
+process-owned leases; a lost/ambiguous response by itself does not.
+`read` / `find` stay unlocked. Shared-read is typed
 only.
 
 ## `fs/watch` and search

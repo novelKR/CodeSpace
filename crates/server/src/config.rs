@@ -46,9 +46,17 @@ pub struct Cli {
     #[arg(long, env = "CODESPACE_RUNNER", default_value = "in-process")]
     pub runner: String,
 
-    /// Unix socket for `CODESPACE_RUNNER=uds`.
+    /// Unix socket for `CODESPACE_RUNNER=uds` when connecting to an
+    /// already-running worker. Spawn path uses `--runner-dir` instead
+    /// and always binds `$dir/runner.sock`.
     #[arg(long, env = "CODESPACE_RUNNER_SOCKET")]
     pub runner_socket: Option<std::path::PathBuf>,
+
+    /// Base directory for a spawned UDS worker. CodeSpace creates a
+    /// unique `run-<pid>-<rand>/` child (mode 0700) under this path.
+    /// `/`, `/tmp`, `/var/tmp`, and `$HOME` are rejected as this value.
+    #[arg(long, env = "CODESPACE_RUNNER_DIR")]
+    pub runner_dir: Option<std::path::PathBuf>,
 
     /// `codespace-codex-runtime` binary for uds mode.
     #[arg(long, env = "CODESPACE_RUNTIME_BIN")]

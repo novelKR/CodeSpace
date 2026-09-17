@@ -5,6 +5,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::Router;
 use codespace_policy::Registry;
+use codespace_runner::RuntimeBackend;
 use codespace_store::Store;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -41,6 +42,28 @@ pub fn http_router(
     store: Arc<Store>,
     cancel: CancellationToken,
 ) -> Router {
+    // Clone one handler so HTTP sessions share the runner. Request and
+    // session end are not process death; process_id stays server-minted.
+    let handler = CodeSpace::with_store(registry, store);
+    finish_http_router(config, handler, cancel)
+}
+
+pub fn http_router_with_runner(
+    config: &HttpConfig,
+    registry: Registry,
+    store: Arc<Store>,
+    cancel: CancellationToken,
+    runner: RuntimeBackend,
+) -> Router {
+    let handler = CodeSpace::with_store_and_runner(registry, store, runner);
+    finish_http_router(config, handler, cancel)
+}
+
+fn finish_http_router(
+    config: &HttpConfig,
+    handler: CodeSpace,
+    cancel: CancellationToken,
+) -> Router {
     let mut allowed_hosts = vec![
         "localhost".into(),
         "127.0.0.1".into(),
@@ -52,9 +75,6 @@ pub fn http_router(
     allowed_hosts.sort();
     allowed_hosts.dedup();
 
-    // Clone one handler so HTTP sessions share the runner. Request and
-    // session end are not process death; process_id stays server-minted.
-    let handler = CodeSpace::with_store(registry, store);
     let inbox = crate::inbox::router(handler.clone());
     let service = StreamableHttpService::new(
         move || Ok(handler.clone()),
@@ -76,11 +96,12 @@ pub async fn serve_http(
     config: HttpConfig,
     registry: Registry,
     store: Arc<Store>,
+    runner: RuntimeBackend,
 ) -> anyhow::Result<(std::net::SocketAddr, CancellationToken)> {
     let addr = format!("{}:{}", config.host, config.port);
     let cancel = CancellationToken::new();
     let bearer_required = config.bearer_token.is_some();
-    let router = http_router(&config, registry, store, cancel.clone());
+    let router = http_router_with_runner(&config, registry, store, cancel.clone(), runner);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound = listener.local_addr()?;
     let child = cancel.clone();

@@ -149,6 +149,7 @@ pub enum RunnerOp {
     Replay {
         request_id: String,
     },
+    Hello,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +165,7 @@ pub enum RunnerOpResult {
     Terminate,
     WorkspaceOf(Option<String>),
     TerminateWorkspace(u32),
+    Hello { protocol: u32 },
 }
 
 /// Host worker: `InProcessRunner` plus a `ProcessExited` event stream.
@@ -218,11 +220,20 @@ where
                 );
                 let mut writer = write.lock().await;
                 write_frame(&mut *writer, &response).await?;
-                continue;
+                return Ok(());
             }
         };
         if request.protocol != WIRE_PROTOCOL || request.kind != WireKind::Request {
-            continue;
+            let response = WireEnvelope::response(
+                request.request_id.clone().unwrap_or_default(),
+                Err(ErrorBody::new(
+                    ErrorCode::InvalidPatch,
+                    "runner rpc protocol mismatch",
+                )),
+            );
+            let mut writer = write.lock().await;
+            write_frame(&mut *writer, &response).await?;
+            return Ok(());
         }
         let request_id = request.request_id.clone().unwrap_or_default();
         let response = match request.op {
@@ -341,6 +352,9 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
             .terminate_workspace(&workspace_id)
             .await
             .map(RunnerOpResult::TerminateWorkspace),
+        RunnerOp::Hello => Ok(RunnerOpResult::Hello {
+            protocol: WIRE_PROTOCOL,
+        }),
         RunnerOp::Replay { .. } => unreachable!("replay is handled before dispatch"),
     };
     result.map_err(RunnerError::into_error_body)
@@ -435,5 +449,51 @@ mod tests {
             serde_json::to_value(&second.result).unwrap(),
             serde_json::to_value(&first.result).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn protocol_mismatch_responds_then_closes() {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (worker, events) = host_worker();
+        tokio::spawn(async move {
+            serve_runner_connection(server, worker, events)
+                .await
+                .expect("serve");
+        });
+        let (mut read, mut write) = client.into_split();
+        let mut envelope = WireEnvelope::request("rrpc-bad".into(), RunnerOp::Hello);
+        envelope.protocol = 99;
+        write_frame(&mut write, &envelope).await.unwrap();
+        let reply = read_frame(&mut read).await.unwrap().unwrap();
+        let parsed: WireEnvelope = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(parsed.ok, Some(false));
+        assert!(parsed.error.is_some());
+        let eof = read_frame(&mut read).await.unwrap();
+        assert!(eof.is_none());
+    }
+
+    #[tokio::test]
+    async fn hello_round_trip() {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (worker, events) = host_worker();
+        tokio::spawn(async move {
+            serve_runner_connection(server, worker, events)
+                .await
+                .expect("serve");
+        });
+        let (mut read, mut write) = client.into_split();
+        write_frame(
+            &mut write,
+            &WireEnvelope::request("rrpc-hello".into(), RunnerOp::Hello),
+        )
+        .await
+        .unwrap();
+        let reply = read_frame(&mut read).await.unwrap().unwrap();
+        let parsed: WireEnvelope = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(parsed.ok, Some(true));
+        match parsed.result {
+            Some(RunnerOpResult::Hello { protocol }) => assert_eq!(protocol, WIRE_PROTOCOL),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

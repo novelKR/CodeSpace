@@ -187,6 +187,22 @@ impl From<ErrorBody> for RunnerError {
     }
 }
 
+impl std::fmt::Display for RunnerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Execution(body) => write!(f, "{}", body.message),
+            Self::TransportBeforeDispatch { message } => {
+                write!(f, "runner transport failed before dispatch: {message}")
+            }
+            Self::TransportAmbiguous { message } => {
+                write!(f, "runner transport result is ambiguous: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RunnerError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "9e39d00b2d76d5bf0c75c240ca7ed59c156812023a65e46c32d9aad91720cc6b",
-      "translation_sha256": "c6eef6033acdd1954732c3129a878d98f6de4c8a7603573da4dc8e8aa73a4582"
+      "source_sha256": "ea0ce5511b84242e0988ce4eda7db0e91acd110c8d0e3b99d4e23e2ef58fae94",
+      "translation_sha256": "e83905f5420b58679530037f7aa56574af242e7b9cefced658a127bcf992c5e0"
     },
     {
       "id": "chatgpt-connector",
@@ -145,8 +145,8 @@
         "프로토콜-호환성",
         "현재-배치"
       ],
-      "source_sha256": "3b8f3fdd6808a209481486809bb47e4a3214db68891d53c6d9025d797d75106e",
-      "translation_sha256": "42d5d7a9949b04c371f1334d398c0c5023079f495bdf655b6b56980def133bef"
+      "source_sha256": "10a2fe76b16659c5c5b68defe6f2d74b7ea41a2983e48616db9f9564477b6a88",
+      "translation_sha256": "bc4fbddc20492fa75c4102f64774b6b1b453884e90569b7c82046925a38619d9"
     },
     {
       "id": "execution-substrate",
@@ -177,8 +177,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "663c4742839d6759311fabb8f3bb51b4c4296dc8f85ecde66342a2f649da43fb",
-      "translation_sha256": "bdbc66beef6b3495dec8759763b2288ed6138e0f30d3df0376a21bad6a358f47"
+      "source_sha256": "17be76e2628e1bd1781ef6364a9592491209e3974cf255672a9c41bac5d036a3",
+      "translation_sha256": "6d186b817511482adc3432025f4d6895f6cb413d54ffbd849166dac5f2071665"
     },
     {
       "id": "protocol-compatibility",
@@ -272,8 +272,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "4575a44a60c147ca41319ba973888de1f4bc2fd4e2759893345e139b46e1d120",
-      "translation_sha256": "bd3b223fc8bda0c40ac62c5a8f79eac23480226fa1e0d8fdee4037c3445ae646"
+      "source_sha256": "41b30338185931fa3ed00b72ee212d2fface9491210e5bef41e4016db715fc24",
+      "translation_sha256": "e0527ae6dcef28eaf21c4ee1452b3263afa997c1dea1408fc5c5ab91bc451366"
     },
     {
       "id": "error-codes",

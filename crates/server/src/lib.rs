@@ -8,6 +8,7 @@ pub mod logging;
 pub mod mcp;
 pub mod patch_helper;
 pub mod protocol;
+pub mod runtime;
 pub mod stdio;
 
 pub use config::{HttpConfig, INBOX_PATH, MCP_PATH};

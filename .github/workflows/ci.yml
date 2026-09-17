@@ -46,6 +46,8 @@ jobs:
           cargo test --manifest-path crates/codex-runtime/Cargo.toml
           cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime
           # Worker apply_patch still shells out to the patch helper. Export
-          # CODESPACE_PATCH_BIN before workspace and UDS tests.
+          # CODESPACE_PATCH_BIN before workspace and UDS tests. RuntimeProcess
+          # tests spawn the worker when CODESPACE_RUNTIME_BIN is set.
           export CODESPACE_PATCH_BIN="${PWD}/crates/patch/target/debug/codespace-patch"
+          export CODESPACE_RUNTIME_BIN="${PWD}/crates/codex-runtime/target/debug/codespace-codex-runtime"
           cargo test --workspace

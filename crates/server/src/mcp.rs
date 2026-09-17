@@ -12,7 +12,7 @@ use codespace_domain::{
 use codespace_policy::{allow, Action, ClientClaims, Registry};
 use codespace_runner::{
     Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest, RunnerReadProcess,
-    RunnerWriteStdin, RuntimeBackend, UdsRunner,
+    RunnerWriteStdin, RuntimeBackend,
 };
 use codespace_store::{Begin, Store};
 use rmcp::{
@@ -64,15 +64,7 @@ impl CodeSpace {
         let on_release = Arc::new(move |process_id: &str| {
             store_for_lease.release_process(process_id);
         });
-        let runner = match std::env::var("CODESPACE_RUNNER") {
-            Ok(mode) if mode == "uds" => {
-                let path = std::env::var("CODESPACE_RUNNER_SOCKET")
-                    .expect("CODESPACE_RUNNER_SOCKET is required when CODESPACE_RUNNER=uds");
-                RuntimeBackend::Uds(connect_uds_runner(&path, on_release))
-            }
-            _ => RuntimeBackend::in_process(on_release),
-        };
-        Self::with_store_and_runner(registry, store, runner)
+        Self::with_store_and_runner(registry, store, RuntimeBackend::in_process(on_release))
     }
 
     pub fn with_store_and_runner(
@@ -452,17 +444,6 @@ fn runner_err_json(err: RunnerError) -> String {
     err_json(err.into_error_body())
 }
 
-fn connect_uds_runner(path: &str, on_process_exit: codespace_runner::ShellRelease) -> UdsRunner {
-    let std_stream = std::os::unix::net::UnixStream::connect(path).unwrap_or_else(|err| {
-        panic!("connect runner socket {path}: {err}");
-    });
-    std_stream
-        .set_nonblocking(true)
-        .expect("runner socket nonblocking");
-    let stream = tokio::net::UnixStream::from_std(std_stream).expect("tokio runner socket");
-    UdsRunner::from_stream(stream, on_process_exit)
-}
-
 fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {
     let Some(id) = workspace_id.filter(|s| !s.is_empty()) else {
         return Ok(workspace_info(None));
@@ -531,7 +512,7 @@ mod tests {
     use super::*;
     use codespace_domain::{OperationKey, WorkspaceId};
     use codespace_policy::{EnvironmentKind, Workspace};
-    use codespace_runner::{host_worker, serve_runner_connection};
+    use codespace_runner::{host_worker, serve_runner_connection, UdsRunner};
     use std::collections::BTreeMap;
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;

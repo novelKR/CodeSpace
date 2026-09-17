@@ -24,7 +24,12 @@
 지금은 compose 픽스처에 러너 제어 소켓이 없습니다. 이 픽스처에 호스트
 Docker 소켓이나 이후 제어 소켓을 실수로 추가하지 마세요. 선택적
 `CODESPACE_RUNNER=uds`는 이 픽스처 밖의 **비공개** 게이트웨이↔워커
-Unix 소켓을 씁니다.
+Unix 소켓을 씁니다. 게이트웨이가 unique 0700 leaf를 만듭니다
+(`$TMPDIR/codespace-runner-<pid>-<rand>/` 또는
+`$CODESPACE_RUNNER_DIR/run-<pid>-<rand>/`). 소켓은 항상
+`$dir/runner.sock`입니다. 살아있는 소켓은 `connect`로 조사하며
+`ConnectionRefused` leftover만 unlink합니다. `/tmp` 자체는 chmod하지
+않습니다.
 
 ## macOS / Docker 없음
 
@@ -41,10 +46,14 @@ seccomp/AppArmor와 Docker Desktop 대 Linux 엔진 차이도 검증되지 않�
 워커는 격리된 `crates/codex-runtime`(`codespace-codex-runtime`)입니다.
 `codex_process_hardening::pre_main_hardening()`은 `main`의 첫 줄로
 유지합니다(워커/헬퍼 **프로세스** 강화이지 command sandbox가 아닙니다.
-`ctor` 없음). 그다음 `codex-uds` bind, 같은 `InProcessRunner`
-메서드입니다. 와이어는 **u32 length-prefix + CodeSpace JSON**입니다
-(`protocol: 1`, `request_id` `rrpc-…`, 이벤트에 `ProcessExited`).
-App Server가 아닙니다. 그 **전송**은 구현되어 있으며 선택적입니다
+`ctor` 없음). 그다음 `$dir/runner.sock`에 bind만 합니다(부모 chmod
+없음). 프로세스당 `InProcessRunner`는 **하나**입니다. 와이어는 **u32
+length-prefix + CodeSpace JSON**입니다 (`protocol: 1`, Hello 핸드셰이크,
+`request_id` `rrpc-…`, 이벤트에 `ProcessExited`). App Server가 아닙니다.
+P0 UDS는 1:1입니다. 게이트웨이가 워커 자식을 소유합니다(`kill_on_drop`).
+연결 끊김이나 게이트웨이 종료는 워커와 호스트 자식을 죽입니다.
+`process_id`는 살아남지 않으며 재연결은 없습니다. 러너 `Replay`는 같은
+연결에서만 동작합니다. 그 **전송**은 구현되어 있으며 선택적입니다
 (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). **같은 호스트**이며
 Linux 격리를 주장하지 않습니다. 다음 WP는 PTY / filesystem /
 linux-sandbox / network이며 두 번째 전송 재작성이 아닙니다. 소켓

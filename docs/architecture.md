@@ -60,13 +60,14 @@ codespace-mcp  (host gateway)
    ▼
 RuntimeBackend
    ├─ default: InProcessRunner
-   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds)
-          │ length-prefixed CodeSpace JSON (protocol 1, request_id rrpc-…)
+   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds, 1:1)
+          │ length-prefixed CodeSpace JSON (protocol 1, Hello, request_id rrpc-…)
           ▼
-     codespace-codex-runtime
-          ├─ codex-process-hardening
-          ├─ codex-uds bind
-          └─ InProcessRunner (same methods as default)
+     codespace-codex-runtime  (owned by gateway RuntimeProcess)
+          ├─ unique 0700 dir + runner.sock (bind only; no parent chmod)
+          ├─ codex-process-hardening (main first line, not a command sandbox)
+          ├─ disconnect / gateway shutdown → kill worker (host children die)
+          └─ one InProcessRunner
                  ├─ read / find / version (PathSandbox)
                  ├─ apply_patch (one transaction)
                  │      expected versions → preflight → snapshot
@@ -159,8 +160,11 @@ Runner.apply_patch(request)
 
 Gateway keeps authorization, `operation_key` replay, the write lock,
 dispatch, and persistence. Default remains `InProcessRunner`. Opt-in
-`CODESPACE_RUNNER=uds` uses a private Unix socket, not the compose
-fixture.
+`CODESPACE_RUNNER=uds` uses a private Unix socket (unique 0700 leaf,
+`runner.sock`), not the compose fixture. The gateway owns the worker
+1:1 (`RuntimeProcess`, `kill_on_drop`). There is no reconnect. Live
+sockets are connect-probed; leftovers are unlinked only on
+`ConnectionRefused`. Runner `Replay` is same-connection only.
 
 Sandbox, PTY, and network isolation are **not** “reimplement Codex OS
 engineering by default.” Prefer a cohesive execution subgraph isolated

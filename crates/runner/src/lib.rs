@@ -73,6 +73,7 @@ mod patch_helper;
 mod patch_verify;
 mod process;
 mod rollback;
+mod socket;
 mod uds;
 mod wire;
 
@@ -88,10 +89,14 @@ pub use process::{
     InProcessRunner, RetentionPolicy, ShellRelease, DEFAULT_COMPLETED_TTL, DEFAULT_MAX_COMPLETED,
     DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT,
 };
-pub use uds::UdsRunner;
+pub use socket::{
+    allocate_private_runner_dir, is_forbidden_runner_dir, reclaim_leftover_socket,
+    runner_socket_path, RUNNER_SOCKET_NAME,
+};
+pub use uds::{DisconnectHook, UdsRunner, RUNNER_CALL_DEADLINE};
 pub use wire::{
-    host_worker, serve_runner_connection, RunnerEvent, RunnerOp, RunnerOpResult, WireEnvelope,
-    WireKind, WIRE_PROTOCOL,
+    host_worker, read_frame, serve_runner_connection, write_frame, RunnerEvent, RunnerOp,
+    RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,
 };
 
 /// Execution-plane API. Control-plane fields (`work_id`, coordination,

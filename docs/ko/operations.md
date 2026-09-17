@@ -108,11 +108,17 @@ export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
 재시작 후 **남지 않습니다**. 프로세스 핸들은 재시작 후 절대 남지
 않습니다.
 
-선택적 러너 워커(여전히 호스트 exec이며 Linux 격리가 아님):
+선택적 러너 워커(여전히 호스트 exec이며 Linux 격리가 아님). UDS는
+1:1입니다. 게이트웨이가 `RuntimeProcess`(자식, 비공개 0700 디렉터리,
+`$dir/runner.sock`)를 소유합니다. 재연결은 없습니다.
+`--runner-dir` / `CODESPACE_RUNNER_DIR`은 그 unique leaf의 부모가 될
+수 있습니다. `/`, `/tmp`, `/var/tmp`, `$HOME`을 디렉터리 자체로 주면
+거절합니다. `--runner-socket`은 이미 떠 있는 워커에 연결할 때만 쓰며
+부모 path를 chmod하지 않습니다.
 
 ```bash
 export CODESPACE_RUNNER=uds
-export CODESPACE_RUNNER_SOCKET="$PWD/data/runner.sock"
+export CODESPACE_RUNNER_DIR="$PWD/data/runner"
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ./dist/codespace-mcp
 ```
@@ -181,8 +187,12 @@ HTTP 응답은 실행 실패가 아닙니다.
 - 살아있는 `exec_command` 프로세스는 MCP 요청보다 오래 살 수 있습니다.
   발급된 `process_id`로 `read_process` / `terminate_process`를 사용하세요.
   전송이 모호하면 셸 임대를 유지합니다. 워커 `ProcessExited` 뒤에
-  `release_process`가 풀어 무한 `WORKSPACE_BUSY`를 막습니다.
-  게이트웨이 재시작 후 옛 OS PID는 CodeSpace 핸들로 재사용되지 않습니다.
+  `release_process`가 풀어 무한 `WORKSPACE_BUSY`를 막습니다. UDS 연결
+  끊김이나 게이트웨이 종료는 **워커를 죽입니다**(호스트 자식도 함께
+  죽습니다). 확인된 워커 죽음만 프로세스 소유 임대를 풀며 `process_id`는
+  살아남지 않습니다. 러너 `Replay`는 같은 연결 안의 프리미티브이며
+  연결 끊김 복구가 아닙니다. 게이트웨이 재시작 후 옛 OS PID는
+  CodeSpace 핸들로 재사용되지 않습니다.
 
 ## 이 문서가 검증하지 않는 것
 

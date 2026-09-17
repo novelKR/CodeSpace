@@ -60,6 +60,8 @@ dependencies = [
  "codespace-runner",
  "codex-process-hardening",
  "codex-uds",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

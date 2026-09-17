@@ -98,6 +98,13 @@ impl ResourceSerializer {
         });
     }
 
+    pub(crate) fn release_all_processes(&mut self) {
+        self.exclusive.retain(|_, holder| match holder {
+            ExclusiveHolder::Process(_) => false,
+            ExclusiveHolder::Request => true,
+        });
+    }
+
     pub(crate) fn try_lock(&mut self, resource: Resource, mode: LockMode) -> Result<(), ErrorBody> {
         match mode {
             LockMode::SharedRead => {

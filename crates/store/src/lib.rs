@@ -163,6 +163,13 @@ impl Store {
             .release_process(process_id);
     }
 
+    pub fn release_all_processes(&self) {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .release_all_processes();
+    }
+
     pub fn try_lock(
         &self,
         resource: Resource,
@@ -519,6 +526,21 @@ mod tests {
         store.release_process("proc-1");
         assert_eq!(
             store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+    }
+
+    #[test]
+    fn release_all_processes_keeps_request_owned_writes() {
+        let store = Store::memory().unwrap();
+        store.mark_shell_busy("demo", "proc-1").unwrap();
+        store.mark_shell_busy("other", "proc-2").unwrap();
+        let _guard = store.try_acquire_write("held").unwrap();
+        store.release_all_processes();
+        let _demo = store.try_acquire_write("demo").unwrap();
+        let _other = store.try_acquire_write("other").unwrap();
+        assert_eq!(
+            store.try_acquire_write("held").err().map(|e| e.code),
             Some(ErrorCode::WorkspaceBusy)
         );
     }

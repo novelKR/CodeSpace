@@ -138,10 +138,12 @@ exec_command / write_stdin / read_process / terminate_process
 대체하지 않습니다.
 
 App Server 스트리밍 프로세스는 연결 범위이며 그 연결이 닫히면 죽습니다.
-CodeSpace는 **요청 수명 ≠ 프로세스 수명**을 유지합니다. `process_id`는
-서버가 발급하고 애플리케이션 상태로 저장합니다. 이후 연결 끊김 정책은
-continue / terminate / grace-period일 수 있으며, “소켓이 닫힘 ⇒ 종료”가
-아닙니다.
+CodeSpace는 **MCP 요청 수명 ≠ 프로세스 수명**을 유지합니다. `process_id`는
+서버가 발급하고 애플리케이션 상태로 저장합니다. MCP 요청이 끝나도 살아
+있는 프로세스를 죽이지 않습니다. 선택적 UDS 경로는 다릅니다. 게이트웨이 ↔
+워커는 1:1입니다. UDS 연결 끊김이나 게이트웨이 종료는 워커를 죽입니다
+(호스트 자식도 죽습니다). `process_id`는 워커 죽음 이후 살아남지 않습니다.
+러너 `Replay`는 같은 연결 프리미티브이며 연결 끊김 복구가 아닙니다.
 
 ## 승인과 MCP 리비전
 
@@ -174,6 +176,8 @@ Workspace, Path, Process, Operation, Watch이며 Thread가 아닙니다.
 SQLite 스키마는 그대로입니다. MVP는 `apply_patch`에 요청 소유 배타,
 라이브 셸에 프로세스 소유 배타를 씁니다(`WORKSPACE_BUSY`).
 `ProcessExited`(또는 프로세스 내부 종료)가 `release_process`를 호출합니다.
+확인된 UDS 워커 죽음은 프로세스 소유 임대를 **모두** 풉니다. 응답
+유실/모호함만으로는 풀지 않습니다.
 `read` / `find`는 잠금이 없습니다. Shared-read는 타입만 유지합니다.
 
 ## `fs/watch`와 검색
