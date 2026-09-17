@@ -215,7 +215,7 @@ impl CodeSpace {
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
         allow(ws, Action::Exec, &ClientClaims::default()).map_err(err_json)?;
-        ws.require_host_execution().map_err(err_json)?;
+        ws.require_exec().map_err(err_json)?;
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(ErrorBody::new(
                 ErrorCode::InvalidPatch,
@@ -391,7 +391,7 @@ impl CodeSpace {
     ) -> Result<ApplyPatchResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
-        ws.require_host_execution()?;
+        ws.require_patch()?;
         let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
         let fingerprint = Store::fingerprint(&params);
         match self.store.begin(
@@ -499,12 +499,11 @@ fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
         write: policy.allows(Action::Write),
         exec: policy.allows(Action::Exec),
     };
-    let supported = ws.environment_kind.execution_supported();
     let environment = EnvironmentExecutionInfo {
         kind: client_environment_kind(ws.environment_kind),
         client_selectable: false,
-        exec_supported: supported,
-        patch_supported: supported,
+        exec_supported: ws.environment_kind.exec_supported(),
+        patch_supported: ws.environment_kind.patch_supported(),
     };
     WorkspaceExecutionInfo::from_effective(
         environment,
@@ -605,11 +604,11 @@ mod tests {
         assert_eq!(exec.network.policy, client_network_policy(policy.network));
         assert_eq!(
             exec.environment.exec_supported,
-            ws.environment_kind.execution_supported()
+            ws.environment_kind.exec_supported()
         );
         assert_eq!(
             exec.environment.patch_supported,
-            ws.environment_kind.execution_supported()
+            ws.environment_kind.patch_supported()
         );
     }
 
@@ -672,6 +671,7 @@ mod tests {
         assert_eq!(exec.environment.kind, ClientEnvironmentKind::Host);
         assert!(!exec.environment.client_selectable);
         assert!(exec.environment.exec_supported);
+        assert!(exec.environment.patch_supported);
         assert!(exec.permissions.read && exec.permissions.write && exec.permissions.exec);
         assert!(exec.process.available);
         let tty = &exec
@@ -708,6 +708,7 @@ mod tests {
         assert!(!exec.permissions.write);
         assert!(!exec.permissions.exec);
         assert!(exec.environment.exec_supported);
+        assert!(exec.environment.patch_supported);
         assert!(!exec.process.available);
         assert!(exec.process.capabilities.is_none());
         let json = serde_json::to_value(&exec).unwrap();
@@ -759,6 +760,7 @@ mod tests {
         assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
         assert!(!exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
+        assert!(!exec.environment.patch_supported);
         assert!(!exec.process.available);
         assert!(exec.process.capabilities.is_none());
     }

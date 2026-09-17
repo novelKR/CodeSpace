@@ -264,6 +264,7 @@ mod tests {
             },
         );
         assert!(exec.environment.exec_supported);
+        assert!(exec.environment.patch_supported);
         assert_process_unavailable(&exec);
     }
 
@@ -302,6 +303,7 @@ mod tests {
         );
         assert!(!exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
+        assert!(!exec.environment.patch_supported);
         assert_process_unavailable(&exec);
     }
 }

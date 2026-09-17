@@ -708,6 +708,7 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     let exec = &payload(&info)["execution"];
     assert_eq!(exec["permissions"]["exec"], true);
     assert_eq!(exec["environment"]["exec_supported"], true);
+    assert_eq!(exec["environment"]["patch_supported"], true);
     assert_eq!(exec["process"]["available"], true);
     assert_eq!(exec["process"]["capabilities"]["tty"]["supported"], true);
     assert_eq!(
