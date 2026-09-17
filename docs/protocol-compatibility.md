@@ -87,7 +87,10 @@ Client-facing execution semantics stay on that surface. `initialize.instructions
 states global invariants (request lifetime ≠ process lifetime, host is
 not an OS sandbox, unenforced network is not permission). `workspace_info`
 with a `workspace_id` adds an `execution` object (permissions vs backend
-support, PTY, mutation lease, isolation, network). `exec_command` results
-add `dispatch_status` (`confirmed` or `unknown`). Tool **names** do not
+support, `process.available` as effective process reachability, PTY,
+mutation lease, isolation, network). `process.available` requires both
+exec permission and backend support; tool existence is `tools_exposed`.
+`exec_command` results add `dispatch_status` (`confirmed` or `unknown`).
+Tool **names** do not
 grow. `environment_id`, `cwd`, `tty_size`, and `process_resize` stay off
 the client schema.

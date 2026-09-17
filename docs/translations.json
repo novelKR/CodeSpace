@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "a75b086d05f9d419fa1ff840216d79585793e3b44def87f674e5795305334ff6",
-      "translation_sha256": "d2258c5f982b060d8c328fa10747decbc6ff5a4fdd7cf32ec8c282222a6643b4"
+      "source_sha256": "476c3894ddeece94d11b303ca3b59b0b596f98fd53f5bd00bd56e1a796a32de4",
+      "translation_sha256": "083f454f7e8284d790aa6c4cc013c7f65a4e19cf2c1da1156e74dd4a383b9b7d"
     },
     {
       "id": "chatgpt-connector",
@@ -200,8 +200,8 @@
         "핵심-기준",
         "핵심이-요구하면-안-되는-것"
       ],
-      "source_sha256": "cbe349a8206c9728a529c3024c72d3f9456a50c5e4118e0a74eafb95398de0db",
-      "translation_sha256": "55d8c439d6072cf8a9492627653615193305abbf1d46cc81a8329a9e96675de1"
+      "source_sha256": "bbf474f7154f0f7ad505d31ce9071785e36fbf3dc53f28e41faee25dcdb314e6",
+      "translation_sha256": "7a8392110361a3ee25a89b9897aab653377e8b06c4653b84ee9d3fc809dcc8e0"
     },
     {
       "id": "behavior-differences",

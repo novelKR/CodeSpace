@@ -73,8 +73,9 @@ async fn info_read_patch_exec_flow() {
     assert_eq!(info_body["workspace_id_is_credential"], false);
     assert_eq!(info_body["execution"]["environment"]["kind"], "host");
     assert_eq!(info_body["execution"]["permissions"]["write"], true);
+    assert_eq!(info_body["execution"]["process"]["available"], true);
     assert_eq!(
-        info_body["execution"]["process"]["tty"]["resize_supported"],
+        info_body["execution"]["process"]["capabilities"]["tty"]["resize_supported"],
         false
     );
     assert_eq!(

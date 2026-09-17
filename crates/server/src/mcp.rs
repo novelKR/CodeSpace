@@ -114,7 +114,7 @@ impl CodeSpace {
 
     #[tool(
         name = "workspace_info",
-        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
+        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. process.available is the effective ability to start a managed process in this workspace; it requires both exec permission and backend support. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
     )]
     async fn workspace_info(
         &self,
@@ -623,8 +623,15 @@ mod tests {
         assert!(!exec.environment.client_selectable);
         assert!(exec.environment.exec_supported);
         assert!(exec.permissions.read && exec.permissions.write && exec.permissions.exec);
-        assert!(exec.process.tty.supported);
-        assert!(!exec.process.tty.resize_supported);
+        assert!(exec.process.available);
+        let tty = &exec
+            .process
+            .capabilities
+            .as_ref()
+            .expect("capabilities")
+            .tty;
+        assert!(tty.supported);
+        assert!(!tty.resize_supported);
         assert_eq!(exec.isolation.command_sandbox, CommandSandboxState::None);
         assert_eq!(exec.network.policy, NetworkPolicyState::Restricted);
         assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
@@ -650,6 +657,11 @@ mod tests {
         assert!(!exec.permissions.write);
         assert!(!exec.permissions.exec);
         assert!(exec.environment.exec_supported);
+        assert!(!exec.process.available);
+        assert!(exec.process.capabilities.is_none());
+        let json = serde_json::to_value(&exec).unwrap();
+        assert_eq!(json["process"]["available"], false);
+        assert!(json["process"].get("capabilities").is_none());
     }
 
     #[test]
@@ -670,7 +682,32 @@ mod tests {
         assert!(exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
         assert!(!exec.environment.patch_supported);
-        assert!(!exec.process.tty.supported);
+        assert!(!exec.process.available);
+        assert!(exec.process.capabilities.is_none());
+        let json = serde_json::to_value(&exec).unwrap();
+        assert_eq!(json["process"]["available"], false);
+        assert!(json["process"].get("capabilities").is_none());
+    }
+
+    #[test]
+    fn workspace_info_linux_container_read_only_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        let mut ws = Workspace::new(
+            WorkspaceId("demo".into()),
+            dir.path().to_path_buf(),
+            codespace_domain::Profile::ReadOnly,
+        );
+        ws.environment_kind = EnvironmentKind::LinuxContainer;
+        registry.insert(ws);
+        let exec = lookup(&registry, Some("demo".into()))
+            .unwrap()
+            .execution
+            .expect("execution");
+        assert!(!exec.permissions.exec);
+        assert!(!exec.environment.exec_supported);
+        assert!(!exec.process.available);
+        assert!(exec.process.capabilities.is_none());
     }
 
     async fn drop_after_one_frame(stream: UnixStream) {

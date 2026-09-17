@@ -40,9 +40,13 @@ impl PtySession {
     }
 }
 
-/// Spawn `program` + `args` on a PTY. Default size is 24x80, matching the
-/// advertised `workspace_info.execution.process.tty` initial size. Resize
-/// is not exposed on this API. `env` is the full environment after the
+/// Default PTY size advertised by `workspace_info.execution.process.capabilities.tty`.
+/// Domain constants must match these; do not rely on upstream Default.
+pub const DEFAULT_ROWS: u16 = 24;
+pub const DEFAULT_COLS: u16 = 80;
+
+/// Spawn `program` + `args` on a PTY at [`DEFAULT_ROWS`]×[`DEFAULT_COLS`].
+/// Resize is not exposed on this API. `env` is the full environment after the
 /// caller applied runner-local defaults.
 pub async fn spawn(
     program: &str,
@@ -59,7 +63,10 @@ pub async fn spawn(
         cwd,
         env,
         &None,
-        codex_utils_pty::TerminalSize::default(),
+        codex_utils_pty::TerminalSize {
+            rows: DEFAULT_ROWS,
+            cols: DEFAULT_COLS,
+        },
         &[],
     )
     .await
@@ -79,6 +86,18 @@ mod tests {
     #[test]
     fn crate_is_isolated_adapter() {
         assert_eq!(env!("CARGO_PKG_NAME"), "codespace-pty");
+    }
+
+    #[test]
+    fn default_size_is_24x80_and_matches_upstream() {
+        assert_eq!(DEFAULT_ROWS, 24);
+        assert_eq!(DEFAULT_COLS, 80);
+        let upstream = codex_utils_pty::TerminalSize::default();
+        assert_eq!(
+            (upstream.rows, upstream.cols),
+            (DEFAULT_ROWS, DEFAULT_COLS),
+            "upstream TerminalSize::default drifted from advertised PTY size"
+        );
     }
 
     #[tokio::test]

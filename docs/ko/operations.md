@@ -76,10 +76,12 @@ spawn입니다. `exec_command.tty` 기본값은 false(파이프)입니다.
 `linux-container`를 등록할 수 있습니다. 생략하면 암시적 로컬 호스트입니다.
 `linux-container`는 exec 경로가 아닙니다. 도구와 `workspace_info`에는
 `environment_id`가 없습니다. `workspace_id`로 `workspace_info`를 호출하면
-실제 execution 계약(`execution`)을 읽습니다. 정책 대 백엔드 지원, resize
-없는 고정 24x80 PTY, mutation lease / `WORKSPACE_BUSY`, 워크스페이스 범위
-파일 도구 대 command sandbox 없음, OS 강제 없는 restricted 네트워크
-정책입니다. `exec_command`는 `dispatch_status`(`confirmed` 또는
+실제 execution 계약(`execution`)을 읽습니다. 정책 대 백엔드 지원,
+`process.available`(exec 권한과 백엔드 지원을 함께 요구, 도구 존재는
+`tools_exposed`), process가 가능할 때 resize 없는 고정 24x80 PTY,
+mutation lease / `WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대
+command sandbox 없음, OS 강제 없는 restricted 네트워크 정책입니다.
+`exec_command`는 `dispatch_status`(`confirmed` 또는
 `unknown`)를 반환합니다. `unknown` patch/exec는 실행됐을 수 있으니 새
 `operation_key`로 같은 mutation을 재시도하지 마세요.
 

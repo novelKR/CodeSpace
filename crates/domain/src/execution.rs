@@ -73,6 +73,16 @@ pub struct ProcessCapabilityInfo {
     pub tty: PtyCapabilityInfo,
 }
 
+/// Effective reachability of a managed process in this workspace.
+/// `available` is `permissions.exec && environment.exec_supported`.
+/// Tool existence is reported separately by `tools_exposed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessExecutionInfo {
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ProcessCapabilityInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceSerializationInfo {
     pub live_process_holds_mutation_lease: bool,
@@ -121,7 +131,7 @@ pub struct NetworkInfo {
 pub struct WorkspaceExecutionInfo {
     pub environment: EnvironmentExecutionInfo,
     pub permissions: EffectivePermissionInfo,
-    pub process: ProcessCapabilityInfo,
+    pub process: ProcessExecutionInfo,
     pub serialization: WorkspaceSerializationInfo,
     pub isolation: IsolationInfo,
     pub network: NetworkInfo,
@@ -130,16 +140,18 @@ pub struct WorkspaceExecutionInfo {
 impl WorkspaceExecutionInfo {
     /// Effective contract for a registered workspace. `kind` is operator-selected.
     pub fn for_registered(profile: Profile, kind: ClientEnvironmentKind) -> Self {
-        let supported = matches!(kind, ClientEnvironmentKind::Host);
-        Self {
-            environment: EnvironmentExecutionInfo {
-                kind,
-                client_selectable: false,
-                exec_supported: supported,
-                patch_supported: supported,
-            },
-            permissions: EffectivePermissionInfo::from_profile(profile),
-            process: ProcessCapabilityInfo {
+        let backend_exec_supported = matches!(kind, ClientEnvironmentKind::Host);
+        let environment = EnvironmentExecutionInfo {
+            kind,
+            client_selectable: false,
+            exec_supported: backend_exec_supported,
+            patch_supported: backend_exec_supported,
+        };
+        let permissions = EffectivePermissionInfo::from_profile(profile);
+        let process_available = permissions.exec && environment.exec_supported;
+        let process = ProcessExecutionInfo {
+            available: process_available,
+            capabilities: process_available.then_some(ProcessCapabilityInfo {
                 handles: true,
                 survives_request_end: true,
                 write_stdin: true,
@@ -147,13 +159,18 @@ impl WorkspaceExecutionInfo {
                 terminate: true,
                 output_combined: true,
                 tty: PtyCapabilityInfo {
-                    supported,
+                    supported: true,
                     default: false,
                     initial_rows: PTY_INITIAL_ROWS,
                     initial_cols: PTY_INITIAL_COLS,
                     resize_supported: false,
                 },
-            },
+            }),
+        };
+        Self {
+            environment,
+            permissions,
+            process,
             serialization: WorkspaceSerializationInfo {
                 live_process_holds_mutation_lease: true,
                 parallel_exec: false,
@@ -179,6 +196,14 @@ impl WorkspaceExecutionInfo {
 mod tests {
     use super::*;
 
+    fn assert_process_unavailable(exec: &WorkspaceExecutionInfo) {
+        assert!(!exec.process.available);
+        assert!(exec.process.capabilities.is_none());
+        let json = serde_json::to_value(exec).unwrap();
+        assert_eq!(json["process"]["available"], false);
+        assert!(json["process"].get("capabilities").is_none());
+    }
+
     #[test]
     fn host_workspace_write_advertises_exec_and_fixed_pty() {
         let exec = WorkspaceExecutionInfo::for_registered(
@@ -197,12 +222,14 @@ mod tests {
                 exec: true,
             }
         );
-        assert!(exec.process.tty.supported);
-        assert!(!exec.process.tty.default);
-        assert_eq!(exec.process.tty.initial_rows, 24);
-        assert_eq!(exec.process.tty.initial_cols, 80);
-        assert!(!exec.process.tty.resize_supported);
-        assert!(exec.process.output_combined);
+        assert!(exec.process.available);
+        let caps = exec.process.capabilities.as_ref().expect("capabilities");
+        assert!(caps.tty.supported);
+        assert!(!caps.tty.default);
+        assert_eq!(caps.tty.initial_rows, 24);
+        assert_eq!(caps.tty.initial_cols, 80);
+        assert!(!caps.tty.resize_supported);
+        assert!(caps.output_combined);
         assert_eq!(exec.isolation.command_sandbox, CommandSandboxState::None);
         assert_eq!(exec.network.policy, NetworkPolicyState::Restricted);
         assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
@@ -214,6 +241,8 @@ mod tests {
         assert_eq!(json["environment"]["kind"], "host");
         assert_eq!(json["isolation"]["command_sandbox"], "none");
         assert_eq!(json["network"]["enforcement"], "none");
+        assert_eq!(json["process"]["available"], true);
+        assert_eq!(json["process"]["capabilities"]["tty"]["supported"], true);
     }
 
     #[test]
@@ -229,6 +258,7 @@ mod tests {
             }
         );
         assert!(exec.environment.exec_supported);
+        assert_process_unavailable(&exec);
     }
 
     #[test]
@@ -240,11 +270,22 @@ mod tests {
         assert!(exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
         assert!(!exec.environment.patch_supported);
-        assert!(!exec.process.tty.supported);
         assert_eq!(exec.environment.kind, ClientEnvironmentKind::LinuxContainer);
+        assert_process_unavailable(&exec);
         let json = serde_json::to_value(&exec).unwrap();
         assert_eq!(json["environment"]["kind"], "linux-container");
         assert!(json.get("environment_id").is_none());
         assert!(!json.to_string().contains("\"environment_id\""));
+    }
+
+    #[test]
+    fn linux_container_read_only_is_unavailable() {
+        let exec = WorkspaceExecutionInfo::for_registered(
+            Profile::ReadOnly,
+            ClientEnvironmentKind::LinuxContainer,
+        );
+        assert!(!exec.permissions.exec);
+        assert!(!exec.environment.exec_supported);
+        assert_process_unavailable(&exec);
     }
 }

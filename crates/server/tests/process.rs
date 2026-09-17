@@ -610,10 +610,7 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         .find(|tool| tool.name.as_ref() == TOOL_WORKSPACE_INFO)
         .expect("workspace_info");
     let info_desc = info_tool.description.as_deref().unwrap_or("");
-    assert!(
-        info_desc.contains("effective execution contract"),
-        "{info_desc}"
-    );
+    assert!(info_desc.contains("process.available"), "{info_desc}");
     let patch = tools
         .iter()
         .find(|tool| tool.name.as_ref() == TOOL_APPLY_PATCH)
@@ -655,8 +652,12 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     let exec = &payload(&info)["execution"];
     assert_eq!(exec["permissions"]["exec"], true);
     assert_eq!(exec["environment"]["exec_supported"], true);
-    assert_eq!(exec["process"]["tty"]["supported"], true);
-    assert_eq!(exec["process"]["tty"]["resize_supported"], false);
+    assert_eq!(exec["process"]["available"], true);
+    assert_eq!(exec["process"]["capabilities"]["tty"]["supported"], true);
+    assert_eq!(
+        exec["process"]["capabilities"]["tty"]["resize_supported"],
+        false
+    );
     assert_eq!(exec["isolation"]["command_sandbox"], "none");
     assert_eq!(exec["network"]["policy"], "restricted");
     assert_eq!(exec["network"]["enforcement"], "none");
