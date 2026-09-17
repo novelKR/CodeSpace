@@ -50,7 +50,8 @@ fn write_ws(profile: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path:
         .to_string(),
     )
     .unwrap();
-    (root, cfg, root.path().join("ws"))
+    let ws_out = root.path().join("ws");
+    (root, cfg, ws_out)
 }
 
 async fn spawn_client(
@@ -233,8 +234,9 @@ async fn version_conflict_and_context_mismatch_are_not_applied() {
         .await;
     match &mismatch {
         Ok(result) => {
-            let status = payload(result)["status"].as_str().unwrap_or("");
-            assert_ne!(status, "applied", "{}", payload(result));
+            let body = payload(result);
+            let status = body["status"].as_str().unwrap_or("");
+            assert_ne!(status, "applied", "{body}");
         }
         Err(err) => {
             let text = err.to_string();
