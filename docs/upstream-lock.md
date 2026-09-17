@@ -6,10 +6,10 @@ binary as the security boundary, or follow `main`.
 
 **Current code reuse** is `codex-apply-patch` (parse / verify / apply of
 V4A) via `crates/patch`. That is the working example, not a vow that
-no other primitive may ever be taken. Product runtime (App Server,
-`codex-core`, `codex-exec`, login, models) stays out. Lower execution
-primitives are judged in [codex-reuse.md](codex-reuse.md) before they
-touch the Runner. Execution-only rules:
+only equally narrow crates may follow. Product runtime (App Server,
+`codex-core`, `codex-exec`, login, models) stays out. A cohesive
+**execution subgraph** may be taken when it isolates behind the Runner
+([codex-reuse.md](codex-reuse.md)). Execution-only rules:
 [execution-substrate.md](execution-substrate.md). No extra Codex crate
 is on the graph today.
 
@@ -72,10 +72,13 @@ selected upstream fixtures for parity (`crates/patch` →
 symlink follow, sandbox `None` standalone CLI, host-absolute paths from
 the model, silent `git apply`.
 
-**Rejected as CodeSpace dependencies:** Codex product runtime. See
-[codex-reuse.md](codex-reuse.md) (`codex-exec`, `codex-exec-server`,
-`codex-sandboxing`, App Server). `codex-utils-pty` is the only
-narrow “likely later” candidate at this SHA; it is not wired.
+**Rejected as CodeSpace dependencies:** Codex product runtime — App
+Server, `codex-core`, `codex-exec`, login, models. See
+[codex-reuse.md](codex-reuse.md). Prefer-reuse / active evaluation at
+this SHA (not wired): `codex-utils-pty`, `codex-process-hardening`,
+`codex-linux-sandbox` (and transitives `codex-sandboxing`,
+`codex-network-proxy`). `codex-exec-server` is a reference / future
+backend, not a forever reject.
 
 Do not wrap `codex-rs` standalone `apply_patch` and call that a sandbox.
 Preview / `check_only` is implemented through library parse plus

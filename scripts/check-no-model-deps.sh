@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Root workspace crates must not grow a model / Responses / Codex-agent
-# dependency. crates/patch and third_party/codex are out of scope
-# (apply-patch isolation). Local HTTP reqwest in codespace-server is OK.
+# dependency (codex-core, login, app-server, Responses). crates/patch
+# and third_party/codex are out of scope (apply-patch isolation).
+# A future crates/codex-runtime isolated workspace is excluded the same
+# way as crates/patch — it is not created in this WP and must never be
+# added to CRATES= below. Local HTTP reqwest in codespace-server is OK.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"

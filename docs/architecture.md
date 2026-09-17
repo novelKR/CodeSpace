@@ -20,8 +20,9 @@ Borrowed ideas (not code dumps):
   lifetime** from **process lifetime**.
 - From CoS: approved workspaces, per-hunk path resolve before the engine,
   preflight, best-effort rollback, split tool surface.
-- From Codex: original Rust `codex-apply-patch` parse / verify / apply.
-  Later primitives only if they match that crate boundary
+- From Codex: original Rust `codex-apply-patch` parse / verify / apply,
+  and later a cohesive **execution subgraph** (PTY, Linux sandbox,
+  hardening) isolated behind the Runner
   ([codex-reuse.md](codex-reuse.md)).
 
 Not taken: Electron, Chrome extension, ChatGPT DOM, agents spawn, Desktop,
@@ -141,9 +142,10 @@ Gateway keeps authorization, `operation_key` replay, the write lock,
 dispatch, and persistence. There is no runner control socket today.
 
 Sandbox, PTY, and network isolation are **not** “reimplement Codex OS
-engineering by default.” Take a primitive only after the graph test in
-[codex-reuse.md](codex-reuse.md), using the same isolated-workspace
-pattern as `crates/patch`. Do not embed App Server or `codex-exec`.
+engineering by default.” Prefer a cohesive execution subgraph isolated
+behind the Runner, same pattern as `crates/patch` (later
+`crates/codex-runtime`). Do not embed App Server or `codex-exec`.
+`codex-exec-server` is a future measurement, not a current backend.
 
 ## Protocol compatibility
 

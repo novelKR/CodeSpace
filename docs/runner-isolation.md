@@ -40,10 +40,12 @@ crate; both sides remain Rust. That **transport** split is the next
 implementation WP; it is not this document.
 
 Linux isolation is still the target OS. Landlock, seccomp, PTY helpers,
-and network isolation are **not** a default homegrown stack. Judge
-Codex crates as primitives first
-([codex-reuse.md](codex-reuse.md)): `codex-utils-pty` is narrow;
-`codex-sandboxing` / `codex-exec` / `codex-exec-server` are product
-runtime. Gateway policy remains the only allow path. Do not mount a
-host Docker socket or a future control socket on the compose fixture
-by accident.
+and network isolation are **not** a default homegrown stack. Prefer
+upstream execution subgraphs
+([codex-reuse.md](codex-reuse.md)): `codex-utils-pty` and process
+hardening are prefer-reuse; `codex-linux-sandbox` (with transitives
+`codex-sandboxing` / `codex-network-proxy`) is active evaluation and
+can sit beside a container. `codex-exec` stays rejected. `codex-exec-server`
+is a reference / future backend, not a forever reject. Gateway policy
+remains the only allow path. Do not mount a host Docker socket or a
+future control socket on the compose fixture by accident.

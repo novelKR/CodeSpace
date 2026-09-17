@@ -1,199 +1,221 @@
 # Codex reuse: product vs primitive
 
 CodeSpace does **not** embed the Codex agent. It also does **not**
-reimplement every Codex-adjacent function from scratch. The rule after
-W16:
+reimplement every execution mechanism from scratch.
 
-> Keep Codex **product / runtime** out. Pull **independent execution
-> primitives** when their crate boundary is as clear as
-> `codex-apply-patch`.
+> Prefer upstream Codex **execution** implementations when the required
+> dependency subgraph is execution-focused and can be isolated behind
+> the Runner. A primitive need not be a single narrow crate; a cohesive
+> execution subgraph is acceptable.
 
 This process is execution-only: no model, no Responses API
 ([execution-substrate.md](execution-substrate.md)). App Server
 **protocol** is not an MCP translation target. `command/exec` **shape**
-(standalone argv, handles, later TTY) may land on Runner DTOs;
-`codex-exec` / App Server crates stay forbidden.
+(standalone argv, handles, later TTY) may land on Runner DTOs.
+`codex-exec`, `codex-core`, and App Server stay forbidden.
 
-Same features (exec handles, path limits, patch apply, steering-shaped
-queues) do not imply the same implementation cut. Codex layers are not
-clean libraries. CodeSpace needs its own authorization, workspace
-contract, and operation recovery in front of a small Runner.
+```text
+WHO MAY  → CodeSpace Gateway
+           MCP contract, workspace, profile meaning,
+           operation/idempotency, audit, Runner trait
+
+HOW SAFE → Codex execution subgraph
+           patch engine, PTY, spawn/reap, Landlock/seccomp,
+           process hardening, network enforcement
+```
+
+Reusing a subgraph does **not** make Codex the authorizer. Gateway still
+allows; Runner still executes.
 
 ```text
 ChatGPT / Cursor / other MCP host
    │ MCP
    ▼
 CodeSpace Gateway     ← only authorization authority
-   ├─ workspace registry / profile
+   ├─ workspace registry / profile meaning
    ├─ operation_key / operation_id / persist
    └─ Runner contract (execution DTOs)
           │
-          ├─ CodeSpace-specific
-          │     container lifecycle, RPC boundary, workspace mapping
-          └─ Codex primitives (pinned, isolated workspace)
-                today: parse / verify / apply
-                later: only if the crate graph stays narrow
+          ▼
+   isolated adapter workspace
+          │  crates/patch today
+          │  crates/codex-runtime later (not created in this WP)
+          ▼
+   Codex execution subgraph (pinned)
 ```
 
-## Why the small reimplementation existed
+## Unit of reuse is a subgraph
 
-Three constraints, not NIH:
+Do not require “as narrow as `codex-apply-patch`.” Ask:
 
-1. **Library boundary.** The same *function* in Codex is often not an
-   independent library. `codex-apply-patch` is. `codex-exec` is not.
-2. **Who authorizes.** Codex session config / `permissionProfile` /
-   sandbox policy must not become a second policy engine under the
-   gateway. Gateway allows; Runner executes.
-3. **Runtime churn.** Pulling App Server / `codex-core` / `codex-exec`
-   to get spawn+PTY also pulls login, models, plugins, rollout, and
-   daemon. A Codex `main` bump would then move the whole product.
+1. Is this subgraph **cohesive execution** (PTY, sandbox, hardening)?
+2. Do **agent / model / product** types cross the Runner boundary?
+3. Can it **bypass Gateway allow**?
 
-`process_id`, stdin, terminate, and timeout look like Codex
-`command/exec` because any command service whose **request lifetime is
-not process lifetime** converges on that shape. The in-process
-supervisor stays CodeSpace code. `operation_key` /
-`operation_status` recover a lost **remote MCP mutating RPC**; they are
-not Codex thread/session recovery.
+A wide Cargo graph is not a reject by itself. `codex-linux-sandbox`
+pulls process-hardening, network-proxy, and protocol types because
+those are part of a tested Linux sandbox, not because it is an agent.
 
-## The `apply_patch` pattern (do this again)
-
-Reuse the engine. Own the service around it.
+Reimplementing PTY fd handling, signal races, Landlock, or mount
+escapes means Codex bugfixes never arrive except by hand. Prefer:
 
 ```text
-CodeSpace policy / versions / snapshot / verify / persist
-                      │
-                      ▼
-              parse_patch
-              hunk verify
-              apply_patch_with_options
-                      │
-                      ▼
-              filesystem result
+Codex bugfix → candidate pin → adapter compile/test → promotion
 ```
 
-How to take a primitive:
+That is **not** “track `main`.” Release acceptance stays in
+[upstream-update.md](upstream-update.md).
+
+Container isolation and host sandbox are **not substitutes**. A
+container plus no-new-privs / seccomp / Landlock / network limits is
+defense-in-depth, and later Environments (local container, remote
+Linux, bare Linux) may share the same Linux sandbox subgraph.
+
+## Policy vs mechanism
+
+| CodeSpace owns (policy) | Prefer Codex (mechanism) |
+| --- | --- |
+| workspace / profile allow | PTY |
+| path permission meaning | process spawn / reap / signals |
+| network permission meaning | seccomp / Landlock / hardening |
+| operation approval | network enforcement (when needed) |
+
+`codex-execpolicy` is policy, not mechanism. Do not use it as the
+final `allow(command)`.
+
+## The `apply_patch` pattern (isolation, not crate width)
+
+Reuse the engine. Own the service around it. Same pattern for a later
+runtime adapter:
 
 - Pin stays [upstream-lock.md](upstream-lock.md) (`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`).
-- Path dependency from an **isolated** Cargo workspace (today
-  `crates/patch`), not the repo root workspace.
+- Path dependency from an **isolated** Cargo workspace, not the repo
+  root. Today: `crates/patch`. Later: `crates/codex-runtime` (documented
+  only; **not created in this work package**).
 - NOTICE + Apache-2.0 attribution.
-- Product policy stays in front of and behind the crate. The crate is
-  not the sandbox and not the authorizer.
-- Do not file-copy a single crate out of the Codex workspace.
+- Product policy stays in front of and behind the subgraph.
+- Do not file-copy a crate out of the Codex workspace.
+
+```text
+Gateway → Runner trait → (later) ContainerRunner
+       → codespace-runtime helper → Codex execution crates
+```
+
+Root workspace must not grow a Codex path dependency.
+`scripts/check-no-model-deps.sh` scans
+`crates/{domain,policy,runner,store,server}` only.
 
 Do **not** wrap the standalone `apply_patch` binary as a security
-boundary (sandbox `None`, symlink follow). Do **not** wrap Codex App
-Server as an internal backend.
+boundary. Do **not** wrap Codex App Server as an internal backend.
 
-## Forbidden (product runtime)
+## Why supervisor code still exists
 
-Not candidates for CodeSpace dependencies:
+`process_id`, stdin, terminate, and timeout converge because request
+lifetime is not process lifetime. The in-process supervisor stays
+CodeSpace until a Runner transport exists. `operation_key` /
+`operation_status` recover a lost **remote MCP mutating RPC**, not a
+Codex thread.
 
-| Crate / surface | Why |
-| --- | --- |
-| `codex-exec` | App Server client, `codex-core`, login, config, rollout, history, worktree |
-| `codex-core` | Agent loop, tools, session |
-| `codex-app-server` and its protocol/client | Full product RPC, not an execution daemon |
-| `codex-exec-server` | HTTP/WS runtime plus config, OTel, network-proxy, sandboxing, PTY |
-| Codex config `permissionProfile` / session sandbox as allow | Second authorizer |
-
-Root workspace must not grow a Codex path dependency. New primitives
-follow `crates/patch`, not `crates/runner`.
+Pulling `codex-core` / `codex-exec` / App Server to get spawn+PTY also
+pulls login, models, plugins, and rollout. That blast radius is still
+rejected. A **linux-sandbox + pty + hardening** subgraph is not that.
 
 ## Candidates at pin `6b9826e`
 
 Judged from the pin’s `Cargo.toml` files, not from Codex `main`.
 **No crate is added in this work package.**
 
-### Reject
+### Reuse now (in code)
 
-**`codex-exec`**
-([`codex-rs/exec/Cargo.toml`](../third_party/codex/codex-rs/exec/Cargo.toml))
+**`codex-apply-patch`** via `crates/patch`. Parse, hunk verify, apply,
+parity subset.
 
-Depends on `codex-app-server-client`, `codex-app-server-protocol`,
-`codex-cloud-config`, `codex-config`, `codex-core`, `codex-features`,
-`codex-history`, `codex-login`, `codex-model-provider-info`,
-`codex-rollout`, `codex-worktree`, and related product crates. This is
-the CLI/exec product flow, not `spawn(command)`.
-
-**`codex-exec-server`**
-([`codex-rs/exec-server/Cargo.toml`](../third_party/codex/codex-rs/exec-server/Cargo.toml))
-
-Depends on `codex-api`, `codex-config`, `codex-http-client`,
-`codex-network-proxy`, `codex-otel`, `codex-protocol`,
-`codex-sandboxing`, `codex-utils-pty`, websocket/axum. Execution
-daemon plus Codex runtime.
-
-**`codex-sandboxing`**
-([`codex-rs/sandboxing/Cargo.toml`](../third_party/codex/codex-rs/sandboxing/Cargo.toml))
-
-Depends on `codex-network-proxy`, `codex-protocol`,
-`codex-utils-pty`, `codex-windows-sandbox`, and on Windows
-`codex-mxc-sandbox`. Not a Linux-only sandbox library. Codex’s
-goal is macOS + Linux + Windows + MXC + PTY + network proxy in one
-product. CodeSpace’s target is an isolated Linux workspace behind
-an external MCP server.
-
-**App Server embed** (`ChatGPT → MCP adapter → Codex App Server`)
-
-Would re-import the agent infrastructure CodeSpace exists to keep
-out. Authorization would split between CodeSpace policy and Codex
-session policy.
-
-### Likely (when PTY is in scope)
+### Prefer reuse (when that WP)
 
 **`codex-utils-pty`**
 ([`codex-rs/utils/pty/Cargo.toml`](../third_party/codex/codex-rs/utils/pty/Cargo.toml))
 
-Unix deps: `portable-pty`, `tokio`, `libc`, `anyhow`. That is
-apply-patch-shaped: a narrow helper, not a session. Taking it does
-**not** by itself add a PTY MCP tool. Gateway still mints handles;
-Runner still owns lifetime.
+Unix: `portable-pty`, `tokio`, `libc`, `anyhow`. Prefer upstream over a
+CodeSpace PTY. Wiring it does **not** add a PTY MCP tool. Gateway still
+mints handles.
 
-### Hold / partial
+**`codex-process-hardening`** — prefer with the Linux sandbox subgraph
+rather than reimplementing no-new-privs / similar.
+
+**`codex-utils-absolute-path` / `codex-utils-path-uri`** — prefer where
+the adapter already needs them (patch does today). MCP still exposes
+workspace-relative paths only.
+
+### Active evaluation / likely reuse
 
 **`codex-linux-sandbox`**
 ([`codex-rs/linux-sandbox/Cargo.toml`](../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
 
-Landlock / seccomp / process-hardening are OS execution work. The
-same manifest also depends on `codex-protocol`,
-`codex-network-proxy`, `codex-sandboxing`, `codex-install-context`.
-A Linux **container** Runner may already supply isolation, so
-“import this crate” is not the default. Revisit only if host-side
-landlock is chosen *instead of* (or in addition to) a container,
-and only if the protocol/proxy edges can stay out of the root
-workspace.
+Landlock, seccomp, process-hardening. Also depends on
+`codex-protocol`, `codex-network-proxy`, `codex-sandboxing`,
+`codex-install-context`. That width is expected for a cohesive Linux
+sandbox. A **container** does not make this crate unnecessary; evaluate
+it as defense-in-depth and for non-container Environments.
 
-### Keep in CodeSpace (reference only)
+**Transitive (allowed when the sandbox subgraph is taken):**
+`codex-sandboxing`, `codex-network-proxy`. Direct use is allowed if the
+adapter needs it. They are not root-workspace deps and not an allow
+engine.
 
-**`codex-execpolicy`**
-([`codex-rs/execpolicy/Cargo.toml`](../third_party/codex/codex-rs/execpolicy/Cargo.toml))
+### Reference / future backend (not now)
 
-Starlark prefix rules plus `codex-utils-absolute-path`. The graph
-is small, but command allow/deny is Gateway authority. Using
-Codex’s rule file as the allow engine would split policy. Fine to
-read later; not a drop-in authorizer.
+**`codex-exec-server`**
+([`codex-rs/exec-server/Cargo.toml`](../third_party/codex/codex-rs/exec-server/Cargo.toml))
 
-## What stays CodeSpace even after a primitive lands
+HTTP/WS plus config, OTel, protocol, sandboxing, PTY. Too heavy as
+today’s Runner backend. Not a forever reject. Later compare:
+
+- A: ContainerRunner + low-level Codex crates
+- B: Gateway adapter → exec-server
+
+Measure compile graph and upgrade cost before choosing B.
+
+### Reject
+
+**`codex-exec`** — App Server client, `codex-core`, login, config,
+rollout, history, worktree. Product exec flow, not `spawn`.
+
+**`codex-core`** — agent loop, tools, session.
+
+**App Server embed** (`ChatGPT → MCP adapter → Codex App Server`) —
+re-imports agent infrastructure and splits authorization.
+
+**Codex session `permissionProfile` / user sandbox config as allow** —
+second authorizer.
+
+### Policy stays CodeSpace
+
+**`codex-execpolicy`** — Starlark prefix rules. Small graph, but command
+allow/deny is Gateway authority. Reference only.
+
+## What stays CodeSpace
 
 - MCP tool schemas and domain types (no `rmcp` in runner/domain).
-- Workspace registry, profiles, path policy.
-- Write lock, shell occupancy, `WORKSPACE_BUSY`.
+- Workspace registry, **meaning** of profiles, path policy.
+- Write lock, shell occupancy, `WORKSPACE_BUSY` (until a scheduler WP).
 - `operation_key` replay, `operation_id`, `operation_status`.
 - Host/in-process process supervisor until a Runner transport exists.
-- Container lifecycle and workspace bind-mount policy.
+- Container lifecycle and workspace bind-mount **policy**.
+- Isolated adapter workspaces (`crates/patch`, later
+  `crates/codex-runtime`).
 
 ## Next implementation WP
 
 The next **code** work package is still Runner **transport** (Unix
 socket / `ContainerRunner`) behind the existing `Runner` trait. That
-WP must not split `apply_patch` into gateway-driven RPCs.
+WP must not split `apply_patch` into multiple gateway-driven RPCs.
 
-Sandbox, PTY, and network isolation are **not** “write our own
-landlock/seccomp/PTY by default.” Attach a candidate from the table
-only after this graph test, using the `crates/patch` isolation
-pattern. Pin bump is a separate, deliberate release
-([upstream-update.md](upstream-update.md)).
+Do not default to a homegrown PTY / Landlock / seccomp stack. Take the
+execution subgraph through an isolated workspace after the table
+above. Pin bump is a deliberate release
+([upstream-update.md](upstream-update.md)): SHA + patch parity, and
+later runtime-adapter build plus PTY/sandbox/process regressions when
+that workspace exists.
 
 Domain expansion (PermissionProfile axes, Environment, scheduler,
 approval tools) is sequenced in

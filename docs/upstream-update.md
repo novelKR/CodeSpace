@@ -26,10 +26,16 @@ NOTICE must keep the Apache-2.0 Codex attribution.
    options, symlink policy, or parse errors changed.
 8. Update [NOTICE](../NOTICE) if the reuse description or pin string
    changed.
-9. If the pin’s sandbox / PTY / exec crate graph changed, update the
-   candidate table in [codex-reuse.md](codex-reuse.md). Do not add a
-   Codex path dep to the root workspace.
-10. Open a PR. CI must run the pin check **and** `crates/patch` tests.
+9. Judge the pin’s **execution subgraph** (not crate width) against
+   [codex-reuse.md](codex-reuse.md): cohesive execution vs agent /
+   model semantics vs Gateway allow bypass. Update the candidate
+   table. Do not add a Codex path dep to the root workspace.
+   Isolation stays in `crates/patch` and, when it exists,
+   `crates/codex-runtime`.
+10. When `crates/codex-runtime` exists, also require: runtime adapter
+    compile, plus PTY / sandbox / process regressions. This work
+    package does not add that suite.
+11. Open a PR. CI must run the pin check **and** `crates/patch` tests.
     A red patch job is a failed deploy, not a warning.
 
 There is **no** path that marks a failed parity run as success.
