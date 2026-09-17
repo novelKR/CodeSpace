@@ -36,4 +36,14 @@ unverified.
 Today `codespace-mcp` is one process. `crates/runner` hosts the in-process
 `Runner` (`PathSandbox`, one `apply_patch` transaction, host supervisor).
 A later Unix-socket / `ContainerRunner` worker would live in the same
-crate; both sides remain Rust. That transport split is not this change.
+crate; both sides remain Rust. That **transport** split is the next
+implementation WP; it is not this document.
+
+Linux isolation is still the target OS. Landlock, seccomp, PTY helpers,
+and network isolation are **not** a default homegrown stack. Judge
+Codex crates as primitives first
+([codex-reuse.md](codex-reuse.md)): `codex-utils-pty` is narrow;
+`codex-sandboxing` / `codex-exec` / `codex-exec-server` are product
+runtime. Gateway policy remains the only allow path. Do not mount a
+host Docker socket or a future control socket on the compose fixture
+by accident.

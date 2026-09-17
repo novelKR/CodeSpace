@@ -21,7 +21,8 @@ cd CodeSpace
 
 The Codex pin is `third_party/codex` at the commit in
 [upstream-lock.md](upstream-lock.md). Do not `git submodule update --remote`
-to Codex `main`.
+to Codex `main`. Product runtime stays out of the gateway; see
+[codex-reuse.md](codex-reuse.md).
 
 Build both binaries into the **same** directory so the gateway can find
 the patch helper next to itself (or set `CODESPACE_PATCH_BIN`):

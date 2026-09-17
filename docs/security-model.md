@@ -4,8 +4,10 @@ CodeSpace is not a kernel sandbox. CoS and cokacremote are not either.
 Authorization is **gateway policy**. Linux container isolation is the
 **target** execution OS; current `exec_command` is a host process with
 workspace cwd. The Codex patch crate does not supply the product
-boundary. Gateway and runner are both Rust; splitting languages would
-not add a trust boundary.
+boundary. Codex session config and `permissionProfile` are not an
+allow path. Gateway and runner are both Rust; splitting languages would
+not add a trust boundary. Primitive vs product:
+[codex-reuse.md](codex-reuse.md).
 
 ## Trust boundaries
 

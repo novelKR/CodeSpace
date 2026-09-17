@@ -32,6 +32,8 @@ Live MCP tools include `workspace_info`, `read`, `find`, `apply_patch`,
 `steer_complete`, and `work_finish`. Codex V4A apply is `crates/patch`
 inside the `codespace-patch` helper
 (see [docs/upstream-lock.md](docs/upstream-lock.md)).
+Codex product runtime stays out; primitive reuse:
+[docs/codex-reuse.md](docs/codex-reuse.md).
 Deferred user intent is edited on HTTP `/inbox` (not MCP).
 
 Current vs target process layout:

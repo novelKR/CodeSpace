@@ -7,6 +7,7 @@ paper over a workspace dependency.
 
 Current pin: [upstream-lock.md](upstream-lock.md).
 Product vs crate defaults: [behavior-differences.md](behavior-differences.md).
+What may be reused besides apply-patch: [codex-reuse.md](codex-reuse.md).
 NOTICE must keep the Apache-2.0 Codex attribution.
 
 ## Checklist
@@ -25,8 +26,11 @@ NOTICE must keep the Apache-2.0 Codex attribution.
    options, symlink policy, or parse errors changed.
 8. Update [NOTICE](../NOTICE) if the reuse description or pin string
    changed.
-9. Open a PR. CI must run the pin check **and** `crates/patch` tests.
-   A red patch job is a failed deploy, not a warning.
+9. If the pin’s sandbox / PTY / exec crate graph changed, update the
+   candidate table in [codex-reuse.md](codex-reuse.md). Do not add a
+   Codex path dep to the root workspace.
+10. Open a PR. CI must run the pin check **and** `crates/patch` tests.
+    A red patch job is a failed deploy, not a warning.
 
 There is **no** path that marks a failed parity run as success.
 

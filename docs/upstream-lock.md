@@ -1,9 +1,15 @@
 # Upstream lock
 
-CodeSpace reuses OpenAI Codex **only** as a pinned Rust library for
-parse / verify / apply of the V4A patch format. It does not vendor a
-single source file, wrap the standalone `apply_patch` binary as the
-security boundary, or follow `main`.
+CodeSpace reuses OpenAI Codex as a **pinned** git submodule. It does
+not vendor a single source file, wrap the standalone `apply_patch`
+binary as the security boundary, or follow `main`.
+
+**Current code reuse** is `codex-apply-patch` (parse / verify / apply of
+V4A) via `crates/patch`. That is the working example, not a vow that
+no other primitive may ever be taken. Product runtime (App Server,
+`codex-core`, `codex-exec`, login, models) stays out. Lower execution
+primitives are judged in [codex-reuse.md](codex-reuse.md) before they
+touch the Runner. No extra Codex crate is on the graph today.
 
 ## Deployment pin (W06)
 
@@ -56,16 +62,25 @@ and a path dependency, not a crates.io moving version.
 
 ## What is reused vs rejected
 
-Reused: parse, hunk verification, apply APIs, and selected upstream
-fixtures for parity.
+**On this pin, in code:** parse, hunk verification, apply APIs, and
+selected upstream fixtures for parity (`crates/patch` →
+`codex-apply-patch`).
 
-Rejected as product defaults even if the crate allows them: symlink
-follow, sandbox `None` standalone CLI, host-absolute paths from the
-model, silent `git apply`.
+**Rejected as product defaults** even if that crate allows them:
+symlink follow, sandbox `None` standalone CLI, host-absolute paths from
+the model, silent `git apply`.
+
+**Rejected as CodeSpace dependencies:** Codex product runtime. See
+[codex-reuse.md](codex-reuse.md) (`codex-exec`, `codex-exec-server`,
+`codex-sandboxing`, App Server). `codex-utils-pty` is the only
+narrow “likely later” candidate at this SHA; it is not wired.
 
 Do not wrap `codex-rs` standalone `apply_patch` and call that a sandbox.
 Preview / `check_only` is implemented through library parse plus
 CodeSpace preflight, not by assuming `apply_patch --check` exists.
+
+Do not treat Codex session `permissionProfile` as the allow path.
+Gateway policy is the only authorization authority.
 
 ## Promotion rule
 

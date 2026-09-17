@@ -21,6 +21,8 @@ Borrowed ideas (not code dumps):
 - From CoS: approved workspaces, per-hunk path resolve before the engine,
   preflight, best-effort rollback, split tool surface.
 - From Codex: original Rust `codex-apply-patch` parse / verify / apply.
+  Later primitives only if they match that crate boundary
+  ([codex-reuse.md](codex-reuse.md)).
 
 Not taken: Electron, Chrome extension, ChatGPT DOM, agents spawn, Desktop,
 plugin marketplace, TypeScript `apply-patch` port, `git apply --unsafe-paths`,
@@ -117,10 +119,10 @@ Runner process boundary
    isolated Linux workspace
 ```
 
-The next work package is **transport** (Unix socket / `ContainerRunner`).
-This change is not that. A later isolated-exec split inserts a process
-boundary behind the existing `Runner` / `InProcessRunner` types. It must
-**not** split patch apply into multiple gateway-driven RPCs:
+The next **implementation** work package is **transport** (Unix socket /
+`ContainerRunner`) behind the existing `Runner` / `InProcessRunner`
+types. It must **not** split patch apply into multiple gateway-driven
+RPCs:
 
 ```text
 Runner.apply_patch(request)
@@ -129,8 +131,12 @@ Runner.apply_patch(request)
 ```
 
 Gateway keeps authorization, `operation_key` replay, the write lock,
-dispatch, and persistence. Unix socket / `ContainerRunner` are future
-work. There is no runner control socket today.
+dispatch, and persistence. There is no runner control socket today.
+
+Sandbox, PTY, and network isolation are **not** “reimplement Codex OS
+engineering by default.” Take a primitive only after the graph test in
+[codex-reuse.md](codex-reuse.md), using the same isolated-workspace
+pattern as `crates/patch`. Do not embed App Server or `codex-exec`.
 
 ## Protocol compatibility
 
@@ -179,6 +185,7 @@ Intent bodies are instructions, never capabilities.
 No internal model-calling tool exists. `git_apply_patch` is out of MVP.
 Error codes and transport-vs-execution rules: [error-codes.md](error-codes.md).
 Linux isolation fixture: [runner-isolation.md](runner-isolation.md).
+Codex product vs primitive: [codex-reuse.md](codex-reuse.md).
 
 ## IDs
 
@@ -248,7 +255,7 @@ crates/store/           SQLite operations, works, and intents
 crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host process supervisor, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
-docs/                   including operations.md (W12)
+docs/                   including operations.md (W12), codex-reuse.md (W17)
 deploy/                 unprivileged Linux isolation fixture
 ```
 
