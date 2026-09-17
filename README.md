@@ -23,10 +23,12 @@ apply/rollback reporting, and process lifetime.
 ## Status
 
 Live MCP tools include `workspace_info`, `read`, `find`, `apply_patch`,
-`operation_status`, `exec_command`, `write_stdin`, `read_process`, and
-`terminate_process`. Codex V4A apply is `crates/patch` calling the
-pinned submodule in-process
+`operation_status`, `exec_command`, `write_stdin`, `read_process`,
+`terminate_process`, `work_open`, `steer_status`, `steer_claim_next`,
+`steer_complete`, and `work_finish`. Codex V4A apply is `crates/patch`
+calling the pinned submodule in-process
 (see [docs/upstream-lock.md](docs/upstream-lock.md)).
+Deferred user intent is edited on HTTP `/inbox` (not MCP).
 
 Install, HTTP/stdio, logs, and recovery:
 [docs/operations.md](docs/operations.md).
@@ -36,7 +38,7 @@ Do not commit features directly to `main`.
 
 ```bash
 cargo run -p codespace-server --bin codespace-mcp
-# Streamable HTTP at /mcp (default 127.0.0.1:8787):
+# Streamable HTTP at /mcp (default 127.0.0.1:8787); user inbox at /inbox:
 cargo run -p codespace-server --bin codespace-mcp -- --http
 ```
 

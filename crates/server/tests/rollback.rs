@@ -109,6 +109,7 @@ async fn restart_does_not_reapply_unknown_operation() {
         expected_versions: Default::default(),
         operation_key: Some(codespace_domain::OperationKey("restart-1".into())),
         check_only: false,
+        work_id: None,
     };
     let fp = codespace_store::Store::fingerprint(&params);
     let store = codespace_store::Store::open(&db).unwrap();

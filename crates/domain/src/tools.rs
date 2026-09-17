@@ -10,6 +10,11 @@ pub const TOOL_WRITE_STDIN: &str = "write_stdin";
 pub const TOOL_READ_PROCESS: &str = "read_process";
 pub const TOOL_TERMINATE_PROCESS: &str = "terminate_process";
 pub const TOOL_OPERATION_STATUS: &str = "operation_status";
+pub const TOOL_WORK_OPEN: &str = "work_open";
+pub const TOOL_STEER_STATUS: &str = "steer_status";
+pub const TOOL_STEER_CLAIM_NEXT: &str = "steer_claim_next";
+pub const TOOL_STEER_COMPLETE: &str = "steer_complete";
+pub const TOOL_WORK_FINISH: &str = "work_finish";
 
 pub const TRANSPORT_STDIO: &str = "stdio";
 pub const TRANSPORT_STREAMABLE_HTTP: &str = "streamable-http";
@@ -25,6 +30,11 @@ pub const LIVE_TOOLS: &[&str] = &[
     TOOL_WRITE_STDIN,
     TOOL_READ_PROCESS,
     TOOL_TERMINATE_PROCESS,
+    TOOL_WORK_OPEN,
+    TOOL_STEER_STATUS,
+    TOOL_STEER_CLAIM_NEXT,
+    TOOL_STEER_COMPLETE,
+    TOOL_WORK_FINISH,
 ];
 pub const W03_EXPOSED_TOOLS: &[&str] = LIVE_TOOLS;
 

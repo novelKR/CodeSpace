@@ -48,6 +48,7 @@ pub struct Supervisor {
 }
 
 struct Slot {
+    workspace_id: String,
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     output: Arc<Mutex<OutputBuf>>,
@@ -114,6 +115,7 @@ impl Supervisor {
         let child = Arc::new(Mutex::new(spawned));
         let output = Arc::new(Mutex::new(OutputBuf::default()));
         let slot = Slot {
+            workspace_id: params.workspace_id.0.clone(),
             child: child.clone(),
             stdin: Arc::new(Mutex::new(stdin)),
             output: output.clone(),
@@ -167,7 +169,10 @@ impl Supervisor {
             }
         });
 
-        Ok(ExecCommandResult { process_id })
+        Ok(ExecCommandResult {
+            process_id,
+            coordination: None,
+        })
     }
 
     pub async fn write_stdin(&self, params: WriteStdinParams) -> Result<(), ErrorBody> {
@@ -218,6 +223,7 @@ impl Supervisor {
             cursor: next,
             chunk: String::from_utf8_lossy(&chunk).into_owned(),
             eof: buf.eof && next >= buf.total,
+            coordination: None,
         })
     }
 
@@ -234,6 +240,37 @@ impl Supervisor {
             .start_kill()
             .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
         Ok(())
+    }
+
+    pub fn workspace_of(&self, process_id: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()?
+            .get(process_id)
+            .map(|slot| slot.workspace_id.clone())
+    }
+
+    pub fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody> {
+        let map = self.inner.lock().expect("supervisor");
+        let mut killed = 0u32;
+        for slot in map.values() {
+            if slot.workspace_id != workspace_id {
+                continue;
+            }
+            let eof = slot.output.lock().map(|buf| buf.eof).unwrap_or(true);
+            if eof {
+                continue;
+            }
+            let mut child = slot.child.lock().expect("child");
+            if child.try_wait().ok().flatten().is_some() {
+                continue;
+            }
+            child
+                .start_kill()
+                .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+            killed += 1;
+        }
+        Ok(killed)
     }
 }
 

@@ -3,7 +3,8 @@
 CodeSpace is a Rust `rmcp` process. It speaks **stdio** and **Streamable HTTP**
 with the same live tools (`workspace_info`, `read`, `find`, `apply_patch`,
 `operation_status`, `exec_command`, `write_stdin`, `read_process`,
-`terminate_process`).
+`terminate_process`, `work_open`, `steer_status`, `steer_claim_next`,
+`steer_complete`, `work_finish`). User drafts are HTTP `/inbox`, not MCP.
 
 Core protocol baseline is **MCP 2025-11-25**. See
 [protocol-compatibility.md](protocol-compatibility.md).

@@ -41,7 +41,7 @@ pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
         ],
         workspace_id,
         workspace_id_is_credential: false,
-        note: "workspace_info, read, find, apply_patch, operation_status, and process tools are live. process_id is server-minted."
+        note: "workspace_info, read, find, apply_patch, operation_status, process, and work/steer tools are live. process_id and work_id are server-minted selectors, not credentials."
             .to_string(),
         profile: None,
         root: None,

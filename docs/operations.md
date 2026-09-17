@@ -78,12 +78,15 @@ export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
 ./dist/codespace-mcp --http
 ```
 
-Endpoint: `http://127.0.0.1:8787/mcp`. Bind address is not the same as a
+Endpoint: `http://127.0.0.1:8787/mcp`. User Inbox JSON is
+`http://127.0.0.1:8787/inbox` on the **same** HTTP listener and Bearer.
+stdio-only mode does not expose `/inbox`. Drafts stay off the model
+until `POST /inbox/intents/{id}/queue`. Bind address is not the same as a
 public `Host` header. For a reverse proxy, allow the external hostname
 separately; do not treat `0.0.0.0` as that name.
 
-If `CODESPACE_OPERATIONS_DB` is unset, operations live in memory and
-**do not survive restart**.
+If `CODESPACE_OPERATIONS_DB` is unset, operations and the intent queue
+live in memory and **do not survive restart**.
 
 ## Reproduce the MVP flow
 
@@ -92,6 +95,8 @@ Automated coverage (no ChatGPT account required):
 ```bash
 cargo test -p codespace-server --test apply
 cargo test -p codespace-server --test process
+cargo test -p codespace-server --test protocol_compat
+cargo test -p codespace-server --test inbox
 # When this revision includes tests/e2e (W11):
 # cargo test -p codespace-server --test e2e
 ```
@@ -131,7 +136,7 @@ through it.
 
 ## Recovery after disconnect or restart
 
-HTTP/JSON-RPC request id ≠ `operation_id` ≠ `process_id`. A lost HTTP
+HTTP/JSON-RPC request id ≠ `operation_id` ≠ `process_id` ≠ `work_id`. A lost HTTP
 response is not an execution failure.
 
 - Call `operation_status` with the server-minted id or `operation_key`

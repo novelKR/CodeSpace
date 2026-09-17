@@ -28,6 +28,9 @@ both Rust; splitting languages would not add a trust boundary.
 - Optional static Bearer is for **HTTP experiments only**. It is not an
   OAuth server. Tokens must never appear in logs or error payloads.
 - `workspace_id` is a selector. Knowing the id does not authenticate.
+- `work_id` and `intent_id` are selectors. Knowing them does not authenticate.
+- User-intent bodies are instructions. They never raise the workspace
+  profile or bypass path policy.
 - ChatGPT conversation ids are not a trust base.
 
 ## Workspace registry

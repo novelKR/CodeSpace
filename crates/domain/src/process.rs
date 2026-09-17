@@ -1,17 +1,22 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ProcessId, WorkspaceId};
+use crate::ids::{ProcessId, WorkId, WorkspaceId};
+use crate::work::CoordinationHint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecCommandParams {
     pub workspace_id: WorkspaceId,
     pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_id: Option<WorkId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecCommandResult {
     pub process_id: ProcessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<CoordinationHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -33,6 +38,8 @@ pub struct ReadProcessResult {
     pub cursor: u64,
     pub chunk: String,
     pub eof: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<CoordinationHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
