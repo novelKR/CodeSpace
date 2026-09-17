@@ -35,13 +35,14 @@ SOURCE_PATTERNS=(
 # codex-exec-server here is compile graph, not a product backend choice.
 patch_key_allowed() {
   case "$1" in
-    codex-apply-patch|codex-exec-server|codex-utils-path-uri) return 0 ;;
+    codex-apply-patch|codex-exec-server|codex-utils-path-uri|codex-process-hardening) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 # Future crates/codex-runtime: prefer / evaluate / protocol from
 # docs/codex-reuse.md. Not agent/product: no core, login, app-server, exec.
+# Current runtime keys in code: codex-process-hardening, codex-uds.
 runtime_key_allowed() {
   case "$1" in
     codex-apply-patch|codex-process-hardening|codex-utils-pty|codex-uds|\

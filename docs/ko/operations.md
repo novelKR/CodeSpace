@@ -27,8 +27,9 @@ Codex 핀은 [upstream-lock.md](upstream-lock.md)의 커밋에 있는
 [codex-reuse.md](codex-reuse.md)와
 [execution-substrate.md](execution-substrate.md)를 보세요.
 
-게이트웨이가 패치 헬퍼를 자기 옆에서 찾을 수 있도록 두 바이너리를
-**같은** 디렉터리에 빌드하세요(`CODESPACE_PATCH_BIN`을 설정해도 됩니다).
+게이트웨이가 패치 헬퍼를 자기 옆에서 찾을 수 있도록 게이트웨이와 패치
+헬퍼를 **같은** 디렉터리에 빌드하세요(`CODESPACE_PATCH_BIN`을 설정해도
+됩니다). UDS 워커는 선택입니다(`CODESPACE_RUNTIME_BIN`).
 
 ```bash
 cargo build -p codespace-server --bin codespace-mcp --release
@@ -36,11 +37,20 @@ cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch --rele
 mkdir -p dist
 cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
+# Optional Unix-socket worker (not the default exec path):
+cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
+cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 ```
 
 `codespace-patch`는 호스트 자식 프로세스입니다. 핀된 Codex 크레이트를
 **프로세스 내부에서** 호스팅합니다. 업스트림 독립 `apply_patch` 바이너리가
-아니고 폐기된 `native/patch-worker`도 아닙니다.
+아니고 폐기된 `native/patch-worker`도 아닙니다. `codespace-codex-runtime`은
+`codex-process-hardening`과 `codex-uds`로 비공개 Unix 소켓을 바인드한 뒤
+`InProcessRunner`를 실행합니다. hardening은 워커/헬퍼 **프로세스**
+강화입니다(`main` 첫 줄 `pre_main_hardening()`, `ctor` 없음). command
+sandbox가 아닙니다. 기본 `exec_command`는 여전히 프로세스 내부 호스트
+spawn입니다. Exec DTO cwd는 `WorkspaceRoot`이며 `PATH` / `HOME` /
+`LANG`은 러너 프로세스에서 적용합니다.
 
 ## 워크스페이스 레지스트리
 
@@ -60,7 +70,10 @@ cp crates/patch/target/release/codespace-patch dist/
 ```
 
 프로필: `read-only`(기본 의도) 또는 `workspace-write`. `host-admin`은
-제품 프로필이 아닙니다.
+제품 프로필이 아닙니다. 선택적 운영자 `environments`는 `host` 또는
+`linux-container`를 등록할 수 있습니다. 생략하면 암시적 로컬 호스트입니다.
+`linux-container`는 exec 경로가 아닙니다. 도구와 `workspace_info`에는
+`environment_id`가 없습니다.
 
 ## 게이트웨이 실행
 
@@ -94,6 +107,21 @@ export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
 `CODESPACE_OPERATIONS_DB`가 없으면 작업과 의도 큐는 메모리에 있고
 재시작 후 **남지 않습니다**. 프로세스 핸들은 재시작 후 절대 남지
 않습니다.
+
+선택적 러너 워커(여전히 호스트 exec이며 Linux 격리가 아님). UDS는
+1:1입니다. 게이트웨이가 `RuntimeProcess`(자식, 비공개 0700 디렉터리,
+`$dir/runner.sock`)를 소유합니다. 재연결은 없습니다.
+`--runner-dir` / `CODESPACE_RUNNER_DIR`은 그 unique leaf의 부모가 될
+수 있습니다. `/`, `/tmp`, `/var/tmp`, `$HOME`을 디렉터리 자체로 주면
+거절합니다. `--runner-socket`은 이미 떠 있는 워커에 연결할 때만 쓰며
+부모 path를 chmod하지 않습니다.
+
+```bash
+export CODESPACE_RUNNER=uds
+export CODESPACE_RUNNER_DIR="$PWD/data/runner"
+export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
+./dist/codespace-mcp
+```
 
 ## MVP 흐름 재현
 
@@ -140,7 +168,7 @@ docker compose -f deploy/compose.yml up --build
   마세요.
 - stderr 캡처는 직접 순환하거나 잘라내세요. 로그 SaaS는 없습니다.
 - operations SQLite 파일은 **패치 작업** 행과 works/intents와 함께
-  커집니다. 프로세스 핸들과 write/shell 리스는 휘발성 메모리입니다.
+  커집니다. 프로세스 핸들과 자원 잠금은 휘발성 메모리입니다.
   데이터베이스를 이후 러너 마운트에서 빼 두세요. 삭제하면 멱등 키를
   잊습니다.
 
@@ -153,11 +181,18 @@ HTTP 응답은 실행 실패가 아닙니다.
   `operation_id` 또는 클라이언트 `operation_key` **정확히 하나**로
   `operation_status`를 호출하세요. 둘 다 주거나 둘 다 안 주면 오류입니다.
 - 충돌 후 미완료 행은 `unknown`입니다. 서버는 이를 자동 재실행하지
-  **않습니다**. 워크스페이스를 검사한 뒤, 그 변경이 여전히 필요하면
-  **새** `operation_key`를 시작하세요.
+  **않습니다**. UDS에서 `apply_patch` 응답이 유실되면 DB는 `unknown`이며
+  디스크와 모순되는 `rejected`를 쓰지 않습니다. 워크스페이스를 검사한 뒤,
+  그 변경이 여전히 필요하면 **새** `operation_key`를 시작하세요.
 - 살아있는 `exec_command` 프로세스는 MCP 요청보다 오래 살 수 있습니다.
   발급된 `process_id`로 `read_process` / `terminate_process`를 사용하세요.
-  게이트웨이 재시작 후 옛 OS PID는 CodeSpace 핸들로 재사용되지 않습니다.
+  전송이 모호하면 셸 임대를 유지합니다. 워커 `ProcessExited` 뒤에
+  `release_process`가 풀어 무한 `WORKSPACE_BUSY`를 막습니다. UDS 연결
+  끊김이나 게이트웨이 종료는 **워커를 죽입니다**(호스트 자식도 함께
+  죽습니다). 확인된 워커 죽음만 프로세스 소유 임대를 풀며 `process_id`는
+  살아남지 않습니다. 러너 `Replay`는 같은 연결 안의 프리미티브이며
+  연결 끊김 복구가 아닙니다. 게이트웨이 재시작 후 옛 OS PID는
+  CodeSpace 핸들로 재사용되지 않습니다.
 
 ## 이 문서가 검증하지 않는 것
 

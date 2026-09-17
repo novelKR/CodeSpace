@@ -27,8 +27,9 @@ to Codex `main`. Product runtime stays out of the gateway; see
 [codex-reuse.md](codex-reuse.md) and
 [execution-substrate.md](execution-substrate.md).
 
-Build both binaries into the **same** directory so the gateway can find
-the patch helper next to itself (or set `CODESPACE_PATCH_BIN`):
+Build the gateway and patch helper into the **same** directory so the
+gateway can find the helper next to itself (or set `CODESPACE_PATCH_BIN`).
+The UDS worker is optional (`CODESPACE_RUNTIME_BIN`).
 
 ```bash
 cargo build -p codespace-server --bin codespace-mcp --release
@@ -36,11 +37,20 @@ cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch --rele
 mkdir -p dist
 cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
+# Optional Unix-socket worker (not the default exec path):
+cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
+cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 ```
 
 `codespace-patch` is a host child process. It hosts the pinned Codex
 crate **in-process**. It is not the upstream standalone `apply_patch`
-binary and not the retired `native/patch-worker`.
+binary and not the retired `native/patch-worker`. `codespace-codex-runtime`
+binds a private Unix socket with `codex-process-hardening` and
+`codex-uds`, then runs `InProcessRunner`. Hardening is **worker/helper
+process** hardening (`pre_main_hardening()` as the first line of
+`main`; no `ctor`), not a command sandbox. Default `exec_command` still
+uses in-process host spawn. Exec DTO cwd is `WorkspaceRoot`; `PATH` /
+`HOME` / `LANG` are applied inside the runner process.
 
 ## Workspace registry
 
@@ -59,7 +69,10 @@ at a **real directory you registered**. Models cannot add workspaces.
 ```
 
 Profiles: `read-only` (default intent) or `workspace-write`. `host-admin`
-is not a product profile.
+is not a product profile. Optional operator `environments` may register
+`host` or `linux-container`. Omitted environment is implicit local host.
+`linux-container` is not an exec path. Tools and `workspace_info` have
+no `environment_id`.
 
 ## Run the gateway
 
@@ -93,6 +106,21 @@ separately; do not treat `0.0.0.0` as that name.
 If `CODESPACE_OPERATIONS_DB` is unset, operations and the intent queue
 live in memory and **do not survive restart**. Process handles never
 survive restart.
+
+Opt-in runner worker (still host exec, not Linux isolation). UDS is
+1:1: the gateway owns `RuntimeProcess` (child, private 0700 directory,
+`$dir/runner.sock`). There is no reconnect. `--runner-dir` /
+`CODESPACE_RUNNER_DIR` may name a parent for that unique leaf; `/`,
+`/tmp`, `/var/tmp`, and `$HOME` are rejected as the directory itself.
+`--runner-socket` is only for connecting to an already-running worker
+and does not chmod the parent path.
+
+```bash
+export CODESPACE_RUNNER=uds
+export CODESPACE_RUNNER_DIR="$PWD/data/runner"
+export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
+./dist/codespace-mcp
+```
 
 ## Reproduce the MVP flow
 
@@ -137,7 +165,7 @@ The gateway still runs on the host. `exec_command` is a host
   history docs you share.
 - Rotate or truncate stderr capture yourself. There is no log SaaS.
 - The operations SQLite file grows with **patch operation** rows plus
-  works/intents. Process handles and write/shell leases are volatile
+  works/intents. Process handles and resource locks are volatile
   memory. Keep the database off any future runner mount. Deleting it
   forgets idempotency keys.
 
@@ -150,12 +178,19 @@ response is not an execution failure.
   `operation_id` or the client `operation_key` instead of blindly
   re-running `apply_patch`. Providing both or neither is an error.
 - After a crash, unfinished rows are `unknown`. The server does **not**
-  auto-replay them. Inspect the workspace, then start a **new**
-  `operation_key` if you still want the change.
+  auto-replay them. A lost UDS `apply_patch` response is stored as
+  `unknown`, never a disk-contradicting `rejected`. Inspect the
+  workspace, then start a **new** `operation_key` if you still want the
+  change.
 - A live `exec_command` process can outlive the MCP request. Use
   `read_process` / `terminate_process` with the issued `process_id`.
-  After gateway restart, old OS PIDs are not reused as CodeSpace
-  handles.
+  Ambiguous transport keeps the process-owned lease. `ProcessExited`
+  from the worker calls `release_process` so `WORKSPACE_BUSY` does not
+  stick forever. UDS disconnect or gateway shutdown **kills the worker**
+  (host children die with it). Confirmed worker death releases
+  process-owned leases; `process_id` does not survive. Runner `Replay`
+  is a same-connection primitive, not disconnect recovery. After
+  gateway restart, old OS PIDs are not reused as CodeSpace handles.
 
 ## What this document does not verify
 

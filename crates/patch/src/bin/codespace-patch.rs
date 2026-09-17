@@ -43,6 +43,7 @@ fn fail(err: ErrorBody) -> Response {
 
 #[tokio::main]
 async fn main() {
+    codex_process_hardening::pre_main_hardening();
     let mut buf = String::new();
     io::stdin().read_to_string(&mut buf).expect("read stdin");
     let req: Request = match serde_json::from_str(&buf) {
@@ -55,11 +56,11 @@ async fn main() {
             return;
         }
     };
-    let ws = Workspace {
-        id: WorkspaceId("helper".into()),
-        root: req.root,
-        profile: Profile::WorkspaceWrite,
-    };
+    let ws = Workspace::new(
+        WorkspaceId("helper".into()),
+        req.root,
+        Profile::WorkspaceWrite,
+    );
     let resp = match req.op.as_str() {
         "preflight" => match apply_in_workspace(&ws, &req.patch, true).await {
             Ok(ApplyOutcome { files, changes }) => Response {

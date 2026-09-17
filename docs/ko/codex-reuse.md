@@ -44,16 +44,15 @@ CodeSpace Core          ← only authorization authority
           │
           ▼
    isolated adapter workspace
-          │  crates/patch today (codespace-patch)
-          │  crates/codex-runtime later
-          │    crate name: codespace-codex-runtime
-          │    (documented only; not created in this WP)
+          │  crates/patch (codespace-patch)
+          │  crates/codex-runtime (codespace-codex-runtime)
+          │    process-hardening + UDS worker; opt-in
           ▼
    Codex execution subgraph (pinned) → OS
 ```
 
 Codex는 어댑터 뒤의 **구현** 의존성이며 Gateway의 아키텍처 의존성이
-아닙니다. `InProcessRunner`, `ContainerRunner`, 이후 원격 러너, 또는
+아닙니다. `InProcessRunner`, `UdsRunner`, 이후 원격 러너, 또는
 다른 샌드박스 백엔드는 Codex 타입이 어댑터를 떠나지 않으면 바뀔 수
 있습니다.
 
@@ -94,7 +93,7 @@ CodeSpace core
 
 
 isolated adapter (crates/patch today;
-crates/codex-runtime later)
+crates/codex-runtime today)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
@@ -139,15 +138,14 @@ Runner helper
 - 핀은 [upstream-lock.md](upstream-lock.md)에 남습니다
   (`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`).
 - **격리된** Cargo 워크스페이스에서의 경로 의존성이며 저장소 루트가
-  아닙니다. 오늘: `crates/patch`. 이후: `crates/codex-runtime`
-  (`codespace-codex-runtime`. 문서만. **이 작업 패키지에서 만들지
-  않음**).
+  아닙니다. 오늘: `crates/patch`와 `crates/codex-runtime`
+  (`codespace-codex-runtime`).
 - NOTICE + Apache-2.0 귀속.
 - 제품 정책은 서브그래프 앞과 뒤에 남습니다.
 - Codex 워크스페이스에서 크레이트를 파일 복사하지 마세요.
 
 ```text
-Gateway → Runner trait → (later) ContainerRunner
+Gateway → Runner trait → UdsRunner (opt-in)
        → codespace-codex-runtime helper → Codex execution crates
 ```
 
@@ -162,7 +160,7 @@ checkout과 cargo가 지배합니다.
 | core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter manifests | `crates/patch/Cargo.toml`; later `crates/codex-runtime` | tiny | adapter in the update range; allowlist only |
+| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime` | tiny | adapter in the update range; allowlist only |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 갱신 범위는 `SCAN_BASE`(PR base / 이전 `main`)입니다. 범위를 모르면
@@ -173,7 +171,8 @@ checkout과 cargo가 지배합니다.
 핵심 매니페스트는 어떤 `codex-` 의존성 키도 금지합니다. 어댑터
 매니페스트는 승인된 서브그래프만 허용합니다(오늘 `crates/patch`:
 `codex-apply-patch`, apply-patch 워크스페이스 그래프로서
-`codex-exec-server`, `codex-utils-path-uri`). 소스는 에이전트/모델
+`codex-exec-server`, `codex-utils-path-uri`, `codex-process-hardening`;
+`crates/codex-runtime`: `codex-process-hardening`, `codex-uds`). 소스는 에이전트/모델
 패턴을 유지합니다(`api.openai.com`, Responses, `codex-login`,
 `codex-core`, `codex-app-server`, `async-openai`). 크레이트 이름을
 언급하는 주석은 cargo 의존성이 아닙니다.
@@ -184,10 +183,10 @@ Server를 내부 백엔드로 감싸지 **마세요**.
 ## 감독 코드가 아직 있는 이유
 
 `process_id`, stdin, terminate, timeout이 모이는 이유는 요청 수명이
-프로세스 수명이 아니기 때문입니다. 프로세스 내부 감독은 Runner 전송이
-생길 때까지 CodeSpace에 남습니다. `operation_key` / `operation_status`는
-잃어버린 **원격 MCP 변경 RPC**를 복구하며, Codex 스레드를 복구하지
-않습니다.
+프로세스 수명이 아니기 때문입니다. 프로세스 내부 감독이 **기본**입니다.
+선택적 `UdsRunner`도 그 감독을 `codespace-codex-runtime` 안에서
+돌립니다. `operation_key` / `operation_status`는 잃어버린 **원격 MCP
+변경 RPC**를 복구하며, Codex 스레드를 복구하지 않습니다.
 
 spawn+PTY를 얻으려고 `codex-core` / `codex-exec` / App Server를 끌어오면
 login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전히
@@ -195,7 +194,8 @@ login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전�
 
 ## 단계적 가져오기 (그 WP가 생길 때)
 
-문서화된 순서입니다. **이 작업 패키지에서 크레이트를 추가하지 않습니다.**
+문서화된 순서입니다. **이 WP에서 코드로 가져옴:** process-hardening과
+UDS. **아직 안 가져옴:** PTY, filesystem, linux-sandbox, network.
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -213,14 +213,14 @@ Codex `main`이 아니라 핀의 `Cargo.toml` 파일로 판단합니다.
 **`codex-apply-patch`** via `crates/patch`. 파싱, 헝크 검증, 적용,
 패리티 부분집합.
 
+**`codex-process-hardening`** via `codespace-patch`와
+`codespace-codex-runtime` `pre_main_hardening()`. 워커/헬퍼 **프로세스**
+강화이지 command sandbox가 아닙니다. `main` 첫 줄로 유지하고, 의존성
+폭이 커지지 않는 한 `ctor`는 넣지 않습니다.
+
+**`codex-uds`** via `codespace-codex-runtime` bind. RPC는 CodeSpace.
+
 ### 재사용 선호 (그 WP가 올 때)
-
-**`codex-process-hardening`**
-([`codex-rs/process-hardening/Cargo.toml`](../../third_party/codex/codex-rs/process-hardening/Cargo.toml))
-
-런타임 의존성은 `libc`입니다. 코어 덤프, `PR_SET_DUMPABLE`, macOS
-디버거 연결, `LD_*` / `DYLD_*` 제거. 첫 재사용 후보: 다시 짜도
-CodeSpace가 얻는 독립은 거의 없습니다.
 
 **`codex-utils-pty`**
 ([`codex-rs/utils/pty/Cargo.toml`](../../third_party/codex/codex-rs/utils/pty/Cargo.toml))
@@ -229,12 +229,11 @@ Unix: `portable-pty`, `tokio`, `libc`. CodeSpace PTY보다 업스트림을
 선호하세요. 연결해도 PTY MCP 도구가 추가되지는 **않습니다**.
 게이트웨이가 여전히 `process_id`를 발급합니다.
 
-**`codex-uds`**
+**`codex-uds`** (이미 `codespace-codex-runtime`에 있음)
 ([`codex-rs/uds/Cargo.toml`](../../third_party/codex/codex-rs/uds/Cargo.toml))
 
-Unix: Tokio `fs` / `net` / `rt`. 다음 Runner Unix 소켓 전송에 맞습니다.
-**RPC 프로토콜은 CodeSpace 소유로 남습니다.** 이 크레이트는 전송
-프리미티브입니다.
+Unix: Tokio `fs` / `net` / `rt`. 선택적 Runner Unix 소켓 워커의 소켓
+프리미티브입니다. **RPC 프로토콜은 CodeSpace 소유로 남습니다.**
 
 **`codex-utils-absolute-path` / `codex-utils-path-uri`**
 
@@ -303,7 +302,7 @@ Linux에서 Landlock/seccompiler. **핵심에서 금지.** 어댑터에서는
 
 HTTP/WS plus `codex-api`, `codex-config`, OTel, protocol, sandboxing,
 PTY. 오늘의 Runner 백엔드로는 너무 무겁습니다. 영구 거절은 아닙니다.
-나중에 ContainerRunner + 저수준 크레이트 대 Gateway 어댑터 →
+나중에 UdsRunner + 저수준 크레이트 대 Gateway 어댑터 →
 exec-server를 비교하세요. 컴파일 그래프와 업그레이드 비용을 재세요.
 
 ### 이후 Environment (P0 아님)
@@ -339,24 +338,24 @@ rollout, history. 제품 exec 흐름이지 `spawn`이 아닙니다.
 - 워크스페이스 레지스트리, 프로필의 **의미**, 경로 정책.
 - 쓰기 잠금, 셸 점유, `WORKSPACE_BUSY`(스케줄러 WP까지).
 - `operation_key` 재실행, `operation_id`, `operation_status`.
-- Runner 전송이 생길 때까지 호스트/프로세스 내부 프로세스 감독.
+- 호스트/프로세스 내부 프로세스 감독이 기본. UDS 워커는 선택적.
 - 컨테이너 수명주기와 워크스페이스 바인드 마운트 **정책**.
-- 격리된 어댑터 워크스페이스(`crates/patch`, 이후
+- 격리된 어댑터 워크스페이스(`crates/patch`,
   `crates/codex-runtime` / `codespace-codex-runtime`).
 
 ## 다음 구현 WP
 
-다음 **코드** 작업 패키지는 여전히 기존 `Runner` 트레이트 뒤의 Runner
-**전송**(Unix 소켓 / `ContainerRunner`)입니다. 그 WP는 `apply_patch`를
-게이트웨이가 구동하는 여러 RPC로 쪼개면 안 됩니다.
+다음 **코드** 작업 패키지는 기존 `Runner` 트레이트 뒤의 남은 실행
+서브그래프(PTY, filesystem, linux-sandbox, network)입니다.
+`apply_patch`를 게이트웨이가 구동하는 여러 RPC로 쪼개면 안 됩니다.
 
-기본으로 자체 PTY / Landlock / seccomp / UDS 스택을 두지 마세요.
+기본으로 자체 PTY / Landlock / seccomp 스택을 두지 마세요.
 위 표 이후 격리된 워크스페이스를 통해 실행 서브그래프를 가져오세요.
 핀 범프는 의도적 릴리스입니다
 ([upstream-update.md](upstream-update.md)): 지금은 SHA + 패치 패리티.
-그 워크스페이스가 생기면 런타임 어댑터 빌드와 PTY / sandbox / process
+그 크레이트를 가져가면 런타임 어댑터 빌드와 PTY / sandbox / process
 회귀를 더합니다.
 
-도메인 확장(PermissionProfile 축, Environment, 스케줄러, 승인 도구)은
+남은 도메인 확장(스케줄러 큐, 승인 도구)은
 [execution-substrate.md](execution-substrate.md)에서 순서를 정합니다.
 이 작업 패키지에서 실제 MCP 스키마는 바뀌지 않습니다.

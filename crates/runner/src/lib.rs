@@ -1,8 +1,10 @@
-//! In-process `Runner`: path sandbox, one patch transaction, host process
+//! `Runner` trait, host `InProcessRunner`, and opt-in Unix-socket
+//! `UdsRunner`. Path sandbox, one patch transaction, host process
 //! supervisor, and isolation-fixture checks. Linux containers are the
 //! **target** execution OS. macOS hosts may run the path sandbox for unit
 //! tests; that does **not** verify Linux isolation. `exec_command` is not
-//! dispatched into compose.
+//! dispatched into compose. Default backend remains in-process. Host +
+//! `UdsRunner` is the same host over UDS, not a Linux isolation claim.
 
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
@@ -71,83 +73,224 @@ mod patch_helper;
 mod patch_verify;
 mod process;
 mod rollback;
+mod socket;
+mod uds;
+mod wire;
 
 pub use api::{
-    RunnerApplyPatchRequest, RunnerApplyPatchResult, RunnerExecRequest, RunnerExecResult,
-    RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
+    default_exec_timeout_ms, runner_local_exec_env, RunnerApplyPatchRequest,
+    RunnerApplyPatchResult, RunnerCwd, RunnerError, RunnerExecEnv, RunnerExecPolicy,
+    RunnerExecRequest, RunnerExecResult, RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
+    DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
 };
 pub use files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT, VERSION_ABSENT};
 pub use patch_helper::ensure_helper_for_tests;
 pub use process::{
     InProcessRunner, RetentionPolicy, ShellRelease, DEFAULT_COMPLETED_TTL, DEFAULT_MAX_COMPLETED,
-    DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT, MAX_OUTPUT_BYTES,
+    DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT,
+};
+pub use socket::{
+    allocate_private_runner_dir, is_forbidden_runner_dir, reclaim_leftover_socket,
+    runner_socket_path, RUNNER_SOCKET_NAME,
+};
+pub use uds::{DisconnectHook, UdsRunner, RUNNER_CALL_DEADLINE};
+pub use wire::{
+    host_worker, read_frame, serve_runner_connection, write_frame, RunnerEvent, RunnerOp,
+    RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,
 };
 
 /// Execution-plane API. Control-plane fields (`work_id`, coordination,
 /// `operation_id` / `operation_key`) stay in the gateway.
 pub trait Runner: Send + Sync {
-    fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, ErrorBody>;
-    fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, ErrorBody>;
-    fn version(&self, ws: &Workspace, path: &str) -> Result<String, ErrorBody>;
+    fn read(
+        &self,
+        ws: &Workspace,
+        path: &str,
+    ) -> impl std::future::Future<Output = Result<ReadResult, RunnerError>> + Send;
+    fn find(
+        &self,
+        ws: &Workspace,
+        glob: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<FindResult, RunnerError>> + Send;
+    fn version(
+        &self,
+        ws: &Workspace,
+        path: &str,
+    ) -> impl std::future::Future<Output = Result<String, RunnerError>> + Send;
     fn apply_patch(
         &self,
         ws: &Workspace,
         req: RunnerApplyPatchRequest,
-    ) -> impl std::future::Future<Output = Result<RunnerApplyPatchResult, ErrorBody>> + Send;
-    fn exec(&self, ws: &Workspace, req: RunnerExecRequest) -> Result<RunnerExecResult, ErrorBody>;
+    ) -> impl std::future::Future<Output = Result<RunnerApplyPatchResult, RunnerError>> + Send;
+    fn exec(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+    ) -> impl std::future::Future<Output = Result<RunnerExecResult, RunnerError>> + Send;
     fn write_stdin(
         &self,
         req: RunnerWriteStdin,
-    ) -> impl std::future::Future<Output = Result<(), ErrorBody>> + Send;
-    fn read_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, ErrorBody>;
-    fn terminate(&self, process_id: &ProcessId) -> Result<(), ErrorBody>;
-    fn workspace_of(&self, process_id: &str) -> Option<String>;
-    fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody>;
+    ) -> impl std::future::Future<Output = Result<(), RunnerError>> + Send;
+    fn read_process(
+        &self,
+        req: RunnerReadProcess,
+    ) -> impl std::future::Future<Output = Result<RunnerReadResult, RunnerError>> + Send;
+    fn terminate(
+        &self,
+        process_id: &ProcessId,
+    ) -> impl std::future::Future<Output = Result<(), RunnerError>> + Send;
+    fn workspace_of(
+        &self,
+        process_id: &str,
+    ) -> impl std::future::Future<Output = Option<String>> + Send;
+    fn terminate_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> impl std::future::Future<Output = Result<u32, RunnerError>> + Send;
 }
 
 impl Runner for InProcessRunner {
-    fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, ErrorBody> {
-        self.read_file(ws, path)
+    async fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, RunnerError> {
+        self.read_file(ws, path).map_err(RunnerError::from)
     }
 
-    fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, ErrorBody> {
-        self.find_files(ws, glob)
+    async fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, RunnerError> {
+        self.find_files(ws, glob).map_err(RunnerError::from)
     }
 
-    fn version(&self, ws: &Workspace, path: &str) -> Result<String, ErrorBody> {
-        self.file_version(ws, path)
+    async fn version(&self, ws: &Workspace, path: &str) -> Result<String, RunnerError> {
+        self.file_version(ws, path).map_err(RunnerError::from)
     }
 
     async fn apply_patch(
         &self,
         ws: &Workspace,
         req: RunnerApplyPatchRequest,
-    ) -> Result<RunnerApplyPatchResult, ErrorBody> {
-        self.apply_patch_txn(ws, req).await
+    ) -> Result<RunnerApplyPatchResult, RunnerError> {
+        self.apply_patch_txn(ws, req)
+            .await
+            .map_err(RunnerError::from)
     }
 
-    fn exec(&self, ws: &Workspace, req: RunnerExecRequest) -> Result<RunnerExecResult, ErrorBody> {
-        self.spawn_host(ws, req)
+    async fn exec(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+    ) -> Result<RunnerExecResult, RunnerError> {
+        self.spawn_host(ws, req).map_err(RunnerError::from)
     }
 
-    async fn write_stdin(&self, req: RunnerWriteStdin) -> Result<(), ErrorBody> {
-        self.write_host_stdin(req).await
+    async fn write_stdin(&self, req: RunnerWriteStdin) -> Result<(), RunnerError> {
+        self.write_host_stdin(req).await.map_err(RunnerError::from)
     }
 
-    fn read_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, ErrorBody> {
-        self.read_host_process(req)
+    async fn read_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, RunnerError> {
+        self.read_host_process(req).map_err(RunnerError::from)
     }
 
-    fn terminate(&self, process_id: &ProcessId) -> Result<(), ErrorBody> {
-        self.kill_host(process_id)
+    async fn terminate(&self, process_id: &ProcessId) -> Result<(), RunnerError> {
+        self.kill_host(process_id).map_err(RunnerError::from)
     }
 
-    fn workspace_of(&self, process_id: &str) -> Option<String> {
+    async fn workspace_of(&self, process_id: &str) -> Option<String> {
         self.host_workspace_of(process_id)
     }
 
-    fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody> {
+    async fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, RunnerError> {
         self.kill_host_workspace(workspace_id)
+            .map_err(RunnerError::from)
+    }
+}
+
+#[derive(Clone)]
+pub enum RuntimeBackend {
+    InProcess(InProcessRunner),
+    Uds(UdsRunner),
+}
+
+impl RuntimeBackend {
+    pub fn in_process(on_release: ShellRelease) -> Self {
+        Self::InProcess(InProcessRunner::new(on_release))
+    }
+}
+
+impl Runner for RuntimeBackend {
+    async fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.read(ws, path).await,
+            Self::Uds(runner) => runner.read(ws, path).await,
+        }
+    }
+
+    async fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.find(ws, glob).await,
+            Self::Uds(runner) => runner.find(ws, glob).await,
+        }
+    }
+
+    async fn version(&self, ws: &Workspace, path: &str) -> Result<String, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.version(ws, path).await,
+            Self::Uds(runner) => runner.version(ws, path).await,
+        }
+    }
+
+    async fn apply_patch(
+        &self,
+        ws: &Workspace,
+        req: RunnerApplyPatchRequest,
+    ) -> Result<RunnerApplyPatchResult, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.apply_patch(ws, req).await,
+            Self::Uds(runner) => runner.apply_patch(ws, req).await,
+        }
+    }
+
+    async fn exec(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+    ) -> Result<RunnerExecResult, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.exec(ws, req).await,
+            Self::Uds(runner) => runner.exec(ws, req).await,
+        }
+    }
+
+    async fn write_stdin(&self, req: RunnerWriteStdin) -> Result<(), RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.write_stdin(req).await,
+            Self::Uds(runner) => runner.write_stdin(req).await,
+        }
+    }
+
+    async fn read_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.read_process(req).await,
+            Self::Uds(runner) => runner.read_process(req).await,
+        }
+    }
+
+    async fn terminate(&self, process_id: &ProcessId) -> Result<(), RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.terminate(process_id).await,
+            Self::Uds(runner) => runner.terminate(process_id).await,
+        }
+    }
+
+    async fn workspace_of(&self, process_id: &str) -> Option<String> {
+        match self {
+            Self::InProcess(runner) => runner.workspace_of(process_id).await,
+            Self::Uds(runner) => runner.workspace_of(process_id).await,
+        }
+    }
+
+    async fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.terminate_workspace(workspace_id).await,
+            Self::Uds(runner) => runner.terminate_workspace(workspace_id).await,
+        }
     }
 }
 
@@ -182,11 +325,11 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir(root.join("ws")).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", root.join("ws").join("link")).unwrap();
-        let sandbox = PathSandbox::new(Workspace {
-            id: WorkspaceId("demo".into()),
-            root: root.join("ws"),
-            profile: Profile::ReadOnly,
-        });
+        let sandbox = PathSandbox::new(Workspace::new(
+            WorkspaceId("demo".into()),
+            root.join("ws"),
+            Profile::ReadOnly,
+        ));
         let err = sandbox.resolve("link").unwrap_err();
         assert_eq!(err.code, ErrorCode::SymlinkRejected);
     }
@@ -197,11 +340,11 @@ mod tests {
         let ws = dir.path().join("ws");
         std::fs::create_dir(&ws).unwrap();
         std::fs::write(ws.join("readme.txt"), "ok").unwrap();
-        let sandbox = PathSandbox::new(Workspace {
-            id: WorkspaceId("demo".into()),
-            root: ws,
-            profile: Profile::ReadOnly,
-        });
+        let sandbox = PathSandbox::new(Workspace::new(
+            WorkspaceId("demo".into()),
+            ws,
+            Profile::ReadOnly,
+        ));
         let path = sandbox.resolve("readme.txt").unwrap();
         assert!(path.ends_with("readme.txt"));
     }

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Workspace registry and path policy"
+description = "Workspace registry, PermissionProfile, and Environment"
 
 [dependencies]
 codespace-domain = { path = "../domain" }

@@ -46,3 +46,21 @@ pub struct ReadProcessResult {
 pub struct TerminateProcessParams {
     pub process_id: ProcessId,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exec_command_params_have_no_environment_id() {
+        let json = serde_json::to_value(ExecCommandParams {
+            workspace_id: WorkspaceId("demo".into()),
+            command: vec!["/bin/echo".into()],
+            work_id: None,
+        })
+        .unwrap();
+        assert!(json.get("environment_id").is_none());
+        assert!(json.get("cwd").is_none());
+        assert!(json.get("tty").is_none());
+    }
+}

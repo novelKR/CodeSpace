@@ -14,6 +14,8 @@ helper over JSON stdin/stdout. That helper process calls Codex
 **in-process**. `exec_command` currently spawns a **host** process
 (`tokio::process::Command`) with the workspace as cwd. Isolated Linux
 dispatch is the target runner boundary, not the current exec path.
+Opt-in `CODESPACE_RUNNER=uds` talks CodeSpace JSON to
+`codespace-codex-runtime`; that is not Linux isolation.
 
 This is **not**:
 
@@ -55,7 +57,8 @@ cargo run -p codespace-server --bin codespace-mcp -- --http
 ```
 
 Tests: `cargo test --workspace` and
-`cargo test --manifest-path crates/patch/Cargo.toml`. ChatGPT Custom
+`cargo test --manifest-path crates/patch/Cargo.toml` and
+`cargo test --manifest-path crates/codex-runtime/Cargo.toml`. ChatGPT Custom
 Connector steps and what is **not** verified:
 [docs/chatgpt-connector.md](docs/chatgpt-connector.md).
 Operator install: [docs/operations.md](docs/operations.md).

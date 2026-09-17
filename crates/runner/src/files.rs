@@ -155,11 +155,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn sandbox(dir: &Path) -> PathSandbox {
-        PathSandbox::new(Workspace {
-            id: WorkspaceId("demo".into()),
-            root: dir.to_path_buf(),
-            profile: Profile::ReadOnly,
-        })
+        PathSandbox::new(Workspace::new(
+            WorkspaceId("demo".into()),
+            dir.to_path_buf(),
+            Profile::ReadOnly,
+        ))
     }
 
     #[test]

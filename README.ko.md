@@ -14,7 +14,9 @@ stdin/stdout으로 Rust `codespace-patch` 헬퍼와 대화합니다. 그 헬퍼
 프로세스는 Codex를 **프로세스 내부에서** 호출합니다. `exec_command`는
 현재 워크스페이스를 cwd로 하는 **호스트** 프로세스
 (`tokio::process::Command`)를 띄웁니다. 격리된 Linux 디스패치가 목표
-러너 경계이며, 현재 exec 경로는 아닙니다.
+러너 경계이며, 현재 exec 경로는 아닙니다. 선택적 `CODESPACE_RUNNER=uds`는
+CodeSpace JSON으로 `codespace-codex-runtime`과 대화합니다. 그것은 Linux
+격리가 아닙니다.
 
 다음이 **아닙니다**.
 
@@ -56,7 +58,8 @@ cargo run -p codespace-server --bin codespace-mcp -- --http
 ```
 
 시험: `cargo test --workspace`와
-`cargo test --manifest-path crates/patch/Cargo.toml`. ChatGPT Custom
+`cargo test --manifest-path crates/patch/Cargo.toml`와
+`cargo test --manifest-path crates/codex-runtime/Cargo.toml`. ChatGPT Custom
 Connector 절차와 **검증하지 않은** 항목:
 [docs/chatgpt-connector.md](docs/chatgpt-connector.md).
 운영자 설치: [docs/operations.md](docs/operations.md).

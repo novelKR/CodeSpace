@@ -11,8 +11,8 @@ use codespace_domain::{
 };
 use codespace_policy::{allow, Action, ClientClaims, Registry};
 use codespace_runner::{
-    InProcessRunner, Runner, RunnerApplyPatchRequest, RunnerExecRequest, RunnerReadProcess,
-    RunnerWriteStdin,
+    Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest, RunnerReadProcess,
+    RunnerWriteStdin, RuntimeBackend,
 };
 use codespace_store::{Begin, Store};
 use rmcp::{
@@ -36,7 +36,7 @@ pub struct CodeSpace {
     tool_router: ToolRouter<Self>,
     pub(crate) registry: Registry,
     pub(crate) store: Arc<Store>,
-    pub(crate) runner: InProcessRunner,
+    pub(crate) runner: RuntimeBackend,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -61,9 +61,17 @@ impl CodeSpace {
 
     pub fn with_store(registry: Registry, store: Arc<Store>) -> Self {
         let store_for_lease = store.clone();
-        let runner = InProcessRunner::new(Arc::new(move |workspace_id| {
-            store_for_lease.clear_shell(workspace_id);
-        }));
+        let on_release = Arc::new(move |process_id: &str| {
+            store_for_lease.release_process(process_id);
+        });
+        Self::with_store_and_runner(registry, store, RuntimeBackend::in_process(on_release))
+    }
+
+    pub fn with_store_and_runner(
+        registry: Registry,
+        store: Arc<Store>,
+        runner: RuntimeBackend,
+    ) -> Self {
         Self {
             tool_router: Self::tool_router(),
             registry,
@@ -99,11 +107,12 @@ impl CodeSpace {
             .map_err(err_json)?;
         self.runner
             .read(ws, &params.path)
+            .await
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
                 Json(result)
             })
-            .map_err(err_json)
+            .map_err(runner_err_json)
     }
 
     #[tool(
@@ -120,11 +129,12 @@ impl CodeSpace {
             .map_err(err_json)?;
         self.runner
             .find(ws, params.glob.as_deref())
+            .await
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
                 Json(result)
             })
-            .map_err(err_json)
+            .map_err(runner_err_json)
     }
 
     #[tool(
@@ -168,6 +178,7 @@ impl CodeSpace {
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
         allow(ws, Action::Exec, &ClientClaims::default()).map_err(err_json)?;
+        ws.require_host_execution().map_err(err_json)?;
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(ErrorBody::new(
                 ErrorCode::InvalidPatch,
@@ -178,20 +189,25 @@ impl CodeSpace {
         self.store
             .mark_shell_busy(&params.workspace_id.0, &process_id.0)
             .map_err(err_json)?;
-        match self.runner.exec(
-            ws,
-            RunnerExecRequest {
-                argv: params.command,
-                process_id,
-            },
-        ) {
+        match self
+            .runner
+            .exec(
+                ws,
+                RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile),
+            )
+            .await
+        {
             Ok(result) => Ok(Json(ExecCommandResult {
                 process_id: result.process_id,
                 coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
             })),
+            Err(RunnerError::TransportAmbiguous { .. }) => Ok(Json(ExecCommandResult {
+                process_id,
+                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
+            })),
             Err(err) => {
-                self.store.clear_shell(&params.workspace_id.0);
-                Err(err_json(err))
+                self.store.release_process(&process_id.0);
+                Err(runner_err_json(err))
             }
         }
     }
@@ -210,13 +226,11 @@ impl CodeSpace {
                 data: params.data,
             })
             .await
-            .map(|_| {
-                Json(OkBody {
-                    ok: true,
-                    coordination: self.process_hint(&params.process_id.0),
-                })
-            })
-            .map_err(err_json)
+            .map_err(runner_err_json)?;
+        Ok(Json(OkBody {
+            ok: true,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
     }
 
     #[tool(
@@ -227,21 +241,21 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<ReadProcessParams>,
     ) -> Result<Json<ReadProcessResult>, String> {
-        self.runner
+        let result = self
+            .runner
             .read_process(RunnerReadProcess {
                 process_id: params.process_id.clone(),
                 cursor: params.cursor,
             })
-            .map(|result| {
-                Json(ReadProcessResult {
-                    process_id: result.process_id,
-                    cursor: result.cursor,
-                    chunk: result.chunk,
-                    eof: result.eof,
-                    coordination: self.process_hint(&params.process_id.0),
-                })
-            })
-            .map_err(err_json)
+            .await
+            .map_err(runner_err_json)?;
+        Ok(Json(ReadProcessResult {
+            process_id: result.process_id,
+            cursor: result.cursor,
+            chunk: result.chunk,
+            eof: result.eof,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
     }
 
     #[tool(
@@ -254,13 +268,12 @@ impl CodeSpace {
     ) -> Result<Json<OkBody>, String> {
         self.runner
             .terminate(&params.process_id)
-            .map(|_| {
-                Json(OkBody {
-                    ok: true,
-                    coordination: self.process_hint(&params.process_id.0),
-                })
-            })
-            .map_err(err_json)
+            .await
+            .map_err(runner_err_json)?;
+        Ok(Json(OkBody {
+            ok: true,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
     }
 
     #[tool(
@@ -344,6 +357,7 @@ impl CodeSpace {
     ) -> Result<ApplyPatchResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
+        ws.require_host_execution()?;
         let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
         let fingerprint = Store::fingerprint(&params);
         match self.store.begin(
@@ -378,11 +392,22 @@ impl CodeSpace {
                         work_id: None,
                         coordination: None,
                     },
-                    Err(err) => {
+                    Err(RunnerError::Execution(err)) => {
                         let failed =
                             ApplyPatchResult::new(PatchStatus::Rejected, operation_id.clone());
                         let _ = self.store.finish(&operation_id, &failed);
                         return Err(err.with_operation_id(operation_id.0));
+                    }
+                    Err(RunnerError::TransportBeforeDispatch { .. })
+                    | Err(RunnerError::TransportAmbiguous { .. }) => {
+                        let unknown =
+                            ApplyPatchResult::new(PatchStatus::Unknown, operation_id.clone());
+                        self.store.finish(&operation_id, &unknown)?;
+                        return Ok(self.with_hint(
+                            unknown,
+                            &params.workspace_id.0,
+                            params.work_id.as_ref(),
+                        ));
                     }
                 };
                 self.store.finish(&operation_id, &result)?;
@@ -398,8 +423,8 @@ impl CodeSpace {
             .flatten()
     }
 
-    fn process_hint(&self, process_id: &str) -> Option<CoordinationHint> {
-        let ws = self.runner.workspace_of(process_id)?;
+    async fn process_hint(&self, process_id: &str) -> Option<CoordinationHint> {
+        let ws = self.runner.workspace_of(process_id).await?;
         self.hint(&ws, None)
     }
 
@@ -413,6 +438,10 @@ impl CodeSpace {
         result.coordination = self.hint(workspace_id, work_id);
         result
     }
+}
+
+fn runner_err_json(err: RunnerError) -> String {
+    err_json(err.into_error_body())
 }
 
 fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {
@@ -475,5 +504,168 @@ impl ServerHandler for CodeSpace {
             "negotiated mcp protocol; handlers stay on tools/call"
         );
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codespace_domain::{OperationKey, WorkspaceId};
+    use codespace_policy::{EnvironmentKind, Workspace};
+    use codespace_runner::{host_worker, serve_runner_connection, UdsRunner};
+    use std::collections::BTreeMap;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::UnixStream;
+
+    fn write_registry(root: std::path::PathBuf) -> Registry {
+        let mut registry = Registry::new();
+        registry.insert(Workspace::new(
+            WorkspaceId("demo".into()),
+            root,
+            codespace_domain::Profile::WorkspaceWrite,
+        ));
+        registry
+    }
+
+    async fn drop_after_one_frame(stream: UnixStream) {
+        let (mut read, _write) = stream.into_split();
+        let mut len_buf = [0u8; 4];
+        if read.read_exact(&mut len_buf).await.is_err() {
+            return;
+        }
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut payload = vec![0u8; len];
+        let _ = read.read_exact(&mut payload).await;
+    }
+
+    #[tokio::test]
+    async fn apply_patch_uds_loss_records_unknown_not_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            drop_after_one_frame(server).await;
+        });
+        let store = Arc::new(Store::memory().unwrap());
+        let runner = RuntimeBackend::Uds(UdsRunner::from_stream(client, Arc::new(|_| {})));
+        let cs = CodeSpace::with_store_and_runner(write_registry(ws_root), store.clone(), runner);
+        let result = cs
+            .apply_patch_inner(ApplyPatchParams {
+                workspace_id: WorkspaceId("demo".into()),
+                patch: "*** Begin Patch\n*** Add File: lost.txt\n+x\n*** End Patch\n".into(),
+                expected_versions: BTreeMap::new(),
+                operation_key: Some(OperationKey("k-unknown".into())),
+                check_only: false,
+                work_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.status, PatchStatus::Unknown);
+        let stored = store.get(&result.operation_id).unwrap();
+        assert_eq!(stored.status, PatchStatus::Unknown);
+        assert_ne!(stored.status, PatchStatus::Rejected);
+        assert!(!dir.path().join("ws/lost.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn exec_ambiguous_keeps_workspace_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(async move {
+            drop_after_one_frame(server).await;
+        });
+        let store = Arc::new(Store::memory().unwrap());
+        let runner = RuntimeBackend::Uds(UdsRunner::from_stream(client, Arc::new(|_| {})));
+        let cs = CodeSpace::with_store_and_runner(write_registry(ws_root), store.clone(), runner);
+        let started = cs
+            .exec_command(Parameters(ExecCommandParams {
+                workspace_id: WorkspaceId("demo".into()),
+                command: vec!["/bin/echo".into(), "x".into()],
+                work_id: None,
+            }))
+            .await
+            .unwrap();
+        assert!(started.0.process_id.0.starts_with("proc-"));
+        let busy = cs
+            .apply_patch_inner(ApplyPatchParams {
+                workspace_id: WorkspaceId("demo".into()),
+                patch: "*** Begin Patch\n*** Add File: later.txt\n+x\n*** End Patch\n".into(),
+                expected_versions: BTreeMap::new(),
+                operation_key: None,
+                check_only: false,
+                work_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(busy.code, ErrorCode::WorkspaceBusy);
+    }
+
+    #[tokio::test]
+    async fn process_exited_releases_exclusive_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
+        let (worker, events) = host_worker();
+        tokio::spawn(async move {
+            serve_runner_connection(server, worker, events)
+                .await
+                .expect("serve");
+        });
+        let store = Arc::new(Store::memory().unwrap());
+        let store_for_lease = store.clone();
+        let runner = RuntimeBackend::Uds(UdsRunner::from_stream(
+            client,
+            Arc::new(move |process_id: &str| {
+                store_for_lease.release_process(process_id);
+            }),
+        ));
+        let cs = CodeSpace::with_store_and_runner(write_registry(ws_root), store.clone(), runner);
+        cs.exec_command(Parameters(ExecCommandParams {
+            workspace_id: WorkspaceId("demo".into()),
+            command: vec!["/bin/echo".into(), "done".into()],
+            work_id: None,
+        }))
+        .await
+        .unwrap();
+        for _ in 0..50 {
+            if store.try_acquire_write("demo").is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let _lease = store.try_acquire_write("demo").expect("lease released");
+    }
+
+    #[tokio::test]
+    async fn linux_container_apply_patch_is_unauthorized_without_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let mut registry = Registry::new();
+        let mut ws = Workspace::new(
+            WorkspaceId("demo".into()),
+            ws_root,
+            codespace_domain::Profile::WorkspaceWrite,
+        );
+        ws.environment_kind = EnvironmentKind::LinuxContainer;
+        registry.insert(ws);
+        let cs = CodeSpace::new(registry);
+        let err = cs
+            .apply_patch_inner(ApplyPatchParams {
+                workspace_id: WorkspaceId("demo".into()),
+                patch: "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\n".into(),
+                expected_versions: BTreeMap::new(),
+                operation_key: Some(OperationKey("k-box".into())),
+                check_only: false,
+                work_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unauthorized);
+        assert!(err.operation_id.is_none());
     }
 }

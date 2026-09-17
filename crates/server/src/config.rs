@@ -41,6 +41,26 @@ pub struct Cli {
     /// SQLite file for operations. Unset uses an in-memory database (no replay across restarts).
     #[arg(long, env = "CODESPACE_OPERATIONS_DB")]
     pub operations_db: Option<std::path::PathBuf>,
+
+    /// Runner backend. `in-process` is the default host supervisor. `uds` uses UdsRunner.
+    #[arg(long, env = "CODESPACE_RUNNER", default_value = "in-process")]
+    pub runner: String,
+
+    /// Unix socket for `CODESPACE_RUNNER=uds` when connecting to an
+    /// already-running worker. Spawn path uses `--runner-dir` instead
+    /// and always binds `$dir/runner.sock`.
+    #[arg(long, env = "CODESPACE_RUNNER_SOCKET")]
+    pub runner_socket: Option<std::path::PathBuf>,
+
+    /// Base directory for a spawned UDS worker. CodeSpace creates a
+    /// unique `run-<pid>-<rand>/` child (mode 0700) under this path.
+    /// `/`, `/tmp`, `/var/tmp`, and `$HOME` are rejected as this value.
+    #[arg(long, env = "CODESPACE_RUNNER_DIR")]
+    pub runner_dir: Option<std::path::PathBuf>,
+
+    /// `codespace-codex-runtime` binary for uds mode.
+    #[arg(long, env = "CODESPACE_RUNTIME_BIN")]
+    pub runtime_bin: Option<std::path::PathBuf>,
 }
 
 impl Cli {

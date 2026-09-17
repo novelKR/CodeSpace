@@ -39,9 +39,12 @@ TypeScript MCP 게이트웨이, 폐기된 `native/patch-worker` 트리, 또는 �
 
 ## 현재 배치
 
-MVP는 **호스트 프로세스 하나**입니다: `codespace-mcp`. `exec_command`는
-컨테이너로 디스패치되지 않습니다. [`deploy/compose.yml`](../../deploy/compose.yml)은
-격리 **픽스처**일 뿐입니다.
+MVP 기본은 **호스트 프로세스 하나**입니다: `codespace-mcp`와 프로세스
+내부 `Runner`. `exec_command`는 compose로 디스패치되지 않습니다.
+[`deploy/compose.yml`](../../deploy/compose.yml)은 격리 **픽스처**일
+뿐입니다. 선택적 Unix 소켓 전송(`CODESPACE_RUNNER=uds`)은 CodeSpace
+JSON으로 `codespace-codex-runtime`과 대화합니다. 그것은 Linux 격리가
+아니고 기본값도 아닙니다.
 
 ```text
 CURRENT
@@ -54,39 +57,51 @@ codespace-mcp  (host gateway)
    ├─ structured logging (stderr tracing)
    │
    │  Runner execution DTO
-   │  (no work_id / operation_id / coordination)
+   │  (command/exec shape; no work_id / operation_id / coordination)
    ▼
-InProcessRunner
-   ├─ read / find / version (PathSandbox)
-   ├─ apply_patch (one transaction)
-   │      expected versions → preflight → snapshot
-   │      → helper apply → verify → rollback
-   │              │ JSON stdin/stdout
-   │              ▼
-   │         codespace-patch (host child)
-   │              └─ Codex Rust crate in-process
-   └─ exec / stdin / read / terminate
-          └─ host process (tokio::process::Command,
-             workspace cwd, env_clear)
+RuntimeBackend
+   ├─ default: InProcessRunner
+   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds, 1:1)
+          │ length-prefixed CodeSpace JSON (protocol 1, Hello, request_id rrpc-…)
+          ▼
+     codespace-codex-runtime  (게이트웨이 RuntimeProcess가 소유)
+          ├─ unique 0700 dir + runner.sock (bind only; 부모 chmod 없음)
+          ├─ codex-process-hardening (main 첫 줄, command sandbox 아님)
+          ├─ 연결 끊김 / 게이트웨이 종료 → 워커 종료 (호스트 자식도 죽음)
+          └─ InProcessRunner 하나
+                 ├─ read / find / version (PathSandbox)
+                 ├─ apply_patch (one transaction)
+                 │      expected versions → preflight → snapshot
+                 │      → helper apply → verify → rollback
+                 │              │ JSON stdin/stdout
+                 │              ▼
+                 │         codespace-patch (host child)
+                 │              └─ Codex Rust crate in-process
+                 └─ exec / stdin / read / terminate
+                        └─ host process (tokio::process::Command,
+                           cwd = workspace root, env from runner-local defaults)
 
 deploy/compose.yml
    └─ isolation fixture only; not connected to exec_command
 ```
 
 ```text
-MCP JSON  →  domain params  →  gateway (policy/store)  →  Runner DTO  →  InProcessRunner
+MCP JSON  →  domain params  →  gateway (policy/store)  →  Runner DTO  →  RuntimeBackend
                  │
                  └─ rmcp / JsonSchema stay on MCP types, not on runner DTOs
 ```
 
 게이트웨이는 **어느 워크스페이스에서 무엇을 해도 되는지**를 소유합니다.
-토큰, 서버 설정, 워크스페이스 레지스트리, operations 데이터베이스가
+토큰, 서버 설정, 워크스페이스 레지스트리, 환경, operations 데이터베이스가
 여기에 있습니다. MCP 파라미터를 러너 DTO로 매핑하며
-`ExecCommandParams`를 러너에 넘기지 **않습니다**.
+`ExecCommandParams`를 러너에 넘기지 **않습니다**. 도구에는 여전히
+`environment_id`가 없습니다.
 
-`crates/runner`는 프로세스 내부 `Runner`(파일시스템, `apply_patch`
-트랜잭션 하나, 호스트 프로세스 감독)와 compose 픽스처 검사를
-소유합니다. 컨테이너를 시작하거나 제어 소켓을 열지 **않습니다**.
+`crates/runner`는 `Runner` 트레이트, 실행 DTO, `InProcessRunner`
+(파일시스템, `apply_patch` 트랜잭션 하나, 호스트 프로세스 감독),
+`UdsRunner`(Unix 소켓 클라이언트), compose 픽스처 검사를
+소유합니다. 기본 백엔드는 프로세스 내부입니다. 워커 바이너리는 격리된
+`crates/codex-runtime` / `codespace-codex-runtime`입니다.
 
 `codespace-patch`는 제품 헬퍼 프로세스이며, 업스트림 독립 `apply_patch`
 바이너리가 아니고 `native/patch-worker`도 아닙니다. Runner ↔ 헬퍼는
@@ -94,11 +109,12 @@ JSON stdin/stdout입니다. Codex 자체는 **그 헬퍼 안에서** 프로세�
 내부로 실행됩니다.
 
 MVP에는 단일 인스턴스로 충분합니다. SQLite는 **패치 작업**과
-works/intents를 저장합니다. 프로세스 핸들과 write/shell 리스는
-메모리에 있습니다. 메시지 브로커는 없습니다.
+works/intents를 저장합니다. 프로세스 핸들과 자원 잠금(워크스페이스
+배타 쓰기 / 셸 점유)은 메모리에 있습니다. 메시지 브로커는 없습니다.
 
 게이트웨이 단위 시험은 macOS 개발 호스트에서 실행할 수 있습니다. Linux
-컨테이너는 **목표** 격리 OS이며 현재 exec 경계가 아닙니다.
+컨테이너는 **목표** 격리 OS이며 현재 exec 경계가 아닙니다. 등록된
+`linux-container` 환경은 닫힌 실패입니다(`UNAUTHORIZED`).
 
 ## 목표 배치
 
@@ -127,12 +143,15 @@ Runner process boundary
 ```
 
 목표 **도메인**(실제 MCP 필드 아님): Environment(어디), Workspace(무엇),
-PermissionProfile(해도 되는지), Operation(이 RPC). 그 WP 전까지 도구에
-`environment_id`를 넣지 마세요.
+PermissionProfile(해도 되는지), Operation(이 RPC). 도구에
+`environment_id`를 넣지 마세요. 운영자 설정은 환경을 등록할 수
+있습니다.
 [execution-substrate.md](execution-substrate.md)를 보세요.
 
-다음 **구현** 작업 패키지는 기존 `Runner` / `InProcessRunner` 타입 뒤의
-**전송**(Unix 소켓 / `ContainerRunner`)입니다. 패치 적용을 게이트웨이가
+Unix 소켓 **전송**(`UdsRunner`)은 기존 `Runner` / `InProcessRunner`
+타입 뒤에 선택적으로 있습니다. Host + UDS는 같은 호스트이며 Linux
+격리를 주장하지 않습니다. `LinuxContainer`는 닫힌 실패입니다
+(`UNAUTHORIZED`, `operation_id` 없음). 패치 적용을 게이트웨이가
 구동하는 여러 RPC로 **쪼개면 안 됩니다**.
 
 ```text
@@ -142,14 +161,21 @@ Runner.apply_patch(request)
 ```
 
 게이트웨이는 인가, `operation_key` 재실행, 쓰기 잠금, 디스패치,
-영속을 유지합니다. 지금은 러너 제어 소켓이 없습니다.
+영속을 유지합니다. 기본은 `InProcessRunner`입니다. 선택적
+`CODESPACE_RUNNER=uds`는 비공개 Unix 소켓(unique 0700 leaf,
+`runner.sock`)을 쓰며 compose 픽스처가 아닙니다. 게이트웨이가 워커를
+1:1로 소유합니다(`RuntimeProcess`, `kill_on_drop`). 재연결은 없습니다.
+살아있는 소켓은 connect-probe로 확인하고 leftover는
+`ConnectionRefused`일 때만 unlink합니다. 러너 `Replay`는 같은 연결에서만
+동작합니다.
 
-Sandbox, PTY, UDS, 네트워크 격리는 **“기본적으로 Codex OS 공학을
-재구현”이 아닙니다.** `crates/patch`(이후 `crates/codex-runtime` /
-`codespace-codex-runtime`)와 같은 패턴으로, Runner 뒤에 격리된 응집력
-있는 실행 서브그래프를 선호합니다. Codex 타입은 어댑터에 남습니다.
-App Server나 `codex-exec`를 넣지 마세요. `codex-exec-server`는 미래
-측정이며 현재 백엔드가 아닙니다.
+Sandbox, PTY, 네트워크 격리는 **“기본적으로 Codex OS 공학을
+재구현”이 아닙니다.** `crates/patch`와 `crates/codex-runtime` /
+`codespace-codex-runtime`과 같은 패턴으로, Runner 뒤에 격리된 응집력
+있는 실행 서브그래프를 선호합니다. 이 WP는 `codex-process-hardening`과
+`codex-uds`를 가져옵니다. Codex 타입은 어댑터에 남습니다. App Server나
+`codex-exec`를 넣지 마세요. `codex-exec-server`는 미래 측정이며 현재
+백엔드가 아닙니다.
 
 ## 프로토콜 호환성
 
@@ -204,9 +230,11 @@ Codex 제품 대 프리미티브: [codex-reuse.md](codex-reuse.md).
 
 ## ID
 
-HTTP/JSON-RPC 요청 id, `operation_id`, `process_id`, `work_id`,
-`intent_id`는 서로 다른 식별자입니다. 잃어버린 HTTP 응답은 실행 실패가
-아닙니다. 클라이언트는 변경 도구를 재실행하는 대신 `operation_status`를
+HTTP/JSON-RPC 요청 id, `operation_id`, `operation_key`, `process_id`,
+`work_id`, `intent_id`, 러너 `request_id`(`rrpc-…`)는 서로 다른
+식별자입니다. 잃어버린 HTTP 응답은 실행 실패가 아닙니다. 유실된 UDS
+`apply_patch` 응답은 `rejected`가 아니라 `unknown`으로 기록됩니다.
+클라이언트는 변경 도구를 재실행하는 대신 `operation_status`를
 호출합니다.
 
 ```text
@@ -251,8 +279,9 @@ validate request
 `apply_patch`는 `git apply`로 조용히 폴백하지 않습니다. 상태 값은
 `applied` / `checked` / `rejected` / `failed_rolled_back` /
 `failed_partial` / `unknown`입니다. `checked`는 성공한 `check_only`
-미리보기(쓰기 없음)입니다. `rejected`는 실제 거절입니다. after-version
-검증 없는 성공 문구는 금지입니다.
+미리보기(쓰기 없음)입니다. `rejected`는 실제 거절입니다. 전송이 모호하면
+(디스패치 후 소켓 끊김) `unknown`으로 끝내며 `rejected`로 저장하면 안
+됩니다. after-version 검증 없는 성공 문구는 금지입니다.
 
 롤백은 `git reset --hard`를 쓰면 안 되고, 파일별 복원 대신 디렉터리
 트리 전체를 덮어쓰면 안 됩니다.
@@ -263,10 +292,11 @@ validate request
 Cargo.toml              workspace root
 crates/server/          bin codespace-mcp: rmcp stdio + Streamable HTTP + /inbox
 crates/domain/          workspace, capabilities, operation, errors (no rmcp)
-crates/policy/          registry and path policy
+crates/policy/          registry, PermissionProfile, Environment
 crates/patch/           Codex adapter + codespace-patch helper (own workspace)
-crates/store/           SQLite operations, works, and intents
-crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host process supervisor, fixture checks
+crates/codex-runtime/   isolated worker: hardening + UDS + InProcessRunner
+crates/store/           SQLite operations, works, intents; in-memory resource locks
+crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host supervisor, UdsRunner, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
 docs/                   including operations.md (W12), codex-reuse.md,

@@ -7,14 +7,15 @@ CodeSpace는 OpenAI Codex를 **핀된** git 서브모듈로 재사용합니다. 
 감싸지 않으며, `main`을 따라가지 않습니다.
 
 **현재 코드 재사용**은 `crates/patch`를 통한 `codex-apply-patch`(V4A의
-파싱 / 검증 / 적용)입니다. 그 핀은 실행 구현 공급이며, 그만큼 좁은
-크레이트만 따라온다는 서약이 아닙니다. 제품 런타임(App Server,
-`codex-core`, `codex-exec`, login, models)은 **핵심** 밖에 둡니다.
-응집력 있는 **실행 서브그래프**는 격리된 어댑터에서 가져올 수 있습니다
+파싱 / 검증 / 적용), 그리고 `codex-process-hardening`(`codespace-patch`와
+`codespace-codex-runtime`)과 `codex-uds`(런타임 워커 bind)입니다.
+그 핀은 실행 구현 공급이며, 그만큼 좁은 크레이트만 따라온다는 서약이
+아닙니다. 제품 런타임(App Server, `codex-core`, `codex-exec`, login,
+models)은 **핵심** 밖에 둡니다. 응집력 있는 **실행 서브그래프**는
+격리된 어댑터에서 가져올 수 있습니다
 ([codex-reuse.md](codex-reuse.md)). Codex 타입은 `crates/domain`이나
 MCP 표면으로 새면 안 됩니다. 실행 전용 규칙:
-[execution-substrate.md](execution-substrate.md). 오늘은 그래프에 추가
-Codex 크레이트가 없습니다.
+[execution-substrate.md](execution-substrate.md).
 
 ## 배포 핀 (W06)
 
@@ -69,7 +70,9 @@ git -C third_party/codex checkout 6b9826e3aa83b1a5947db50f4332cb9c65f1b340
 ## 재사용하는 것과 거절하는 것
 
 **이 핀에서, 코드로:** 파싱, 헝크 검증, 적용 API, 그리고 패리티용으로
-고른 업스트림 픽스처(`crates/patch` → `codex-apply-patch`).
+고른 업스트림 픽스처(`crates/patch` → `codex-apply-patch`);
+`pre_main_hardening()`(`codex-process-hardening`); 비공개 소켓 디렉터리 +
+bind(`codex-uds`).
 
 **그 크레이트가 허용해도 제품 기본값으로 거절:** 심링크 follow,
 sandbox `None` 독립 CLI, 모델의 호스트 절대 경로, 조용한 `git apply`.
@@ -78,12 +81,12 @@ sandbox `None` 독립 CLI, 모델의 호스트 절대 경로, 조용한 `git app
 어떤 Codex 크레이트 경로 의존성. 제품 런타임은 어디에나 빼 둡니다.
 App Server, `codex-core`, `codex-exec`, login, models.
 [codex-reuse.md](codex-reuse.md)를 보세요. 이 SHA에서 재사용 선호
-(아직 연결 안 함): `codex-process-hardening`, `codex-utils-pty`,
-`codex-uds`, path/URI utils, `codex-file-search`. 적극 평가:
+(**아직 연결 안 함**): `codex-utils-pty`, `codex-file-search`. 적극 평가:
 `codex-file-system`, `codex-shell-command`, `codex-linux-sandbox`
 (전이 `codex-sandboxing`, `codex-network-proxy`; `codex-protocol`은
 어댑터에서만 허용). `codex-exec-server-protocol`은 내부 DTO 후보입니다.
 `codex-exec-server`는 참고 / 이후 백엔드이며 영구 거절은 아닙니다.
+`codex-git-utils` / `codex-worktree`는 연결하지 않습니다.
 
 `codex-rs` 독립 `apply_patch`를 감싸고 그것을 샌드박스라고 부르지
 마세요. Preview / `check_only`는 라이브러리 파싱과 CodeSpace

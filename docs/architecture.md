@@ -38,9 +38,12 @@ outbound model client. Execution-only invariant:
 
 ## Current layout
 
-MVP is **one host process**: `codespace-mcp`. `exec_command` is not
-dispatched into a container. [`deploy/compose.yml`](../deploy/compose.yml)
-is an isolation **fixture** only.
+MVP default is **one host process**: `codespace-mcp` plus in-process
+`Runner`. `exec_command` is not dispatched into compose.
+[`deploy/compose.yml`](../deploy/compose.yml) is an isolation **fixture**
+only. Opt-in Unix-socket transport (`CODESPACE_RUNNER=uds`) talks
+CodeSpace JSON to `codespace-codex-runtime`; that is not Linux
+isolation and not the default.
 
 ```text
 CURRENT
@@ -53,39 +56,51 @@ codespace-mcp  (host gateway)
    ├─ structured logging (stderr tracing)
    │
    │  Runner execution DTO
-   │  (no work_id / operation_id / coordination)
+   │  (command/exec shape; no work_id / operation_id / coordination)
    ▼
-InProcessRunner
-   ├─ read / find / version (PathSandbox)
-   ├─ apply_patch (one transaction)
-   │      expected versions → preflight → snapshot
-   │      → helper apply → verify → rollback
-   │              │ JSON stdin/stdout
-   │              ▼
-   │         codespace-patch (host child)
-   │              └─ Codex Rust crate in-process
-   └─ exec / stdin / read / terminate
-          └─ host process (tokio::process::Command,
-             workspace cwd, env_clear)
+RuntimeBackend
+   ├─ default: InProcessRunner
+   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds, 1:1)
+          │ length-prefixed CodeSpace JSON (protocol 1, Hello, request_id rrpc-…)
+          ▼
+     codespace-codex-runtime  (owned by gateway RuntimeProcess)
+          ├─ unique 0700 dir + runner.sock (bind only; no parent chmod)
+          ├─ codex-process-hardening (main first line, not a command sandbox)
+          ├─ disconnect / gateway shutdown → kill worker (host children die)
+          └─ one InProcessRunner
+                 ├─ read / find / version (PathSandbox)
+                 ├─ apply_patch (one transaction)
+                 │      expected versions → preflight → snapshot
+                 │      → helper apply → verify → rollback
+                 │              │ JSON stdin/stdout
+                 │              ▼
+                 │         codespace-patch (host child)
+                 │              └─ Codex Rust crate in-process
+                 └─ exec / stdin / read / terminate
+                        └─ host process (tokio::process::Command,
+                           cwd = workspace root, env from runner-local defaults)
 
 deploy/compose.yml
    └─ isolation fixture only; not connected to exec_command
 ```
 
 ```text
-MCP JSON  →  domain params  →  gateway (policy/store)  →  Runner DTO  →  InProcessRunner
+MCP JSON  →  domain params  →  gateway (policy/store)  →  Runner DTO  →  RuntimeBackend
                  │
                  └─ rmcp / JsonSchema stay on MCP types, not on runner DTOs
 ```
 
 The gateway owns **who may do what in which workspace**. Tokens, server
-config, workspace registry, and the operations database live here. It
-maps MCP params onto runner DTOs and does **not** pass
-`ExecCommandParams` into the runner.
+config, workspace registry, environments, and the operations database
+live here. It maps MCP params onto runner DTOs and does **not** pass
+`ExecCommandParams` into the runner. Tools still have no
+`environment_id`.
 
-`crates/runner` owns the in-process `Runner` (filesystem, one
-`apply_patch` transaction, host process supervisor) plus compose-fixture
-checks. It does **not** start a container or open a control socket.
+`crates/runner` owns the `Runner` trait, execution DTOs,
+`InProcessRunner` (filesystem, one `apply_patch` transaction, host
+process supervisor), `UdsRunner` (Unix-socket client), and
+compose-fixture checks. Default backend is in-process. The worker
+binary is isolated `crates/codex-runtime` / `codespace-codex-runtime`.
 
 `codespace-patch` is a product helper process, not the upstream
 standalone `apply_patch` binary and not `native/patch-worker`.
@@ -93,11 +108,12 @@ Runner ↔ helper is JSON stdin/stdout. Codex itself runs in-process
 **inside that helper**.
 
 Single instance is enough for MVP. SQLite stores **patch operations**
-plus works/intents. Process handles and write/shell leases are
-in-memory. No message broker.
+plus works/intents. Process handles and resource locks (workspace
+exclusive write / shell occupancy) are in-memory. No message broker.
 
 Gateway unit tests may run on the macOS development host. A Linux
 container is the **target** isolation OS, not the current exec boundary.
+Registered `linux-container` environments fail closed (`UNAUTHORIZED`).
 
 ## Target layout
 
@@ -127,13 +143,14 @@ Runner process boundary
 
 Target **domain** (not live MCP fields): Environment (where), Workspace
 (what), PermissionProfile (may), Operation (this RPC). Do not add
-`environment_id` to tools until that WP. See
-[execution-substrate.md](execution-substrate.md).
+`environment_id` to tools. Operator config may register environments.
+See [execution-substrate.md](execution-substrate.md).
 
-The next **implementation** work package is **transport** (Unix socket /
-`ContainerRunner`) behind the existing `Runner` / `InProcessRunner`
-types. It must **not** split patch apply into multiple gateway-driven
-RPCs:
+Unix-socket **transport** (`UdsRunner`) exists behind the existing
+`Runner` / `InProcessRunner` types as an opt-in. Host + UDS is the same
+host; it does not claim Linux isolation. `LinuxContainer` stays
+fail-closed (`UNAUTHORIZED`, no `operation_id`). It must **not** split
+patch apply into multiple gateway-driven RPCs:
 
 ```text
 Runner.apply_patch(request)
@@ -142,14 +159,20 @@ Runner.apply_patch(request)
 ```
 
 Gateway keeps authorization, `operation_key` replay, the write lock,
-dispatch, and persistence. There is no runner control socket today.
+dispatch, and persistence. Default remains `InProcessRunner`. Opt-in
+`CODESPACE_RUNNER=uds` uses a private Unix socket (unique 0700 leaf,
+`runner.sock`), not the compose fixture. The gateway owns the worker
+1:1 (`RuntimeProcess`, `kill_on_drop`). There is no reconnect. Live
+sockets are connect-probed; leftovers are unlinked only on
+`ConnectionRefused`. Runner `Replay` is same-connection only.
 
-Sandbox, PTY, UDS, and network isolation are **not** “reimplement
-Codex OS engineering by default.” Prefer a cohesive execution
-subgraph isolated behind the Runner, same pattern as `crates/patch`
-(later `crates/codex-runtime` / `codespace-codex-runtime`). Codex
-types stay in the adapter. Do not embed App Server or `codex-exec`.
-`codex-exec-server` is a future measurement, not a current backend.
+Sandbox, PTY, and network isolation are **not** “reimplement Codex OS
+engineering by default.” Prefer a cohesive execution subgraph isolated
+behind the Runner, same pattern as `crates/patch` and
+`crates/codex-runtime` / `codespace-codex-runtime`. This WP takes
+`codex-process-hardening` and `codex-uds`. Codex types stay in the
+adapter. Do not embed App Server or `codex-exec`. `codex-exec-server`
+is a future measurement, not a current backend.
 
 ## Protocol compatibility
 
@@ -203,10 +226,11 @@ Execution-only substrate: [execution-substrate.md](execution-substrate.md).
 
 ## IDs
 
-HTTP/JSON-RPC request id, `operation_id`, `process_id`, `work_id`, and
-`intent_id` are different identifiers. A lost HTTP response is not an
-execution failure. Clients call `operation_status` instead of replaying
-a mutating tool.
+HTTP/JSON-RPC request id, `operation_id`, `operation_key`, `process_id`,
+`work_id`, `intent_id`, and runner `request_id` (`rrpc-…`) are different
+identifiers. A lost HTTP response is not an execution failure. A lost
+UDS `apply_patch` response is recorded as `unknown`, not `rejected`.
+Clients call `operation_status` instead of replaying a mutating tool.
 
 ```text
 Workspace (workspace_id)
@@ -251,8 +275,10 @@ the parser.
 `apply_patch` never silently falls back to `git apply`. Status values
 are `applied` / `checked` / `rejected` / `failed_rolled_back` /
 `failed_partial` / `unknown`. `checked` is a successful `check_only`
-preview (no writes). `rejected` is an actual refusal. Success copy
-without after-version verification is forbidden.
+preview (no writes). `rejected` is an actual refusal. Transport
+ambiguity (socket drop after dispatch) finishes `unknown` and must not
+be stored as `rejected`. Success copy without after-version verification
+is forbidden.
 
 Rollback must not use `git reset --hard` and must not overwrite a whole
 directory tree as a substitute for per-file restore.
@@ -263,10 +289,11 @@ directory tree as a substitute for per-file restore.
 Cargo.toml              workspace root
 crates/server/          bin codespace-mcp: rmcp stdio + Streamable HTTP + /inbox
 crates/domain/          workspace, capabilities, operation, errors (no rmcp)
-crates/policy/          registry and path policy
+crates/policy/          registry, PermissionProfile, Environment
 crates/patch/           Codex adapter + codespace-patch helper (own workspace)
-crates/store/           SQLite operations, works, and intents
-crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host process supervisor, fixture checks
+crates/codex-runtime/   isolated worker: hardening + UDS + InProcessRunner
+crates/store/           SQLite operations, works, intents; in-memory resource locks
+crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host supervisor, UdsRunner, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
 docs/                   including operations.md (W12), codex-reuse.md,

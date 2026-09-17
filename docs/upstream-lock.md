@@ -7,15 +7,15 @@ not vendor a single source file, wrap the standalone `apply_patch`
 binary as the security boundary, or follow `main`.
 
 **Current code reuse** is `codex-apply-patch` (parse / verify / apply of
-V4A) via `crates/patch`. That pin is the execution-implementation
-supply; it is not a vow that only equally narrow crates may follow.
-Product runtime (App Server, `codex-core`, `codex-exec`, login,
-models) stays out of **core**. A cohesive **execution subgraph** may
-be taken in an isolated adapter
+V4A) via `crates/patch`, plus `codex-process-hardening` (`codespace-patch`
+and `codespace-codex-runtime`) and `codex-uds` (runtime worker bind).
+That pin is the execution-implementation supply; it is not a vow that
+only equally narrow crates may follow. Product runtime (App Server,
+`codex-core`, `codex-exec`, login, models) stays out of **core**. A
+cohesive **execution subgraph** may be taken in an isolated adapter
 ([codex-reuse.md](codex-reuse.md)). Codex types must not leak into
 `crates/domain` or the MCP surface. Execution-only rules:
-[execution-substrate.md](execution-substrate.md). No extra Codex crate
-is on the graph today.
+[execution-substrate.md](execution-substrate.md).
 
 ## Deployment pin (W06)
 
@@ -70,7 +70,8 @@ and a path dependency, not a crates.io moving version.
 
 **On this pin, in code:** parse, hunk verification, apply APIs, and
 selected upstream fixtures for parity (`crates/patch` →
-`codex-apply-patch`).
+`codex-apply-patch`); `pre_main_hardening()` (`codex-process-hardening`);
+private socket directory + bind (`codex-uds`).
 
 **Rejected as product defaults** even if that crate allows them:
 symlink follow, sandbox `None` standalone CLI, host-absolute paths from
@@ -79,14 +80,14 @@ the model, silent `git apply`.
 **Rejected as CodeSpace *core* dependencies:** any Codex crate path
 dep, including `codex-protocol` types. Product runtime stays out
 everywhere: App Server, `codex-core`, `codex-exec`, login, models.
-See [codex-reuse.md](codex-reuse.md). Prefer-reuse at this SHA (not
-wired): `codex-process-hardening`, `codex-utils-pty`, `codex-uds`,
-path/URI utils, `codex-file-search`. Active evaluation:
+See [codex-reuse.md](codex-reuse.md). Prefer-reuse at this SHA, **not
+yet wired:** `codex-utils-pty`, `codex-file-search`. Active evaluation:
 `codex-file-system`, `codex-shell-command`, `codex-linux-sandbox`
 (transitives `codex-sandboxing`, `codex-network-proxy`;
 `codex-protocol` allowed only in the adapter). `codex-exec-server-protocol`
 is an internal DTO candidate. `codex-exec-server` is a reference /
-future backend, not a forever reject.
+future backend, not a forever reject. `codex-git-utils` / `codex-worktree`
+stay unwired.
 
 Do not wrap `codex-rs` standalone `apply_patch` and call that a sandbox.
 Preview / `check_only` is implemented through library parse plus

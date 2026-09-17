@@ -33,13 +33,21 @@ jobs:
         run: |
           cargo fmt --check
           cargo fmt --check --manifest-path crates/patch/Cargo.toml
+          cargo fmt --check --manifest-path crates/codex-runtime/Cargo.toml
       - name: Clippy
         run: |
           cargo clippy --all-targets -- -D warnings
           cargo clippy --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --manifest-path crates/codex-runtime/Cargo.toml --all-targets -- -D warnings
       - name: Test
         run: |
           cargo test --manifest-path crates/patch/Cargo.toml
           cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch
+          cargo test --manifest-path crates/codex-runtime/Cargo.toml
+          cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime
+          # Worker apply_patch still shells out to the patch helper. Export
+          # CODESPACE_PATCH_BIN before workspace and UDS tests. RuntimeProcess
+          # tests spawn the worker when CODESPACE_RUNTIME_BIN is set.
           export CODESPACE_PATCH_BIN="${PWD}/crates/patch/target/debug/codespace-patch"
+          export CODESPACE_RUNTIME_BIN="${PWD}/crates/codex-runtime/target/debug/codespace-codex-runtime"
           cargo test --workspace

@@ -1,7 +1,8 @@
 //! Single-instance SQLite operations and in-process workspace write locks.
 //! HTTP/JSON-RPC request ids are never stored as [`OperationId`] values.
 
-use std::collections::HashMap;
+mod resource;
+
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -11,6 +12,8 @@ use codespace_domain::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
+
+pub use resource::{LockMode, Resource, ResourceGuard};
 
 #[derive(Debug, Clone)]
 pub struct StoredOperation {
@@ -26,15 +29,9 @@ pub enum Begin {
     Replayed(StoredOperation),
 }
 
-#[derive(Default)]
-struct LeaseMap {
-    mutating: HashMap<String, u32>,
-    busy_shell: HashMap<String, String>,
-}
-
 pub struct Store {
     conn: Mutex<Connection>,
-    leases: Mutex<LeaseMap>,
+    locks: Mutex<resource::ResourceSerializer>,
 }
 
 pub struct WriteGuard<'a> {
@@ -108,7 +105,7 @@ impl Store {
         .map_err(|e| e.to_string())?;
         Ok(Self {
             conn: Mutex::new(conn),
-            leases: Mutex::new(LeaseMap::default()),
+            locks: Mutex::new(resource::ResourceSerializer::default()),
         })
     }
 
@@ -128,21 +125,10 @@ impl Store {
         &'a self,
         workspace_id: &str,
     ) -> Result<WriteGuard<'a>, ErrorBody> {
-        let mut leases = self.leases.lock().expect("lease mutex");
-        if leases.busy_shell.contains_key(workspace_id) {
-            return Err(ErrorBody::new(
-                ErrorCode::WorkspaceBusy,
-                "workspace has a busy shell",
-            ));
-        }
-        let count = leases.mutating.entry(workspace_id.to_string()).or_insert(0);
-        if *count > 0 {
-            return Err(ErrorBody::new(
-                ErrorCode::WorkspaceBusy,
-                "workspace write lock is held",
-            ));
-        }
-        *count = 1;
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .try_exclusive_write(workspace_id)?;
         Ok(WriteGuard {
             store: self,
             workspace_id: workspace_id.to_string(),
@@ -150,32 +136,57 @@ impl Store {
     }
 
     fn release_write(&self, workspace_id: &str) {
-        let mut leases = self.leases.lock().expect("lease mutex");
-        leases.mutating.remove(workspace_id);
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .release_write(workspace_id);
     }
 
     pub fn mark_shell_busy(&self, workspace_id: &str, process_id: &str) -> Result<(), ErrorBody> {
-        let mut leases = self.leases.lock().expect("lease mutex");
-        if leases.mutating.get(workspace_id).copied().unwrap_or(0) > 0
-            || leases.busy_shell.contains_key(workspace_id)
-        {
-            return Err(ErrorBody::new(
-                ErrorCode::WorkspaceBusy,
-                "workspace write lock is held",
-            ));
-        }
-        leases
-            .busy_shell
-            .insert(workspace_id.to_string(), process_id.to_string());
-        Ok(())
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .mark_shell_busy(workspace_id, process_id)
     }
 
     pub fn clear_shell(&self, workspace_id: &str) {
-        self.leases
+        self.locks
             .lock()
-            .expect("lease mutex")
-            .busy_shell
-            .remove(workspace_id);
+            .expect("lock mutex")
+            .clear_shell(workspace_id);
+    }
+
+    pub fn release_process(&self, process_id: &str) {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .release_process(process_id);
+    }
+
+    pub fn release_all_processes(&self) {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .release_all_processes();
+    }
+
+    pub fn try_lock(
+        &self,
+        resource: Resource,
+        mode: LockMode,
+    ) -> Result<ResourceGuard<'_>, ErrorBody> {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .try_lock(resource.clone(), mode)?;
+        Ok(ResourceGuard::new(self, resource, mode))
+    }
+
+    fn release_resource(&self, resource: &Resource, mode: LockMode) {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .unlock(resource, mode);
     }
 
     pub fn begin(
@@ -487,6 +498,49 @@ mod tests {
         let _guard = store.try_acquire_write("demo").unwrap();
         assert_eq!(
             store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+    }
+
+    #[test]
+    fn process_owned_lease_releases_by_process_id() {
+        let store = Store::memory().unwrap();
+        store.mark_shell_busy("demo", "proc-1").unwrap();
+        assert_eq!(
+            store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+        store.release_process("proc-other");
+        assert_eq!(
+            store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+        store.release_process("proc-1");
+        let _guard = store.try_acquire_write("demo").unwrap();
+    }
+
+    #[test]
+    fn request_owned_write_is_not_cleared_by_release_process() {
+        let store = Store::memory().unwrap();
+        let _guard = store.try_acquire_write("demo").unwrap();
+        store.release_process("proc-1");
+        assert_eq!(
+            store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+    }
+
+    #[test]
+    fn release_all_processes_keeps_request_owned_writes() {
+        let store = Store::memory().unwrap();
+        store.mark_shell_busy("demo", "proc-1").unwrap();
+        store.mark_shell_busy("other", "proc-2").unwrap();
+        let _guard = store.try_acquire_write("held").unwrap();
+        store.release_all_processes();
+        let _demo = store.try_acquire_write("demo").unwrap();
+        let _other = store.try_acquire_write("other").unwrap();
+        assert_eq!(
+            store.try_acquire_write("held").err().map(|e| e.code),
             Some(ErrorCode::WorkspaceBusy)
         );
     }

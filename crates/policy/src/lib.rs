@@ -1,11 +1,20 @@
 //! Workspace registry and path policy. No `rmcp` types.
 
+mod environment;
+mod permission;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use codespace_domain::{ErrorBody, ErrorCode, Profile, WorkspaceId};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+pub use environment::{
+    require_host_execution, Environment, EnvironmentDispatchError, EnvironmentKind,
+    DEFAULT_ENVIRONMENT_ID,
+};
+pub use permission::{NetworkAxis, PathAccess, PathRule, PermissionProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -23,22 +32,55 @@ pub struct ClientClaims {
     pub user_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: WorkspaceId,
     pub root: PathBuf,
     pub profile: Profile,
+    #[serde(default = "default_environment_id")]
+    pub environment_id: String,
+    #[serde(default)]
+    pub environment_kind: EnvironmentKind,
 }
 
-#[derive(Debug, Clone, Default)]
+fn default_environment_id() -> String {
+    DEFAULT_ENVIRONMENT_ID.to_string()
+}
+
+impl Workspace {
+    pub fn new(id: WorkspaceId, root: PathBuf, profile: Profile) -> Self {
+        Self {
+            id,
+            root,
+            profile,
+            environment_id: DEFAULT_ENVIRONMENT_ID.to_string(),
+            environment_kind: EnvironmentKind::Host,
+        }
+    }
+
+    pub fn require_host_execution(&self) -> Result<(), ErrorBody> {
+        require_host_execution(self.environment_kind)
+            .map_err(EnvironmentDispatchError::into_error_body)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Registry {
+    environments: BTreeMap<String, Environment>,
     workspaces: BTreeMap<String, Workspace>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FileConfig {
     #[serde(default)]
+    environments: BTreeMap<String, FileEnvironment>,
+    #[serde(default)]
     workspaces: BTreeMap<String, FileWorkspace>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileEnvironment {
+    kind: EnvironmentKind,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,15 +88,28 @@ struct FileWorkspace {
     root: String,
     #[serde(default)]
     profile: Profile,
+    #[serde(default)]
+    environment: Option<String>,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Self::default()
+        let mut environments = BTreeMap::new();
+        let local = Environment::local_host();
+        environments.insert(local.id.clone(), local);
+        Self {
+            environments,
+            workspaces: BTreeMap::new(),
+        }
     }
 
     pub fn insert(&mut self, workspace: Workspace) {
         self.workspaces.insert(workspace.id.0.clone(), workspace);
+    }
+
+    pub fn insert_environment(&mut self, environment: Environment) {
+        self.environments
+            .insert(environment.id.clone(), environment);
     }
 
     pub fn get(&self, id: &str) -> Result<&Workspace, ErrorBody> {
@@ -62,6 +117,15 @@ impl Registry {
             ErrorBody::new(
                 ErrorCode::WorkspaceNotFound,
                 format!("unknown workspace_id `{id}`"),
+            )
+        })
+    }
+
+    pub fn environment(&self, id: &str) -> Result<&Environment, ErrorBody> {
+        self.environments.get(id).ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Unauthorized,
+                format!("unknown environment `{id}`"),
             )
         })
     }
@@ -74,15 +138,29 @@ impl Registry {
     pub fn load_json(text: &str) -> Result<Self, String> {
         let parsed: FileConfig = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let mut registry = Registry::new();
+        for (id, entry) in parsed.environments {
+            registry.insert_environment(Environment {
+                id,
+                kind: entry.kind,
+            });
+        }
         for (id, entry) in parsed.workspaces {
             let root = PathBuf::from(&entry.root);
             if !root.is_absolute() {
                 return Err(format!("workspace `{id}` root must be absolute"));
             }
+            let environment_id = entry
+                .environment
+                .unwrap_or_else(|| DEFAULT_ENVIRONMENT_ID.to_string());
+            let environment = registry.environments.get(&environment_id).ok_or_else(|| {
+                format!("workspace `{id}` references unknown environment `{environment_id}`")
+            })?;
             registry.insert(Workspace {
                 id: WorkspaceId(id),
                 root,
                 profile: entry.profile,
+                environment_id: environment.id.clone(),
+                environment_kind: environment.kind,
             });
         }
         Ok(registry)
@@ -90,6 +168,12 @@ impl Registry {
 
     pub fn is_empty(&self) -> bool {
         self.workspaces.is_empty()
+    }
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -103,7 +187,7 @@ pub fn allow(
     match action {
         Action::Read => Ok(()),
         Action::Write | Action::Exec => {
-            if workspace.profile.allows_mutation() {
+            if PermissionProfile::from_workspace_profile(workspace.profile).allows(action) {
                 Ok(())
             } else {
                 Err(ErrorBody::new(
@@ -164,11 +248,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn demo(dir: &Path, profile: Profile) -> Workspace {
-        Workspace {
-            id: WorkspaceId("demo".into()),
-            root: dir.to_path_buf(),
-            profile,
-        }
+        Workspace::new(WorkspaceId("demo".into()), dir.to_path_buf(), profile)
     }
 
     #[test]
@@ -182,7 +262,10 @@ mod tests {
     fn default_profile_is_read_only() {
         let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo"}}}"#;
         let registry = Registry::load_json(json).unwrap();
-        assert_eq!(registry.get("demo").unwrap().profile, Profile::ReadOnly);
+        let ws = registry.get("demo").unwrap();
+        assert_eq!(ws.profile, Profile::ReadOnly);
+        assert_eq!(ws.environment_id, DEFAULT_ENVIRONMENT_ID);
+        assert_eq!(ws.environment_kind, EnvironmentKind::Host);
     }
 
     #[test]
@@ -247,11 +330,45 @@ mod tests {
     fn model_cannot_register_a_workspace() {
         let mut registry = Registry::new();
         assert!(registry.get("sneaky").is_err());
-        registry.insert(Workspace {
-            id: WorkspaceId("sneaky".into()),
-            root: PathBuf::from("/tmp/sneaky"),
-            profile: Profile::WorkspaceWrite,
-        });
+        registry.insert(Workspace::new(
+            WorkspaceId("sneaky".into()),
+            PathBuf::from("/tmp/sneaky"),
+            Profile::WorkspaceWrite,
+        ));
         assert!(registry.get("sneaky").is_ok());
+    }
+
+    #[test]
+    fn unknown_environment_fails_config_load() {
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","environment":"missing"}}}"#;
+        let err = Registry::load_json(json).unwrap_err();
+        assert!(err.contains("unknown environment"));
+    }
+
+    #[test]
+    fn linux_container_environment_loads_but_is_not_an_exec_path() {
+        let json = r#"{
+            "environments": {"box": {"kind": "linux-container"}},
+            "workspaces": {"demo": {"root": "/tmp/demo", "environment": "box"}}
+        }"#;
+        let registry = Registry::load_json(json).unwrap();
+        let ws = registry.get("demo").unwrap();
+        assert_eq!(ws.environment_kind, EnvironmentKind::LinuxContainer);
+        let err = require_host_execution(ws.environment_kind).unwrap_err();
+        assert!(matches!(
+            err,
+            EnvironmentDispatchError::UnsupportedKind {
+                kind: EnvironmentKind::LinuxContainer
+            }
+        ));
+        assert_eq!(
+            ws.require_host_execution().unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert!(ws
+            .require_host_execution()
+            .unwrap_err()
+            .operation_id
+            .is_none());
     }
 }
