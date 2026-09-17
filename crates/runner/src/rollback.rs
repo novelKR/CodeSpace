@@ -7,8 +7,8 @@ use std::path::Path;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use crate::PathSandbox;
 use codespace_domain::{ErrorBody, ErrorCode};
-use codespace_runner::PathSandbox;
 
 #[derive(Debug, Clone)]
 pub struct FileSnapshot {

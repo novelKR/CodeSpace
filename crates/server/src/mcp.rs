@@ -10,7 +10,10 @@ use codespace_domain::{
     WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
 };
 use codespace_policy::{allow, Action, ClientClaims, Registry};
-use codespace_runner::{InProcessRunner, PathSandbox, Runner};
+use codespace_runner::{
+    InProcessRunner, Runner, RunnerApplyPatchRequest, RunnerExecRequest, RunnerReadProcess,
+    RunnerWriteStdin,
+};
 use codespace_store::{Begin, Store};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -94,8 +97,8 @@ impl CodeSpace {
             .registry
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
-        PathSandbox::new(ws.clone())
-            .read_file(&params.path)
+        self.runner
+            .read(ws, &params.path)
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
                 Json(result)
@@ -115,8 +118,8 @@ impl CodeSpace {
             .registry
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
-        PathSandbox::new(ws.clone())
-            .find(params.glob.as_deref())
+        self.runner
+            .find(ws, params.glob.as_deref())
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
                 Json(result)
@@ -175,11 +178,17 @@ impl CodeSpace {
         self.store
             .mark_shell_busy(&params.workspace_id.0, &process_id.0)
             .map_err(err_json)?;
-        match self.runner.exec(ws, process_id, &params) {
-            Ok(mut result) => {
-                result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
-                Ok(Json(result))
-            }
+        match self.runner.exec(
+            ws,
+            RunnerExecRequest {
+                argv: params.command,
+                process_id,
+            },
+        ) {
+            Ok(result) => Ok(Json(ExecCommandResult {
+                process_id: result.process_id,
+                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
+            })),
             Err(err) => {
                 self.store.clear_shell(&params.workspace_id.0);
                 Err(err_json(err))
@@ -196,7 +205,10 @@ impl CodeSpace {
         Parameters(params): Parameters<WriteStdinParams>,
     ) -> Result<Json<OkBody>, String> {
         self.runner
-            .write_stdin(params.clone())
+            .write_stdin(RunnerWriteStdin {
+                process_id: params.process_id.clone(),
+                data: params.data,
+            })
             .await
             .map(|_| {
                 Json(OkBody {
@@ -216,10 +228,18 @@ impl CodeSpace {
         Parameters(params): Parameters<ReadProcessParams>,
     ) -> Result<Json<ReadProcessResult>, String> {
         self.runner
-            .read_process(params.clone())
-            .map(|mut result| {
-                result.coordination = self.process_hint(&params.process_id.0);
-                Json(result)
+            .read_process(RunnerReadProcess {
+                process_id: params.process_id.clone(),
+                cursor: params.cursor,
+            })
+            .map(|result| {
+                Json(ReadProcessResult {
+                    process_id: result.process_id,
+                    cursor: result.cursor,
+                    chunk: result.chunk,
+                    eof: result.eof,
+                    coordination: self.process_hint(&params.process_id.0),
+                })
             })
             .map_err(err_json)
     }
@@ -233,7 +253,7 @@ impl CodeSpace {
         Parameters(params): Parameters<TerminateProcessParams>,
     ) -> Result<Json<OkBody>, String> {
         self.runner
-            .terminate(params.clone())
+            .terminate(&params.process_id)
             .map(|_| {
                 Json(OkBody {
                     ok: true,
@@ -337,8 +357,27 @@ impl CodeSpace {
                 params.work_id.as_ref(),
             )),
             Begin::Fresh(operation_id) => {
-                let result = match self.execute_patch(ws, &params, operation_id.clone()).await {
-                    Ok(result) => result,
+                let result = match self
+                    .runner
+                    .apply_patch(
+                        ws,
+                        RunnerApplyPatchRequest {
+                            patch: params.patch,
+                            expected_versions: params.expected_versions,
+                            check_only: params.check_only,
+                        },
+                    )
+                    .await
+                {
+                    Ok(applied) => ApplyPatchResult {
+                        status: applied.status,
+                        operation_id: operation_id.clone(),
+                        replayed: false,
+                        files: applied.files,
+                        changes: applied.changes,
+                        work_id: None,
+                        coordination: None,
+                    },
                     Err(err) => {
                         let failed =
                             ApplyPatchResult::new(PatchStatus::Rejected, operation_id.clone());
@@ -373,74 +412,6 @@ impl CodeSpace {
         result.work_id = work_id.cloned();
         result.coordination = self.hint(workspace_id, work_id);
         result
-    }
-
-    async fn execute_patch(
-        &self,
-        ws: &codespace_policy::Workspace,
-        params: &ApplyPatchParams,
-        operation_id: codespace_domain::OperationId,
-    ) -> Result<ApplyPatchResult, ErrorBody> {
-        let sandbox = PathSandbox::new(ws.clone());
-        for (path, expected) in &params.expected_versions {
-            let actual = sandbox.version(path)?;
-            if &actual != expected {
-                return Err(ErrorBody::new(
-                    ErrorCode::VersionConflict,
-                    format!("version conflict for {path}"),
-                ));
-            }
-        }
-        if params.check_only {
-            let preview = crate::patch_helper::preflight(&ws.root, &params.patch).await?;
-            let (changes, _) = crate::patch_verify::overlay_before(&sandbox, &preview.changes)?;
-            return Ok(ApplyPatchResult {
-                status: PatchStatus::Checked,
-                operation_id,
-                replayed: false,
-                files: preview.files,
-                changes,
-                work_id: None,
-                coordination: None,
-            });
-        }
-        let planned = crate::patch_helper::preflight(&ws.root, &params.patch).await?;
-        let (_, before) = crate::patch_verify::overlay_before(&sandbox, &planned.changes)?;
-        let snaps = crate::rollback::snapshot(&sandbox, &planned.files)?;
-        match crate::patch_helper::apply(&ws.root, &params.patch, false).await {
-            Ok(applied) => {
-                let changes = crate::patch_verify::verify_disk_matches_claimed(
-                    &sandbox,
-                    &applied.changes,
-                    &before,
-                )?;
-                Ok(ApplyPatchResult {
-                    status: PatchStatus::Applied,
-                    operation_id,
-                    replayed: false,
-                    files: applied.files,
-                    changes,
-                    work_id: None,
-                    coordination: None,
-                })
-            }
-            Err(_) => {
-                let complete = crate::rollback::restore(&sandbox, &snaps);
-                Ok(ApplyPatchResult {
-                    status: if complete {
-                        PatchStatus::FailedRolledBack
-                    } else {
-                        PatchStatus::FailedPartial
-                    },
-                    operation_id,
-                    replayed: false,
-                    files: planned.files,
-                    changes: planned.changes,
-                    work_id: None,
-                    coordination: None,
-                })
-            }
-        }
     }
 }
 
