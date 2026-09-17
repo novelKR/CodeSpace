@@ -1,5 +1,7 @@
 # Behavior differences
 
+[English](behavior-differences.md) | [한국어](ko/behavior-differences.md)
+
 Product policy is **not** “whatever `codex-apply-patch` does by
 default.” `crates/patch` calls the original parser and apply functions
 in-process, then the gateway/runner refuse operations the crate might

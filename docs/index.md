@@ -12,4 +12,8 @@ workspace.
 - [Getting started](../README.md) — tools, run commands, and license
 - [Operations](operations.md) — install, run, logs, and recovery
 - [ChatGPT connector](chatgpt-connector.md) — stdio, HTTP, and unverified account checks
+- [Architecture](architecture.md) — current and target process layout
+- [Execution substrate](execution-substrate.md) — no-model execution invariant
+- [Protocol compatibility](protocol-compatibility.md) — MCP 2025-11-25 baseline
+- [Behavior differences](behavior-differences.md) — product policy vs crate defaults
 - [Documentation site](documentation.md) — bilingual registry and Pages

@@ -60,7 +60,8 @@ def safe_file(root, relative):
         if parent == root:
             break
         require(not parent.is_symlink(), 'Source links are forbidden')
-    require(file.resolve().is_relative_to(root.resolve()) and file.is_file(), 'Missing regular source file')
+    require(file.resolve().is_relative_to(root.resolve()) and file.is_file(),
+            'Missing regular source file: ' + relative)
     require(file.stat().st_size <= 1024 * 1024, 'Source is too large')
     return file
 
@@ -145,7 +146,8 @@ def remap(text, source, routes, root, commit):
         require(normalized.is_relative_to(root) and not set(normalized.relative_to(root).parts) & BLOCKED,
                 'Link escapes public sources')
         relative = normalized.relative_to(root).as_posix()
-        safe_file(root, relative)
+        if relative in routes or root.joinpath(*PurePosixPath(relative).parts).is_file():
+            safe_file(root, relative)
         suffix = ('?' + parsed.query if parsed.query else '') + ('#' + parsed.fragment if parsed.fragment else '')
         url = routes[relative] if relative in routes else REPOSITORY + '/blob/' + commit + '/' + quote(relative, safe='/')
         return '[' + label + '](' + url + suffix + ')'

@@ -42,8 +42,8 @@
         "find-your-next-step",
         "다음-단계"
       ],
-      "source_sha256": "3a0d2fe08c48b809de1dc9a440899ebe324ac6ccb9d2f818c9796fd04191b658",
-      "translation_sha256": "6ad6549186c678a4a6821233591dfc02b8838018a3663a62ac9fe5dcbdead113"
+      "source_sha256": "227dd4a8988a24e87ca6fd883c54bf3b27ed1950318793752db8310ed27ec7f6",
+      "translation_sha256": "d85cece608050fb734a47eeb5f605bb83589ffb58241cac8e240fc41cce18b8f"
     },
     {
       "id": "getting-started",
@@ -92,7 +92,7 @@
         "이-문서가-검증하지-않는-것"
       ],
       "source_sha256": "0a31118f3079f05527613e22a57455e5c5ba0159026aa5bbcc3d7b1186461640",
-      "translation_sha256": "26bf47665443f7d383feeb6e562e0a518802d9d228a1351d19f76e694fc0c638"
+      "translation_sha256": "b3ff9c3f35400dde8c21f3ad523457990c879baf78fd141179b1de158a6ebd9e"
     },
     {
       "id": "chatgpt-connector",
@@ -114,7 +114,114 @@
         "비밀"
       ],
       "source_sha256": "ecda1e91f3a47fa9c16a09a9e846afa66aaa624c0b756db6ddc88f9f9a325aec",
-      "translation_sha256": "d7a4bcad8dfd17f2278699952d7bdd885e61e250f31eeaa2b89fe674e8625339"
+      "translation_sha256": "01ff41a3e3e02a06d08b9a970ae7d0bd73b3254a1a4339d571f73ae30a6049c5"
+    },
+    {
+      "id": "architecture",
+      "section": "architecture",
+      "order": 0,
+      "route": "/guide/architecture",
+      "source": "docs/architecture.md",
+      "translation": "docs/ko/architecture.md",
+      "anchors": [
+        "architecture",
+        "current-layout",
+        "id",
+        "identity",
+        "ids",
+        "mvp-tools",
+        "mvp-도구",
+        "out-of-scope-initial",
+        "patch-apply-pipeline",
+        "protocol-compatibility",
+        "repository-layout",
+        "target-layout",
+        "목표-배치",
+        "아키텍처",
+        "저장소-배치",
+        "정체성",
+        "초기-범위-밖",
+        "패치-적용-파이프라인",
+        "프로토콜-호환성",
+        "현재-배치"
+      ],
+      "source_sha256": "812858a1a21d31d06f7223e198527442ad8f3c50a635ec6ce96f1cf62a90f24d",
+      "translation_sha256": "cbfabb564943fac7982bc8fe7401ef8271555eec615dbfda964d069fca1ab608"
+    },
+    {
+      "id": "execution-substrate",
+      "section": "architecture",
+      "order": 1,
+      "route": "/guide/execution-substrate",
+      "source": "docs/execution-substrate.md",
+      "translation": "docs/ko/execution-substrate.md",
+      "anchors": [
+        "approval-and-mcp-revision",
+        "commandexec-shape-vs-crates",
+        "commandexec-형태-대-크레이트",
+        "execution-substrate",
+        "four-axes-target-domain",
+        "fswatch-and-search",
+        "fswatch와-검색",
+        "hooks-and-skills",
+        "invariant",
+        "roadmap-implementation-later",
+        "scheduler-after-the-single-write-lock",
+        "take-leave-concepts",
+        "가져오기-빼기-개념",
+        "네-축-목표-도메인",
+        "로드맵-구현은-나중",
+        "불변식",
+        "스케줄러-단일-쓰기-잠금-이후",
+        "승인과-mcp-리비전",
+        "실행-기반",
+        "훅과-스킬"
+      ],
+      "source_sha256": "497c710bdb17ebbfcdad4cca8002f0551fe45af02d929b0520b0861069dc6278",
+      "translation_sha256": "1b950ea6cd7d1155e3c310e536f3dee3a4a0b74a7179e651b7e7924cd4be0d66"
+    },
+    {
+      "id": "protocol-compatibility",
+      "section": "architecture",
+      "order": 2,
+      "route": "/guide/protocol-compatibility",
+      "source": "docs/protocol-compatibility.md",
+      "translation": "docs/ko/protocol-compatibility.md",
+      "anchors": [
+        "2026-07-28",
+        "core-baseline",
+        "out-of-scope",
+        "protocol-compatibility",
+        "tests",
+        "what-core-must-not-require",
+        "범위-밖",
+        "시험",
+        "프로토콜-호환성",
+        "핵심-기준",
+        "핵심이-요구하면-안-되는-것"
+      ],
+      "source_sha256": "7c4c6a19b151fee9d547ab14fc47daf8a6c8040c70ebd4db137e5feacc30db75",
+      "translation_sha256": "8d17e44f8e85d5fb8d46cac45fc5318f5b0921c923b7dc14b6d49f191cc01825"
+    },
+    {
+      "id": "behavior-differences",
+      "section": "architecture",
+      "order": 3,
+      "route": "/guide/behavior-differences",
+      "source": "docs/behavior-differences.md",
+      "translation": "docs/ko/behavior-differences.md",
+      "anchors": [
+        "behavior-differences",
+        "patch-request-contract",
+        "transport",
+        "write-lock",
+        "동작-차이",
+        "쓰기-잠금",
+        "전송",
+        "패치-요청-계약"
+      ],
+      "source_sha256": "23f9a96282eee32750388bcb05cdae7ce9ad2b461d637cc67fcf4a6f1c39aa30",
+      "translation_sha256": "2862a4c4839b8fce67edd2ed40b1ba9e3b0f996e4f26b4dd3bb454d865fc1941"
     },
     {
       "id": "documentation",

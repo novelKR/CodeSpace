@@ -1,5 +1,7 @@
 # Protocol compatibility
 
+[English](protocol-compatibility.md) | [한국어](ko/protocol-compatibility.md)
+
 CodeSpace is an execution-tools MCP server. Outer clients choose what to
 do. This process never calls a model.
 

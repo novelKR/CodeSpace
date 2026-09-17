@@ -11,7 +11,7 @@ CodeSpace는 Rust `rmcp` 프로세스입니다. **stdio**와 **Streamable HTTP**
 compose 파일은 격리 픽스처이며 ChatGPT 연결 경로가 아닙니다.
 
 핵심 프로토콜 기준은 **MCP 2025-11-25**입니다.
-[protocol-compatibility.md](../protocol-compatibility.md)를 보세요.
+[protocol-compatibility.md](protocol-compatibility.md)를 보세요.
 
 ## 로컬 stdio (cargo test로 검증)
 
