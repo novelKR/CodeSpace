@@ -27,8 +27,9 @@ Codex 핀은 [upstream-lock.md](upstream-lock.md)의 커밋에 있는
 [codex-reuse.md](codex-reuse.md)와
 [execution-substrate.md](execution-substrate.md)를 보세요.
 
-게이트웨이가 패치 헬퍼를 자기 옆에서 찾을 수 있도록 두 바이너리를
-**같은** 디렉터리에 빌드하세요(`CODESPACE_PATCH_BIN`을 설정해도 됩니다).
+게이트웨이가 패치 헬퍼를 자기 옆에서 찾을 수 있도록 게이트웨이와 패치
+헬퍼를 **같은** 디렉터리에 빌드하세요(`CODESPACE_PATCH_BIN`을 설정해도
+됩니다). UDS 워커는 선택입니다(`CODESPACE_RUNTIME_BIN`).
 
 ```bash
 cargo build -p codespace-server --bin codespace-mcp --release
@@ -36,11 +37,17 @@ cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch --rele
 mkdir -p dist
 cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
+# Optional Unix-socket worker (not the default exec path):
+cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
+cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 ```
 
 `codespace-patch`는 호스트 자식 프로세스입니다. 핀된 Codex 크레이트를
 **프로세스 내부에서** 호스팅합니다. 업스트림 독립 `apply_patch` 바이너리가
-아니고 폐기된 `native/patch-worker`도 아닙니다.
+아니고 폐기된 `native/patch-worker`도 아닙니다. `codespace-codex-runtime`은
+`codex-process-hardening`과 `codex-uds`로 비공개 Unix 소켓을 바인드한 뒤
+`InProcessRunner`를 실행합니다. 기본 `exec_command`는 여전히 프로세스
+내부 호스트 spawn입니다.
 
 ## 워크스페이스 레지스트리
 
@@ -60,7 +67,10 @@ cp crates/patch/target/release/codespace-patch dist/
 ```
 
 프로필: `read-only`(기본 의도) 또는 `workspace-write`. `host-admin`은
-제품 프로필이 아닙니다.
+제품 프로필이 아닙니다. 선택적 운영자 `environments`는 `host` 또는
+`linux-container`를 등록할 수 있습니다. 생략하면 암시적 로컬 호스트입니다.
+`linux-container`는 exec 경로가 아닙니다. 도구와 `workspace_info`에는
+`environment_id`가 없습니다.
 
 ## 게이트웨이 실행
 
@@ -94,6 +104,15 @@ export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
 `CODESPACE_OPERATIONS_DB`가 없으면 작업과 의도 큐는 메모리에 있고
 재시작 후 **남지 않습니다**. 프로세스 핸들은 재시작 후 절대 남지
 않습니다.
+
+선택적 러너 워커(여전히 호스트 exec이며 Linux 격리가 아님):
+
+```bash
+export CODESPACE_RUNNER=uds
+export CODESPACE_RUNNER_SOCKET="$PWD/data/runner.sock"
+export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
+./dist/codespace-mcp
+```
 
 ## MVP 흐름 재현
 
@@ -140,7 +159,7 @@ docker compose -f deploy/compose.yml up --build
   마세요.
 - stderr 캡처는 직접 순환하거나 잘라내세요. 로그 SaaS는 없습니다.
 - operations SQLite 파일은 **패치 작업** 행과 works/intents와 함께
-  커집니다. 프로세스 핸들과 write/shell 리스는 휘발성 메모리입니다.
+  커집니다. 프로세스 핸들과 자원 잠금은 휘발성 메모리입니다.
   데이터베이스를 이후 러너 마운트에서 빼 두세요. 삭제하면 멱등 키를
   잊습니다.
 

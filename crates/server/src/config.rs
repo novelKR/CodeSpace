@@ -41,6 +41,18 @@ pub struct Cli {
     /// SQLite file for operations. Unset uses an in-memory database (no replay across restarts).
     #[arg(long, env = "CODESPACE_OPERATIONS_DB")]
     pub operations_db: Option<std::path::PathBuf>,
+
+    /// Runner backend. `in-process` is the default host supervisor. `uds` uses ContainerRunner.
+    #[arg(long, env = "CODESPACE_RUNNER", default_value = "in-process")]
+    pub runner: String,
+
+    /// Unix socket for `CODESPACE_RUNNER=uds`.
+    #[arg(long, env = "CODESPACE_RUNNER_SOCKET")]
+    pub runner_socket: Option<std::path::PathBuf>,
+
+    /// `codespace-codex-runtime` binary for uds mode.
+    #[arg(long, env = "CODESPACE_RUNTIME_BIN")]
+    pub runtime_bin: Option<std::path::PathBuf>,
 }
 
 impl Cli {

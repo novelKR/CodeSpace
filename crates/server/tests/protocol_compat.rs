@@ -244,11 +244,11 @@ async fn spawn_http_workspace() -> (tempfile::TempDir, SocketAddr, Arc<Store>) {
     std::fs::create_dir(&ws).unwrap();
     std::fs::write(ws.join("hello.txt"), "hi\n").unwrap();
     let mut registry = Registry::new();
-    registry.insert(Workspace {
-        id: WorkspaceId("demo".into()),
-        root: ws,
-        profile: Profile::WorkspaceWrite,
-    });
+    registry.insert(Workspace::new(
+        WorkspaceId("demo".into()),
+        ws,
+        Profile::WorkspaceWrite,
+    ));
     let store = Arc::new(Store::memory().expect("store"));
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind http");
     let addr = listener.local_addr().expect("local addr");

@@ -15,6 +15,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let registry = load_registry(&cli)?;
     let store = load_store(&cli)?;
+    apply_runner_settings(&cli)?;
     match cli.mode() {
         TransportMode::Stdio => stdio::serve_with(registry, store).await,
         TransportMode::Http => {
@@ -24,6 +25,31 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn apply_runner_settings(cli: &Cli) -> Result<()> {
+    if cli.runner != "uds" {
+        return Ok(());
+    }
+    let socket = cli
+        .runner_socket
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--runner-socket is required when --runner uds"))?;
+    if let Some(bin) = &cli.runtime_bin {
+        std::process::Command::new(bin)
+            .arg(socket)
+            .spawn()
+            .map_err(anyhow::Error::from)?;
+        for _ in 0..50 {
+            if socket.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    std::env::set_var("CODESPACE_RUNNER", "uds");
+    std::env::set_var("CODESPACE_RUNNER_SOCKET", socket);
+    Ok(())
 }
 
 fn load_registry(cli: &Cli) -> Result<Registry> {

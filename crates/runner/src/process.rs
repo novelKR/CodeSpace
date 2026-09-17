@@ -1,5 +1,6 @@
 //! Managed workspace processes. Request lifetime is not process lifetime.
-//! Spawns host `tokio::process::Command`. Container dispatch is not wired.
+//! Spawns host `tokio::process::Command`. UDS dispatch lives in
+//! `ContainerRunner`; this supervisor stays the host exec engine.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -16,7 +17,6 @@ use crate::{
     RunnerExecRequest, RunnerExecResult, RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
 };
 
-pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_PROCESSES: usize = 8;
 pub const DEFAULT_COMPLETED_TTL: Duration = Duration::from_secs(15 * 60);
@@ -39,25 +39,12 @@ impl Default for RetentionPolicy {
     }
 }
 
-fn process_timeout() -> Duration {
-    std::env::var("CODESPACE_PROCESS_TIMEOUT_SECS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_TIMEOUT)
-}
-
 fn max_processes() -> usize {
     std::env::var("CODESPACE_MAX_PROCESSES")
         .ok()
         .and_then(|raw| raw.parse::<usize>().ok())
         .filter(|n| *n > 0)
         .unwrap_or(DEFAULT_MAX_PROCESSES)
-}
-
-fn child_path() -> String {
-    std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into())
 }
 
 #[derive(Clone)]
@@ -128,26 +115,35 @@ impl InProcessRunner {
         ws: &Workspace,
         req: RunnerExecRequest,
     ) -> Result<RunnerExecResult, ErrorBody> {
+        ws.require_host_execution()?;
+        if req.tty {
+            return Err(ErrorBody::new(
+                ErrorCode::Unauthorized,
+                "PTY is not implemented",
+            ));
+        }
         if req.argv.is_empty() || req.argv[0].is_empty() {
             return Err(ErrorBody::new(
                 ErrorCode::InvalidPatch,
                 "command must be a non-empty argv (no shell)",
             ));
         }
+        let cap = req.output_bytes_cap.max(1) as usize;
+        let timeout = Duration::from_millis(req.timeout_ms.max(1));
         let mut child = Command::new(&req.argv[0]);
         if req.argv.len() > 1 {
             child.args(&req.argv[1..]);
         }
         child
-            .current_dir(&ws.root)
+            .current_dir(&req.cwd)
             .env_clear()
-            .env("PATH", child_path())
-            .env("HOME", &ws.root)
-            .env("LANG", "C")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for (key, value) in &req.env {
+            child.env(key, value);
+        }
         let mut spawned = child
             .spawn()
             .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
@@ -179,11 +175,11 @@ impl InProcessRunner {
 
         let out_handle = stdout.map(|out| {
             let buf = output.clone();
-            tokio::spawn(async move { pump_reader(out, buf).await })
+            tokio::spawn(async move { pump_reader(out, buf, cap).await })
         });
         let err_handle = stderr.map(|err| {
             let buf = output.clone();
-            tokio::spawn(async move { pump_reader(err, buf).await })
+            tokio::spawn(async move { pump_reader(err, buf, cap).await })
         });
 
         let wait_child = child.clone();
@@ -206,7 +202,7 @@ impl InProcessRunner {
         let timeout_child = child;
         let timeout_out = output;
         tokio::spawn(async move {
-            tokio::time::sleep(process_timeout()).await;
+            tokio::time::sleep(timeout).await;
             let mut ch = timeout_child.lock().expect("child");
             if ch.try_wait().ok().flatten().is_none() {
                 let _ = ch.start_kill();
@@ -342,6 +338,7 @@ async fn join_pump(handle: Option<JoinHandle<()>>) {
 async fn pump_reader<R: tokio::io::AsyncRead + Unpin>(
     mut reader: R,
     output: Arc<Mutex<OutputBuf>>,
+    cap: usize,
 ) {
     let mut buf = [0u8; 4096];
     loop {
@@ -351,8 +348,8 @@ async fn pump_reader<R: tokio::io::AsyncRead + Unpin>(
                 let mut out = output.lock().expect("output");
                 out.total += n as u64;
                 out.bytes.extend_from_slice(&buf[..n]);
-                if out.bytes.len() > MAX_OUTPUT_BYTES {
-                    let extra = out.bytes.len() - MAX_OUTPUT_BYTES;
+                if out.bytes.len() > cap {
+                    let extra = out.bytes.len() - cap;
                     out.bytes.drain(..extra);
                     out.dropped += extra as u64;
                 }
@@ -385,11 +382,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn workspace(root: &std::path::Path) -> Workspace {
-        Workspace {
-            id: WorkspaceId("demo".into()),
-            root: root.to_path_buf(),
-            profile: Profile::WorkspaceWrite,
-        }
+        Workspace::new(
+            WorkspaceId("demo".into()),
+            root.to_path_buf(),
+            Profile::WorkspaceWrite,
+        )
     }
 
     #[tokio::test]
@@ -411,11 +408,14 @@ mod tests {
         runner
             .exec(
                 &ws,
-                RunnerExecRequest {
-                    argv: vec!["/bin/echo".into(), "hi".into()],
-                    process_id: process_id.clone(),
-                },
+                RunnerExecRequest::for_host(
+                    vec!["/bin/echo".into(), "hi".into()],
+                    process_id.clone(),
+                    dir.path().to_path_buf(),
+                    codespace_domain::Profile::WorkspaceWrite,
+                ),
             )
+            .await
             .unwrap();
         for _ in 0..50 {
             if released.load(Ordering::SeqCst) >= 1 {
@@ -429,6 +429,7 @@ mod tests {
                 process_id: process_id.clone(),
                 cursor: 0,
             })
+            .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         let err = runner
@@ -436,6 +437,7 @@ mod tests {
                 process_id,
                 cursor: 0,
             })
+            .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::ProcessNotFound);
     }
@@ -456,11 +458,14 @@ mod tests {
         runner
             .exec(
                 &ws,
-                RunnerExecRequest {
-                    argv: vec!["/bin/echo".into(), "one".into()],
-                    process_id: first.clone(),
-                },
+                RunnerExecRequest::for_host(
+                    vec!["/bin/echo".into(), "one".into()],
+                    first.clone(),
+                    dir.path().to_path_buf(),
+                    codespace_domain::Profile::WorkspaceWrite,
+                ),
             )
+            .await
             .unwrap();
         for _ in 0..50 {
             if runner
@@ -468,6 +473,7 @@ mod tests {
                     process_id: first.clone(),
                     cursor: 0,
                 })
+                .await
                 .unwrap()
                 .eof
             {
@@ -478,11 +484,14 @@ mod tests {
         runner
             .exec(
                 &ws,
-                RunnerExecRequest {
-                    argv: vec!["/bin/echo".into(), "two".into()],
-                    process_id: second.clone(),
-                },
+                RunnerExecRequest::for_host(
+                    vec!["/bin/echo".into(), "two".into()],
+                    second.clone(),
+                    dir.path().to_path_buf(),
+                    codespace_domain::Profile::WorkspaceWrite,
+                ),
             )
+            .await
             .unwrap();
         for _ in 0..50 {
             if runner
@@ -490,6 +499,7 @@ mod tests {
                     process_id: second.clone(),
                     cursor: 0,
                 })
+                .await
                 .unwrap()
                 .eof
             {
@@ -498,16 +508,56 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         // Trigger eviction of the oldest completed slot.
-        let _ = runner.read_process(RunnerReadProcess {
-            process_id: second,
-            cursor: 0,
-        });
+        let _ = runner
+            .read_process(RunnerReadProcess {
+                process_id: second,
+                cursor: 0,
+            })
+            .await;
         let err = runner
             .read_process(RunnerReadProcess {
                 process_id: first,
                 cursor: 0,
             })
+            .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::ProcessNotFound);
+    }
+
+    #[tokio::test]
+    async fn linux_container_environment_is_closed_failure() {
+        let dir = tempdir().unwrap();
+        let mut ws = workspace(dir.path());
+        ws.environment_kind = codespace_policy::EnvironmentKind::LinuxContainer;
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let err = runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/echo".into()],
+                    ProcessId("proc-box".into()),
+                    dir.path().to_path_buf(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unauthorized);
+    }
+
+    #[tokio::test]
+    async fn tty_exec_is_rejected() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let mut req = RunnerExecRequest::for_host(
+            vec!["/bin/echo".into()],
+            ProcessId("proc-tty".into()),
+            dir.path().to_path_buf(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = true;
+        let err = runner.exec(&ws, req).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::Unauthorized);
     }
 }

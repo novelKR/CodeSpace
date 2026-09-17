@@ -22,8 +22,10 @@ It does not mount:
 - `/var/run/docker.sock`
 - gateway `.env`, Bearer files, or SQLite
 
-There is no runner control socket today. Do not add a host Docker
-socket or a future control socket to this fixture by accident.
+There is no runner control socket on the compose fixture. Do not add a
+host Docker socket or a future control socket to this fixture by
+accident. Opt-in `CODESPACE_RUNNER=uds` uses a **private** gateway↔worker
+Unix socket off this fixture.
 
 ## macOS / no Docker
 
@@ -35,12 +37,17 @@ unverified.
 
 ## Later process split
 
-Today `codespace-mcp` is one process. `crates/runner` hosts the in-process
-`Runner` (`PathSandbox`, one `apply_patch` transaction, host supervisor).
-A later Unix-socket / `ContainerRunner` worker would live in the same
-crate; both sides remain Rust. That **transport** split is the next
-implementation WP; it is not this document. Prefer `codex-uds` as the
-socket primitive; the Runner RPC stays a CodeSpace contract.
+Today `codespace-mcp` is one process by default. `crates/runner` hosts
+`InProcessRunner` (`PathSandbox`, one `apply_patch` transaction, host
+supervisor) and the opt-in Unix-socket `ContainerRunner` client. The
+worker is isolated `crates/codex-runtime` (`codespace-codex-runtime`):
+`codex_process_hardening::pre_main_hardening()`, `codex-uds` bind, then
+the same `InProcessRunner` methods. Wire format is **CodeSpace JSON**,
+not App Server. That **transport** is implemented; it is opt-in
+(`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). Next WPs are PTY /
+filesystem / linux-sandbox / network, not a second transport rewrite.
+Prefer `codex-uds` as the socket primitive; the Runner RPC stays a
+CodeSpace contract.
 
 Linux isolation is still the target OS. Landlock, seccomp, PTY helpers,
 UDS, filesystem mechanics, and network isolation are **not** a default

@@ -728,6 +728,7 @@ dependencies = [
  "codespace-policy",
  "codex-apply-patch",
  "codex-exec-server",
+ "codex-process-hardening",
  "codex-utils-path-uri",
  "hex",
  "serde",
@@ -1129,6 +1130,13 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "codex-process-hardening"
+version = "0.154.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

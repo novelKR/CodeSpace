@@ -61,8 +61,8 @@
         "상태",
         "실행"
       ],
-      "source_sha256": "6066cd16dfc9559987a276b484cb2154384e46497b20b078e9263b17cfe5a905",
-      "translation_sha256": "cef4867649f9052da08158a3ce6e941b9e882e77179c799d6afc4c3575d61201"
+      "source_sha256": "1aa10bfe05a0d694c09cf472c150040d4cad046cd72c5f03613965310c3dbebd",
+      "translation_sha256": "dbafbaf7197cfa0844ba6fed773366660fb3c218bcb2f255365056a94ec147a6"
     },
     {
       "id": "operations",
@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "0a31118f3079f05527613e22a57455e5c5ba0159026aa5bbcc3d7b1186461640",
-      "translation_sha256": "f839d595db274cccfb2790379410062fdb8ccb90f9dc9f3811f1f942774e693f"
+      "source_sha256": "bc33b7faf70f19f2c50f1a56ee1dd86c86fb956af9a82f4d6b5c42539466a9d8",
+      "translation_sha256": "bb0c21d6a83b7fd9f4ff7c59d238271ca792b391d71f2e1f5e716d4b53b91cb5"
     },
     {
       "id": "chatgpt-connector",
@@ -145,8 +145,8 @@
         "프로토콜-호환성",
         "현재-배치"
       ],
-      "source_sha256": "812858a1a21d31d06f7223e198527442ad8f3c50a635ec6ce96f1cf62a90f24d",
-      "translation_sha256": "e1d82ce7a1231df987c4bdcba4bd01612810b746f3b605e5fe6073cc844e83da"
+      "source_sha256": "8cda30f3a3729de9d376f6a62b215841841109934e5d8f9bb75d48e4c1e3e42e",
+      "translation_sha256": "a886e942beb3592eecf217b5946b6ca22b7439653e9512119de2a1e8fd90d46b"
     },
     {
       "id": "execution-substrate",
@@ -177,8 +177,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "497c710bdb17ebbfcdad4cca8002f0551fe45af02d929b0520b0861069dc6278",
-      "translation_sha256": "a7499a65adaf2e1b6fc93aaa0bf4ed41555535b1f0da906ca1cd4449c252c003"
+      "source_sha256": "b2beac4ae9b5db557af13429072fd15cb3577f7c52ad17611322a6052dd6b559",
+      "translation_sha256": "b27ea1ca24db09129a41ff3c5c00281cbe85bc5c6d2cf8f7a6d187e4630bfefc"
     },
     {
       "id": "protocol-compatibility",
@@ -272,8 +272,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "39464d076b856527d363c2031b04eb9228ecc0abbefac4416035fbff807e67f0",
-      "translation_sha256": "80b1342ab219fcc4dfd501f156fe86e8078cb5d107f884314f9c3a0e271d616a"
+      "source_sha256": "13684dd767e39309f6e5d7b596acb69acc82228469ecdea8dd06a7257c328c84",
+      "translation_sha256": "f0d4717a83f52091f92a2363f8392e076bbb1e749a854b52ae969e164b6ca07a"
     },
     {
       "id": "error-codes",
@@ -340,8 +340,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "309d465d5a4b5e09ab34097a6415dc2a1e833e2fd26cf721611d3031580d6feb",
-      "translation_sha256": "f0717d1d40fa67a5117cf5eb0f5d8601d205979c1513d27545a1e1179c35c68b"
+      "source_sha256": "adb6c14dbdfe9e2aaae42b9510c2832823175b2b98bc281658a67ec89bdf339e",
+      "translation_sha256": "f66085dee4bd2012d45fc0f292fb7050fcdd985c9a3bbb113fbd0b29bf00f686"
     },
     {
       "id": "upstream-lock",
@@ -362,8 +362,8 @@
         "재사용하는-것과-거절하는-것",
         "파일-복사-벤더가-금지인-이유"
       ],
-      "source_sha256": "bf539fbb2d8a34af688e99c7fb2db6a748627990d9c95bd65fad9506af28a088",
-      "translation_sha256": "cae3e0c2f07b4a9942afd0f58a0dddefe790784c29dd21ac5dcbff55e74261ab"
+      "source_sha256": "ec45c721e9db9742a77b7e1256ec1502eb6725bc7cb452311779e57a0bb7be60",
+      "translation_sha256": "96b64234af21fad87b12c146530f60ac024868603fcb374c05c20d72e23e298d"
     },
     {
       "id": "upstream-update",

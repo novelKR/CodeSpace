@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "In-process Runner: filesystem, patch transaction, host process supervisor, isolation fixture checks"
+description = "Runner trait, execution DTOs, InProcessRunner, and opt-in ContainerRunner"
 
 [dependencies]
 codespace-domain = { path = "../domain" }
@@ -14,7 +14,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "net", "sync"] }
 
 [dev-dependencies]
 tempfile = "3"

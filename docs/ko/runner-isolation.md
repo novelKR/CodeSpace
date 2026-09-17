@@ -21,8 +21,10 @@
 - `/var/run/docker.sock`
 - gateway `.env`, Bearer files, or SQLite
 
-지금은 러너 제어 소켓이 없습니다. 이 픽스처에 호스트 Docker 소켓이나
-이후 제어 소켓을 실수로 추가하지 마세요.
+지금은 compose 픽스처에 러너 제어 소켓이 없습니다. 이 픽스처에 호스트
+Docker 소켓이나 이후 제어 소켓을 실수로 추가하지 마세요. 선택적
+`CODESPACE_RUNNER=uds`는 이 픽스처 밖의 **비공개** 게이트웨이↔워커
+Unix 소켓을 씁니다.
 
 ## macOS / Docker 없음
 
@@ -33,12 +35,17 @@ seccomp/AppArmor와 Docker Desktop 대 Linux 엔진 차이도 검증되지 않�
 
 ## 이후 프로세스 분리
 
-오늘은 `codespace-mcp`가 한 프로세스입니다. `crates/runner`가 프로세스
-내부 `Runner`를 호스팅합니다(`PathSandbox`, `apply_patch` 트랜잭션 하나,
-호스트 감독). 이후 Unix 소켓 / `ContainerRunner` 워커는 같은 크레이트에
-살며, 양쪽 모두 Rust로 남습니다. 그 **전송** 분리가 다음 구현 WP이며
-이 문서가 아닙니다. 소켓 프리미티브로 `codex-uds`를 선호하세요. Runner
-RPC는 CodeSpace 계약으로 남습니다.
+오늘은 기본으로 `codespace-mcp`가 한 프로세스입니다. `crates/runner`가
+`InProcessRunner`(`PathSandbox`, `apply_patch` 트랜잭션 하나, 호스트
+감독)와 선택적 Unix 소켓 `ContainerRunner` 클라이언트를 호스팅합니다.
+워커는 격리된 `crates/codex-runtime`(`codespace-codex-runtime`)입니다.
+`codex_process_hardening::pre_main_hardening()`, `codex-uds` bind, 그다음
+같은 `InProcessRunner` 메서드입니다. 와이어는 **CodeSpace JSON**이며
+App Server가 아닙니다. 그 **전송**은 구현되어 있으며 선택적입니다
+(`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). 다음 WP는 PTY /
+filesystem / linux-sandbox / network이며 두 번째 전송 재작성이
+아닙니다. 소켓 프리미티브로 `codex-uds`를 선호하세요. Runner RPC는
+CodeSpace 계약으로 남습니다.
 
 Linux 격리는 여전히 목표 OS입니다. Landlock, seccomp, PTY 헬퍼, UDS,
 파일시스템 역학, 네트워크 격리는 **기본 자체 스택이 아닙니다**. 업스트림

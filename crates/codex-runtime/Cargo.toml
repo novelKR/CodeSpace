@@ -1,0 +1,25 @@
+# Isolated workspace (excluded from the repo root workspace) so the pinned
+# Codex crates keep their own workspace.dependencies.
+
+[package]
+name = "codespace-codex-runtime"
+version = "0.6.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.88"
+publish = false
+description = "Isolated Codex execution adapter: process-hardening and Unix socket worker"
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[dependencies]
+codespace-runner = { path = "../runner" }
+codex-process-hardening = { path = "../../third_party/codex/codex-rs/process-hardening" }
+codex-uds = { path = "../../third_party/codex/codex-rs/uds" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync"] }
+
+[[bin]]
+name = "codespace-codex-runtime"
+path = "src/bin/codespace-codex-runtime.rs"

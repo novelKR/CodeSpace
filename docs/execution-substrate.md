@@ -41,7 +41,7 @@ bump. Re-check graphs after a deliberate W13 update.
 CI: `policy-scan` job runs `scripts/check-no-model-deps.sh` **without**
 submodules, in parallel with `rust`. Core manifests may not declare
 `codex-*` deps. Core sources keep the agent/model grep. Isolated
-adapter manifests (`crates/patch`, later `crates/codex-runtime`) use an
+adapter manifests (`crates/patch`, `crates/codex-runtime`) use an
 **allowlist**; `third_party/codex` sources are never scanned.
 `SCAN_BASE` limits the tree to the update range; unknown range scans
 all core crates and adapter manifests. Clippy/tests still always run.
@@ -57,14 +57,18 @@ The rust job checks the pin SHA (`PIN_ONLY=1`) **before** fmt/clippy.
 | Process handles that outlive an MCP connection | Copy App Server “kill on connection close” |
 | Isolated `crates/patch` → `codex-apply-patch` | Embed `codex-app-server` / `codex-exec` / `codex-core` |
 
-`read-only` / `workspace-write` stay the live profiles. Richer
-filesystem glob + network axes are a **future `crates/policy` type**,
-not an import of Codex user config.
+`read-only` / `workspace-write` stay the live MCP profiles. Richer
+filesystem glob + network axes live in `crates/policy` as
+`PermissionProfile`, mapped from those profiles. The network axis is
+recorded only; it does not grant. This is not an import of Codex user
+config.
 
 ## Four axes (target domain)
 
 Not all of these are MCP fields today. **Do not add `environment_id`
-to live tools in this work package.**
+to live tools.** Operator JSON may register environments. Omitted
+environment is the implicit local host. Unknown environment ids fail
+config load. `linux-container` loads but exec/patch fail closed.
 
 ```text
 Environment   where command and filesystem ops run
@@ -106,8 +110,9 @@ optional process id, tty, stdin/stdout streaming, output cap, timeout,
 cwd, env, PTY size, `sandboxPolicy` / `permissionProfile`. Follow-ups:
 write, resize, terminate. Streaming is `outputDelta`.
 
-That **shape** is the long-term Runner DTO target (plus
-`process_resize` when PTY exists). Live MCP remains:
+That **shape** is on Runner DTOs today (plus `process_resize` when PTY
+exists). Gateway fills cwd, env, timeout, output cap, `tty: false`, and
+a policy summary. Live MCP remains:
 
 ```text
 exec_command / write_stdin / read_process / terminate_process
@@ -161,7 +166,10 @@ handles.
 Today one workspace write lock plus shell occupancy is enough. App
 Server serializes by resource (exclusive vs shared read). The target
 scopes are Environment, Workspace, Path, Process, Operation, Watch —
-not Thread. Do not change `crates/store` in this work package.
+not Thread. `crates/store` now uses an in-memory resource serializer
+for those keys. SQLite schema is unchanged. MVP still takes workspace
+exclusive for `apply_patch` and live shells (`WORKSPACE_BUSY`);
+`read` / `find` stay shared with no lock.
 
 ## `fs/watch` and search
 
@@ -211,14 +219,17 @@ resource.
 
 ## Roadmap (implementation later)
 
-This work package is documentation and a dependency check only.
+P0 code for this substrate is in: Runner exec DTO **shape**,
+`PermissionProfile` and Environment in `crates/policy`, resource
+serializer, opt-in `ContainerRunner` + `codespace-codex-runtime`
+(process-hardening + UDS). MCP schemas stay frozen.
 
-**P0** — already or next code WPs: `codex-apply-patch` (done), exec
-runtime **shape** on Runner DTOs, PermissionProfile domain in
-`crates/policy`, Environment domain (operator-registered; not a tool
-arg yet), resource serializer, then transport (`ContainerRunner`)
-taking the staged subgraph (process-hardening → PTY → UDS/path →
-filesystem → linux-sandbox → network).
+**P0** — landed or next subgraph WPs: `codex-apply-patch` (done), exec
+runtime **shape** on Runner DTOs (done), PermissionProfile domain in
+`crates/policy` (done), Environment domain (operator-registered; not a
+tool arg) (done), resource serializer (done), transport
+(`ContainerRunner`) with process-hardening + UDS (done, opt-in). Still
+out: PTY → filesystem → linux-sandbox → network.
 
 **P1** — operation state machine / diff ledger, approval fallback
 tools, internal watch, richer process handles (resize, caps),
@@ -229,7 +240,7 @@ MCP contract, deterministic hooks, skills as resources or prompts.
 
 **P3** — remote environment, MCP federation, artifact registry.
 
-The next **code** WP remains Runner **transport** behind the existing
-trait, without splitting `apply_patch` into gateway RPCs. Sandbox / PTY
-/ network are not a default homegrown OS stack
+The next **code** WPs are remaining execution subgraph crates behind
+the existing trait, without splitting `apply_patch` into gateway RPCs.
+Sandbox / PTY / network are not a default homegrown OS stack
 ([codex-reuse.md](codex-reuse.md)).

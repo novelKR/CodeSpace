@@ -23,6 +23,9 @@ under the Apache License, Version 2.0.
   depends on other Codex workspace crates (including
   `codex-exec-server`, path utilities, and tree-sitter bindings).
   The adapter lives in `crates/patch` and calls the library in-process.
+  Isolated `crates/codex-runtime` (`codespace-codex-runtime`) reuses
+  `codex-process-hardening` and `codex-uds` for the opt-in Unix-socket
+  worker. `codespace-patch` also calls `pre_main_hardening()`.
 
 Codex copyright: OpenAI.
 Codex license: Apache License 2.0.

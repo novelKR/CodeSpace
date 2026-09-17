@@ -16,11 +16,11 @@ async fn spawn_inbox(token: Option<&str>) -> (tempfile::TempDir, SocketAddr, Arc
     let ws = root.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     let mut registry = Registry::new();
-    registry.insert(Workspace {
-        id: WorkspaceId("demo".into()),
-        root: ws,
-        profile: Profile::WorkspaceWrite,
-    });
+    registry.insert(Workspace::new(
+        WorkspaceId("demo".into()),
+        ws,
+        Profile::WorkspaceWrite,
+    ));
     let store = Arc::new(Store::memory().expect("store"));
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

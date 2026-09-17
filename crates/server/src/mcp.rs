@@ -11,8 +11,8 @@ use codespace_domain::{
 };
 use codespace_policy::{allow, Action, ClientClaims, Registry};
 use codespace_runner::{
-    InProcessRunner, Runner, RunnerApplyPatchRequest, RunnerExecRequest, RunnerReadProcess,
-    RunnerWriteStdin,
+    ContainerRunner, Runner, RunnerApplyPatchRequest, RunnerExecRequest, RunnerReadProcess,
+    RunnerWriteStdin, RuntimeBackend,
 };
 use codespace_store::{Begin, Store};
 use rmcp::{
@@ -36,7 +36,7 @@ pub struct CodeSpace {
     tool_router: ToolRouter<Self>,
     pub(crate) registry: Registry,
     pub(crate) store: Arc<Store>,
-    pub(crate) runner: InProcessRunner,
+    pub(crate) runner: RuntimeBackend,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -61,9 +61,25 @@ impl CodeSpace {
 
     pub fn with_store(registry: Registry, store: Arc<Store>) -> Self {
         let store_for_lease = store.clone();
-        let runner = InProcessRunner::new(Arc::new(move |workspace_id| {
+        let on_release = Arc::new(move |workspace_id: &str| {
             store_for_lease.clear_shell(workspace_id);
-        }));
+        });
+        let runner = match std::env::var("CODESPACE_RUNNER") {
+            Ok(mode) if mode == "uds" => {
+                let path = std::env::var("CODESPACE_RUNNER_SOCKET")
+                    .expect("CODESPACE_RUNNER_SOCKET is required when CODESPACE_RUNNER=uds");
+                RuntimeBackend::Container(connect_container_runner(&path))
+            }
+            _ => RuntimeBackend::in_process(on_release),
+        };
+        Self::with_store_and_runner(registry, store, runner)
+    }
+
+    pub fn with_store_and_runner(
+        registry: Registry,
+        store: Arc<Store>,
+        runner: RuntimeBackend,
+    ) -> Self {
         Self {
             tool_router: Self::tool_router(),
             registry,
@@ -99,6 +115,7 @@ impl CodeSpace {
             .map_err(err_json)?;
         self.runner
             .read(ws, &params.path)
+            .await
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
                 Json(result)
@@ -120,6 +137,7 @@ impl CodeSpace {
             .map_err(err_json)?;
         self.runner
             .find(ws, params.glob.as_deref())
+            .await
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
                 Json(result)
@@ -168,6 +186,7 @@ impl CodeSpace {
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
         allow(ws, Action::Exec, &ClientClaims::default()).map_err(err_json)?;
+        ws.require_host_execution().map_err(err_json)?;
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(ErrorBody::new(
                 ErrorCode::InvalidPatch,
@@ -178,17 +197,33 @@ impl CodeSpace {
         self.store
             .mark_shell_busy(&params.workspace_id.0, &process_id.0)
             .map_err(err_json)?;
-        match self.runner.exec(
-            ws,
-            RunnerExecRequest {
-                argv: params.command,
-                process_id,
-            },
-        ) {
-            Ok(result) => Ok(Json(ExecCommandResult {
-                process_id: result.process_id,
-                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
-            })),
+        match self
+            .runner
+            .exec(
+                ws,
+                RunnerExecRequest::for_host(
+                    params.command,
+                    process_id,
+                    ws.root.clone(),
+                    ws.profile,
+                ),
+            )
+            .await
+        {
+            Ok(result) => {
+                if matches!(self.runner, RuntimeBackend::Container(_)) {
+                    reap_remote_shell(
+                        self.store.clone(),
+                        self.runner.clone(),
+                        params.workspace_id.0.clone(),
+                        result.process_id.clone(),
+                    );
+                }
+                Ok(Json(ExecCommandResult {
+                    process_id: result.process_id,
+                    coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
+                }))
+            }
             Err(err) => {
                 self.store.clear_shell(&params.workspace_id.0);
                 Err(err_json(err))
@@ -210,13 +245,11 @@ impl CodeSpace {
                 data: params.data,
             })
             .await
-            .map(|_| {
-                Json(OkBody {
-                    ok: true,
-                    coordination: self.process_hint(&params.process_id.0),
-                })
-            })
-            .map_err(err_json)
+            .map_err(err_json)?;
+        Ok(Json(OkBody {
+            ok: true,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
     }
 
     #[tool(
@@ -227,21 +260,21 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<ReadProcessParams>,
     ) -> Result<Json<ReadProcessResult>, String> {
-        self.runner
+        let result = self
+            .runner
             .read_process(RunnerReadProcess {
                 process_id: params.process_id.clone(),
                 cursor: params.cursor,
             })
-            .map(|result| {
-                Json(ReadProcessResult {
-                    process_id: result.process_id,
-                    cursor: result.cursor,
-                    chunk: result.chunk,
-                    eof: result.eof,
-                    coordination: self.process_hint(&params.process_id.0),
-                })
-            })
-            .map_err(err_json)
+            .await
+            .map_err(err_json)?;
+        Ok(Json(ReadProcessResult {
+            process_id: result.process_id,
+            cursor: result.cursor,
+            chunk: result.chunk,
+            eof: result.eof,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
     }
 
     #[tool(
@@ -254,13 +287,12 @@ impl CodeSpace {
     ) -> Result<Json<OkBody>, String> {
         self.runner
             .terminate(&params.process_id)
-            .map(|_| {
-                Json(OkBody {
-                    ok: true,
-                    coordination: self.process_hint(&params.process_id.0),
-                })
-            })
-            .map_err(err_json)
+            .await
+            .map_err(err_json)?;
+        Ok(Json(OkBody {
+            ok: true,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
     }
 
     #[tool(
@@ -344,6 +376,7 @@ impl CodeSpace {
     ) -> Result<ApplyPatchResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
+        ws.require_host_execution()?;
         let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
         let fingerprint = Store::fingerprint(&params);
         match self.store.begin(
@@ -398,8 +431,8 @@ impl CodeSpace {
             .flatten()
     }
 
-    fn process_hint(&self, process_id: &str) -> Option<CoordinationHint> {
-        let ws = self.runner.workspace_of(process_id)?;
+    async fn process_hint(&self, process_id: &str) -> Option<CoordinationHint> {
+        let ws = self.runner.workspace_of(process_id).await?;
         self.hint(&ws, None)
     }
 
@@ -413,6 +446,42 @@ impl CodeSpace {
         result.coordination = self.hint(workspace_id, work_id);
         result
     }
+}
+
+fn connect_container_runner(path: &str) -> ContainerRunner {
+    let std_stream = std::os::unix::net::UnixStream::connect(path).unwrap_or_else(|err| {
+        panic!("connect runner socket {path}: {err}");
+    });
+    std_stream
+        .set_nonblocking(true)
+        .expect("runner socket nonblocking");
+    let stream = tokio::net::UnixStream::from_std(std_stream).expect("tokio runner socket");
+    ContainerRunner::from_stream(stream)
+}
+
+fn reap_remote_shell(
+    store: Arc<Store>,
+    runner: RuntimeBackend,
+    workspace_id: String,
+    process_id: ProcessId,
+) {
+    tokio::spawn(async move {
+        for _ in 0..600 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            match runner
+                .read_process(RunnerReadProcess {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                })
+                .await
+            {
+                Ok(result) if result.eof => break,
+                Err(_) => break,
+                _ => {}
+            }
+        }
+        store.clear_shell(&workspace_id);
+    });
 }
 
 fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {

@@ -408,6 +408,40 @@ async fn read_only_profile_rejects_exec() {
     client.cancel().await.expect("cancel");
 }
 
+#[tokio::test]
+async fn linux_container_environment_rejects_exec() {
+    let root = tempfile::tempdir().unwrap();
+    let ws = root.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let cfg = root.path().join("workspaces.json");
+    std::fs::write(
+        &cfg,
+        serde_json::json!({
+            "environments": { "box": { "kind": "linux-container" } },
+            "workspaces": {
+                "demo": { "root": ws, "profile": "workspace-write", "environment": "box" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let client = spawn_client(&cfg, false, &[]).await;
+    let denied = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/echo", "nope"]
+            })),
+        )
+        .await;
+    let text = err_text(&denied);
+    assert!(
+        text.contains("UNAUTHORIZED") || text.contains("linux-container"),
+        "{text}"
+    );
+    client.cancel().await.expect("cancel");
+}
+
 async fn spawn_http(cfg: &std::path::Path) -> std::net::SocketAddr {
     let registry = codespace_policy::Registry::load_path(cfg).expect("registry");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

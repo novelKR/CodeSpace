@@ -41,7 +41,7 @@ Codex `main` `4701aa4b`를 언급하는 조사 노트는 핀 범프가 **아닙�
 CI: `policy-scan` job은 서브모듈 **없이** `scripts/check-no-model-deps.sh`를
 `rust`와 병렬로 실행합니다. 핵심 매니페스트는 `codex-*` 의존성을 선언하면
 안 됩니다. 핵심 소스는 에이전트/모델 grep을 유지합니다. 격리된 어댑터
-매니페스트(`crates/patch`, 이후 `crates/codex-runtime`)는
+매니페스트(`crates/patch`, `crates/codex-runtime`)는
 **허용 목록**을 사용합니다. `third_party/codex` 소스는 절대 스캔하지
 않습니다. `SCAN_BASE`는 트리를 갱신 범위로 제한합니다. 범위를 모르면
 모든 핵심 크레이트와 어댑터 매니페스트를 스캔합니다. Clippy/시험은
@@ -58,14 +58,17 @@ CI: `policy-scan` job은 서브모듈 **없이** `scripts/check-no-model-deps.sh
 | Process handles that outlive an MCP connection | Copy App Server “kill on connection close” |
 | Isolated `crates/patch` → `codex-apply-patch` | Embed `codex-app-server` / `codex-exec` / `codex-core` |
 
-`read-only` / `workspace-write`가 실제 프로필로 남습니다. 더 풍부한
-파일시스템 glob + 네트워크 축은 **이후 `crates/policy` 타입**이며,
-Codex 사용자 설정을 가져오는 것이 아닙니다.
+`read-only` / `workspace-write`가 실제 MCP 프로필로 남습니다. 더 풍부한
+파일시스템 glob + 네트워크 축은 `crates/policy`의 `PermissionProfile`에
+있고 그 프로필에서 매핑됩니다. 네트워크 축은 기록만 하며 허용을 올리지
+않습니다. Codex 사용자 설정을 가져오는 것이 아닙니다.
 
 ## 네 축 (목표 도메인)
 
-이 모두가 오늘 MCP 필드는 아닙니다. **이 작업 패키지에서 실제 도구에
-`environment_id`를 추가하지 마세요.**
+이 모두가 오늘 MCP 필드는 아닙니다. **실제 도구에 `environment_id`를
+추가하지 마세요.** 운영자 JSON은 환경을 등록할 수 있습니다. 생략하면
+암시적 로컬 호스트입니다. 알 수 없는 environment id는 설정 로드에
+실패합니다. `linux-container`는 로드되지만 exec/patch는 닫힌 실패입니다.
 
 ```text
 Environment   where command and filesystem ops run
@@ -107,8 +110,9 @@ Runner / patch helper
 cwd, env, PTY 크기, `sandboxPolicy` / `permissionProfile`이 있습니다.
 후속: write, resize, terminate. 스트리밍은 `outputDelta`입니다.
 
-그 **형태**가 장기 Runner DTO 목표입니다(PTY가 생기면 `process_resize`
-포함). 실제 MCP는 그대로입니다.
+그 **형태**가 오늘 Runner DTO에 있습니다(PTY가 생기면 `process_resize`
+포함). 게이트웨이가 cwd, env, 타임아웃, 출력 한도, `tty: false`, 정책
+요약을 채웁니다. 실제 MCP는 그대로입니다.
 
 ```text
 exec_command / write_stdin / read_process / terminate_process
@@ -159,8 +163,11 @@ continue / terminate / grace-period일 수 있으며, “소켓이 닫힘 ⇒ �
 
 오늘은 워크스페이스 쓰기 잠금 하나와 셸 점유로 충분합니다. App Server는
 자원별로 직렬화합니다(배타 대 공유 읽기). 목표 범위는 Environment,
-Workspace, Path, Process, Operation, Watch이며 Thread가 아닙니다. 이
-작업 패키지에서 `crates/store`를 바꾸지 마세요.
+Workspace, Path, Process, Operation, Watch이며 Thread가 아닙니다.
+`crates/store`는 이제 그 키를 위한 메모리 자원 직렬화기를 씁니다.
+SQLite 스키마는 그대로입니다. MVP는 여전히 `apply_patch`와 라이브 셸에
+워크스페이스 배타를 씁니다(`WORKSPACE_BUSY`). `read` / `find`는 공유이며
+잠금이 없습니다.
 
 ## `fs/watch`와 검색
 
@@ -208,14 +215,17 @@ Approval → policy + human, Attachment → artifact 리소스.
 
 ## 로드맵 (구현은 나중)
 
-이 작업 패키지는 문서와 의존성 검사뿐입니다.
+이 기반의 P0 코드는 들어와 있습니다. Runner exec DTO **형태**,
+`crates/policy`의 `PermissionProfile`과 Environment, 자원 직렬화기,
+선택적 `ContainerRunner` + `codespace-codex-runtime`(process-hardening +
+UDS). MCP 스키마는 그대로입니다.
 
-**P0** — 이미 있거나 다음 코드 WP: `codex-apply-patch`(완료), Runner
-DTO의 exec 런타임 **형태**, `crates/policy`의 PermissionProfile 도메인,
-Environment 도메인(운영자 등록, 아직 도구 인자 아님), 자원 직렬화기,
-그다음 단계적 서브그래프를 받는 전송(`ContainerRunner`)
-(process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
-network).
+**P0** — 착수했거나 다음 서브그래프 WP: `codex-apply-patch`(완료),
+Runner DTO의 exec 런타임 **형태**(완료), `crates/policy`의
+PermissionProfile 도메인(완료), Environment 도메인(운영자 등록, 도구
+인자 아님)(완료), 자원 직렬화기(완료), process-hardening + UDS를 받는
+전송(`ContainerRunner`)(완료, 선택적). 아직 밖: PTY → filesystem →
+linux-sandbox → network.
 
 **P1** — 작업 상태 기계 / diff 원장, 승인 폴백 도구, 내부 watch, 더
 풍부한 프로세스 핸들(resize, caps), 연결 끊김 정책.
@@ -225,7 +235,7 @@ network).
 
 **P3** — 원격 환경, MCP 연합, 아티팩트 레지스트리.
 
-다음 **코드** WP는 기존 트레이트 뒤의 Runner **전송**으로 남으며,
+다음 **코드** WP는 기존 트레이트 뒤의 남은 실행 서브그래프이며,
 `apply_patch`를 게이트웨이 RPC로 쪼개지 않습니다. Sandbox / PTY /
 network는 기본 자체 OS 스택이 아닙니다
 ([codex-reuse.md](codex-reuse.md)).
