@@ -30,7 +30,6 @@ codespace-store = { path = "../store" }
 rmcp = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "io-util", "net", "time", "process", "sync"] }
 tokio-util = "0.7"
-libc = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"

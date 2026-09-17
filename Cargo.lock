@@ -344,7 +344,6 @@ dependencies = [
  "codespace-runner",
  "codespace-store",
  "http",
- "libc",
  "reqwest 0.12.28",
  "rmcp",
  "schemars",

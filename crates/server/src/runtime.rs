@@ -11,13 +11,13 @@ use codespace_store::Store;
 use tokio::net::UnixStream;
 use tokio::process::Command;
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
 pub struct RuntimeProcess {
-    pid: u32,
     dir: PathBuf,
     socket: PathBuf,
     shutdown: Arc<Notify>,
-    wait: Option<tokio::task::JoinHandle<()>>,
+    wait: Option<JoinHandle<()>>,
 }
 
 impl RuntimeProcess {
@@ -36,9 +36,6 @@ impl RuntimeProcess {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("spawn {}", bin.display()))?;
-        let pid = child
-            .id()
-            .ok_or_else(|| anyhow!("worker pid missing after spawn"))?;
         let shutdown = Arc::new(Notify::new());
         let wait_shutdown = shutdown.clone();
         let wait_store = store.clone();
@@ -52,7 +49,7 @@ impl RuntimeProcess {
             }
             wait_store.release_all_processes();
         });
-        let stream = wait_for_socket(&socket, pid).await?;
+        let stream = wait_for_socket(&socket, &wait).await?;
         let kill = shutdown.clone();
         let runner = UdsRunner::from_stream_with_disconnect(
             stream,
@@ -67,7 +64,6 @@ impl RuntimeProcess {
             .map_err(|err| anyhow!("runner hello: {err}"))?;
         Ok((
             Self {
-                pid,
                 dir,
                 socket,
                 shutdown,
@@ -99,10 +95,6 @@ impl RuntimeProcess {
         Ok(runner)
     }
 
-    pub fn pid(&self) -> u32 {
-        self.pid
-    }
-
     pub fn socket(&self) -> &Path {
         &self.socket
     }
@@ -113,7 +105,6 @@ impl RuntimeProcess {
 
     pub async fn wait_exit(&mut self) {
         self.shutdown.notify_one();
-        kill_pid(self.pid);
         if let Some(wait) = self.wait.take() {
             let _ = wait.await;
         }
@@ -123,15 +114,14 @@ impl RuntimeProcess {
 impl Drop for RuntimeProcess {
     fn drop(&mut self) {
         self.shutdown.notify_one();
-        kill_pid(self.pid);
         let _ = std::fs::remove_file(&self.socket);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
-async fn wait_for_socket(socket: &Path, pid: u32) -> Result<UnixStream> {
+async fn wait_for_socket(socket: &Path, wait: &JoinHandle<()>) -> Result<UnixStream> {
     for _ in 0..100 {
-        if !pid_alive(pid) {
+        if wait.is_finished() {
             return Err(anyhow!("worker exited before the runner socket was ready"));
         }
         match UnixStream::connect(socket).await {
@@ -140,18 +130,6 @@ async fn wait_for_socket(socket: &Path, pid: u32) -> Result<UnixStream> {
         }
     }
     Err(anyhow!("worker socket not ready at {}", socket.display()))
-}
-
-fn pid_alive(pid: u32) -> bool {
-    // SAFETY: signal 0 only checks whether `pid` exists.
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-fn kill_pid(pid: u32) {
-    // SAFETY: `pid` is a child we spawned.
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
 }
 
 #[cfg(test)]
@@ -175,23 +153,9 @@ mod tests {
             RuntimeProcess::spawn(&bin, None, Arc::new(|_| {}), store.clone())
                 .await
                 .expect("spawn runtime");
-        let pid = proc.pid();
         let dir = proc.dir().to_path_buf();
         proc.wait_exit().await;
         drop(proc);
-        for _ in 0..50 {
-            if !pid_alive(pid) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(!pid_alive(pid), "worker pid {pid} still alive");
-        for _ in 0..50 {
-            if store.try_acquire_write("demo").is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
         let _lease = store
             .try_acquire_write("demo")
             .expect("process leases released after worker death");
