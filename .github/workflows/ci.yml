@@ -27,6 +27,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Upstream pin
+        run: PIN_ONLY=1 ./scripts/check-upstream-pin.sh
       - name: Format
         run: |
           cargo fmt --check
@@ -35,11 +37,9 @@ jobs:
         run: |
           cargo clippy --all-targets -- -D warnings
           cargo clippy --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
-      - name: Upstream pin
-        run: PIN_ONLY=1 ./scripts/check-upstream-pin.sh
       - name: Test
         run: |
-          ./scripts/check-upstream-pin.sh
+          cargo test --manifest-path crates/patch/Cargo.toml
           cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch
           export CODESPACE_PATCH_BIN="${PWD}/crates/patch/target/debug/codespace-patch"
           cargo test --workspace

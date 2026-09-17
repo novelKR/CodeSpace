@@ -38,10 +38,12 @@ bump. Re-check graphs after a deliberate W13 update.
 
 CI: `policy-scan` job runs `scripts/check-no-model-deps.sh` **without**
 submodules, in parallel with `rust`. Core manifests may not declare
-`codex-*` deps. Core sources keep the agent/model grep. `crates/patch`,
-future `crates/codex-runtime`, and `third_party/codex` are out of
-scope. `SCAN_BASE` limits the tree to the update range; unknown range
-scans all core crates. Clippy/tests still always run.
+`codex-*` deps. Core sources keep the agent/model grep. Isolated
+adapter manifests (`crates/patch`, later `crates/codex-runtime`) use an
+**allowlist**; `third_party/codex` sources are never scanned.
+`SCAN_BASE` limits the tree to the update range; unknown range scans
+all core crates and adapter manifests. Clippy/tests still always run.
+The rust job checks the pin SHA (`PIN_ONLY=1`) **before** fmt/clippy.
 
 ## Invariant
 

@@ -161,17 +161,21 @@ checkout and cargo, not this grep.
 | core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter | `crates/patch`, later `crates/codex-runtime` | — | never (approved subgraph) |
+| adapter manifests | `crates/patch/Cargo.toml`; later `crates/codex-runtime` | tiny | adapter in the update range; allowlist only |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 Update range is `SCAN_BASE` (PR base / previous `main`). Unknown range
-scans **all** core crates (never skip because the diff failed). Docs-only
-changes skip this job with exit 0; the rust job still runs.
+scans **all** core crates and adapter manifests (never skip because the
+diff failed). Docs-only changes skip this job with exit 0; the rust
+job still runs.
 
-Manifests forbid any `codex-` dependency key. Sources keep the
-agent/model patterns (`api.openai.com`, Responses, `codex-login`,
-`codex-core`, `codex-app-server`, `async-openai`). Comments that mention
-a crate name are not cargo deps.
+Core manifests forbid any `codex-` dependency key. Adapter manifests
+allow only the approved subgraph (`crates/patch` today:
+`codex-apply-patch`, `codex-exec-server` as apply-patch workspace
+graph, `codex-utils-path-uri`). Sources keep the agent/model patterns
+(`api.openai.com`, Responses, `codex-login`, `codex-core`,
+`codex-app-server`, `async-openai`). Comments that mention a crate
+name are not cargo deps.
 
 Do **not** wrap the standalone `apply_patch` binary as a security
 boundary. Do **not** wrap Codex App Server as an internal backend.

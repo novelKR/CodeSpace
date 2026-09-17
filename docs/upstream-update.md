@@ -52,8 +52,10 @@ There is **no** path that marks a failed parity run as success.
 Exit non-zero if the submodule SHA mismatches the lock file or if
 `cargo test --manifest-path crates/patch/Cargo.toml` fails.
 
-`PIN_ONLY=1 ./scripts/check-upstream-pin.sh` checks the SHA only
-(used by CI before the existing full test step).
+`PIN_ONLY=1 ./scripts/check-upstream-pin.sh` checks the SHA only.
+CI runs that **before** fmt/clippy, then runs patch tests without
+re-checking the SHA. Locally, the unprefixed script still does SHA +
+`crates/patch` tests.
 
 ## Forbidden
 
