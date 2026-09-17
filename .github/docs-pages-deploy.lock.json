@@ -2,6 +2,6 @@
   "schema": "docs-pages-consumer-lock/v1",
   "repository": "novelKR/docs-actions",
   "workflow": ".github/workflows/reusable-pages-deploy.yml",
-  "commit": "95595986ae945fd9fabc4632e6e370adf6709ddf",
-  "workflow_sha256": "1272c78bee71aded3856b0e5fd81fe49d8f37830d44e9ed0e6b9e4a25698e4ba"
+  "commit": "e110843b00303c1418cf8950ba8c5789acc31cbe",
+  "workflow_sha256": "74419dfb5d506177e3d04a97175148b6652032188ada02d0245873504d235f9e"
 }
