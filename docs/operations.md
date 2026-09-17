@@ -79,7 +79,9 @@ the effective execution contract (`execution`): policy vs backend support,
 existence is `tools_exposed`), fixed 24x80 PTY without resize when a
 process is available, mutation lease / `WORKSPACE_BUSY`, workspace-scoped
 file tools vs no command sandbox, and restricted network policy without
-OS enforcement. `exec_command` returns `dispatch_status`
+OS enforcement. `output_combined=true` means `read_process` exposes one
+combined stream; stdout/stderr identity is not preserved. `exec_command`
+returns `dispatch_status`
 (`confirmed` or `unknown`). Treat `unknown` patch/exec as possibly
 executed; do not retry the same mutation under a new `operation_key`.
 

@@ -132,6 +132,11 @@ exec_command / write_stdin / read_process / terminate_process
 `dispatch_status`를 실습니다. architecture 매뉴얼, Codex crate 그래프,
 UDS 와이어를 클라이언트 계약에 넣지 마세요.
 
+`output_combined=true`는 `read_process`가 하나의 combined output stream만
+노출한다는 뜻입니다. stdout/stderr origin은 보존하지 않습니다. pipe
+프로세스는 stdout과 stderr를 독립적으로 pump하므로 둘 사이의 상대
+순서는 보장하지 않습니다. PTY 출력은 terminal master stream입니다.
+
 `codex-exec`(제품 exec 흐름)를 가져오거나 App Server를 넣지 **마세요**.
 `codex-exec-server-protocol`은 내부 워커 DTO 후보입니다.
 `codex-exec-server`는 실험적 백엔드(`codex-api` / `codex-config`)이며

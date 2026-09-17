@@ -3,14 +3,18 @@ use std::sync::Arc;
 
 use codespace_domain::{
     workspace_info, ApplyPatchParams, ApplyPatchResult, ClientEnvironmentKind, CoordinationHint,
-    ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ExecDispatchStatus, FindParams,
-    FindResult, OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ReadParams,
+    EffectivePermissionInfo, EnvironmentExecutionInfo, ErrorBody, ErrorCode, ExecCommandParams,
+    ExecCommandResult, ExecDispatchStatus, FindParams, FindResult, NetworkPolicyState,
+    OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ReadParams,
     ReadProcessParams, ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams,
     SteerStatusResult, TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams,
     WorkOpenParams, WorkOpenResult, WorkspaceExecutionInfo, WorkspaceInfo, WorkspaceInfoParams,
     WriteStdinParams,
 };
-use codespace_policy::{allow, Action, ClientClaims, EnvironmentKind, Registry};
+use codespace_policy::{
+    allow, Action, ClientClaims, EnvironmentKind, NetworkAxis, PermissionProfile, Registry,
+    Workspace,
+};
 use codespace_runner::{
     Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest, RunnerReadProcess,
     RunnerWriteStdin, RuntimeBackend,
@@ -480,6 +484,34 @@ fn client_environment_kind(kind: EnvironmentKind) -> ClientEnvironmentKind {
     }
 }
 
+fn client_network_policy(axis: NetworkAxis) -> NetworkPolicyState {
+    match axis {
+        NetworkAxis::Restricted => NetworkPolicyState::Restricted,
+        NetworkAxis::Enabled => NetworkPolicyState::Enabled,
+    }
+}
+
+fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
+    let policy = PermissionProfile::from_workspace_profile(ws.profile);
+    let permissions = EffectivePermissionInfo {
+        read: policy.allows(Action::Read),
+        write: policy.allows(Action::Write),
+        exec: policy.allows(Action::Exec),
+    };
+    let supported = ws.environment_kind.execution_supported();
+    let environment = EnvironmentExecutionInfo {
+        kind: client_environment_kind(ws.environment_kind),
+        client_selectable: false,
+        exec_supported: supported,
+        patch_supported: supported,
+    };
+    WorkspaceExecutionInfo::from_effective(
+        environment,
+        permissions,
+        client_network_policy(policy.network),
+    )
+}
+
 fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {
     let Some(id) = workspace_id.filter(|s| !s.is_empty()) else {
         return Ok(workspace_info(None));
@@ -488,10 +520,7 @@ fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<Workspace
     let mut info = workspace_info(Some(id));
     info.profile = Some(ws.profile);
     info.root = Some(ws.root.display().to_string());
-    info.execution = Some(WorkspaceExecutionInfo::for_registered(
-        ws.profile,
-        client_environment_kind(ws.environment_kind),
-    ));
+    info.execution = Some(workspace_execution_info(ws));
     info.note = format!(
         "workspace_id is a selector, not a credential. profile={:?}",
         ws.profile
@@ -567,6 +596,22 @@ mod tests {
         registry
     }
 
+    fn assert_advertised_matches_policy(ws: &Workspace, exec: &WorkspaceExecutionInfo) {
+        let policy = PermissionProfile::from_workspace_profile(ws.profile);
+        assert_eq!(exec.permissions.read, policy.allows(Action::Read));
+        assert_eq!(exec.permissions.write, policy.allows(Action::Write));
+        assert_eq!(exec.permissions.exec, policy.allows(Action::Exec));
+        assert_eq!(exec.network.policy, client_network_policy(policy.network));
+        assert_eq!(
+            exec.environment.exec_supported,
+            ws.environment_kind.execution_supported()
+        );
+        assert_eq!(
+            exec.environment.patch_supported,
+            ws.environment_kind.execution_supported()
+        );
+    }
+
     fn assert_instructions_cover_execution_contract(text: &str) {
         assert!(text.contains("never calls a model"), "{text}");
         assert!(
@@ -613,12 +658,10 @@ mod tests {
     #[test]
     fn workspace_info_host_write_exposes_execution() {
         let dir = tempfile::tempdir().unwrap();
-        let info = lookup(
-            &write_registry(dir.path().to_path_buf()),
-            Some("demo".into()),
-        )
-        .unwrap();
+        let registry = write_registry(dir.path().to_path_buf());
+        let info = lookup(&registry, Some("demo".into())).unwrap();
         let exec = info.execution.as_ref().expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), exec);
         assert_eq!(exec.environment.kind, ClientEnvironmentKind::Host);
         assert!(!exec.environment.client_selectable);
         assert!(exec.environment.exec_supported);
@@ -653,6 +696,7 @@ mod tests {
             .unwrap()
             .execution
             .expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
         assert!(exec.permissions.read);
         assert!(!exec.permissions.write);
         assert!(!exec.permissions.exec);
@@ -679,6 +723,7 @@ mod tests {
             .unwrap()
             .execution
             .expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
         assert!(exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
         assert!(!exec.environment.patch_supported);
@@ -704,6 +749,7 @@ mod tests {
             .unwrap()
             .execution
             .expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
         assert!(!exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
         assert!(!exec.process.available);

@@ -144,6 +144,52 @@ async fn exec_echo_is_readable_and_unknown_id_is_rejected() {
 }
 
 #[tokio::test]
+async fn pipe_exec_combines_stdout_and_stderr_without_order() {
+    let (_root, cfg) = write_workspace("workspace-write");
+    let client = spawn_client(&cfg, false, &[]).await;
+    let started = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sh", "-c", "echo OUT-MARKER; echo ERR-MARKER >&2"]
+            })),
+        )
+        .await
+        .expect("exec");
+    let pid = payload(&started)["process_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut chunk = String::new();
+    for _ in 0..50 {
+        let read = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_READ_PROCESS)
+                    .with_arguments(object!({ "process_id": pid, "cursor": 0 })),
+            )
+            .await
+            .expect("read");
+        let out = payload(&read);
+        chunk = out["chunk"].as_str().unwrap_or("").to_string();
+        if chunk.contains("OUT-MARKER") && chunk.contains("ERR-MARKER") {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        chunk.contains("OUT-MARKER") && chunk.contains("ERR-MARKER"),
+        "combined stream must include both stdout and stderr markers, got {chunk:?}"
+    );
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_TERMINATE_PROCESS)
+                .with_arguments(object!({ "process_id": pid })),
+        )
+        .await;
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
 async fn live_shell_blocks_patch_and_second_exec() {
     let (root, cfg) = write_workspace("workspace-write");
     std::fs::write(root.path().join("ws").join("note.txt"), "hi").unwrap();

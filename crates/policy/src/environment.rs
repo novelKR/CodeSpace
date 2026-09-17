@@ -16,6 +16,13 @@ pub enum EnvironmentKind {
     LinuxContainer,
 }
 
+impl EnvironmentKind {
+    /// Backend currently implements exec/patch for this environment.
+    pub fn execution_supported(self) -> bool {
+        matches!(self, Self::Host)
+    }
+}
+
 impl std::fmt::Display for EnvironmentKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -59,9 +66,10 @@ impl EnvironmentDispatchError {
 }
 
 pub fn require_host_execution(kind: EnvironmentKind) -> Result<(), EnvironmentDispatchError> {
-    match kind {
-        EnvironmentKind::Host => Ok(()),
-        EnvironmentKind::LinuxContainer => Err(EnvironmentDispatchError::UnsupportedKind { kind }),
+    if kind.execution_supported() {
+        Ok(())
+    } else {
+        Err(EnvironmentDispatchError::UnsupportedKind { kind })
     }
 }
 
@@ -71,11 +79,13 @@ mod tests {
 
     #[test]
     fn host_is_allowed() {
+        assert!(EnvironmentKind::Host.execution_supported());
         assert!(require_host_execution(EnvironmentKind::Host).is_ok());
     }
 
     #[test]
     fn linux_container_is_closed_failure() {
+        assert!(!EnvironmentKind::LinuxContainer.execution_supported());
         let err = require_host_execution(EnvironmentKind::LinuxContainer).unwrap_err();
         let body = err.into_error_body();
         assert_eq!(body.code, ErrorCode::Unauthorized);

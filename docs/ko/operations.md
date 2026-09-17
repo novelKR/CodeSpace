@@ -81,6 +81,8 @@ spawn입니다. `exec_command.tty` 기본값은 false(파이프)입니다.
 `tools_exposed`), process가 가능할 때 resize 없는 고정 24x80 PTY,
 mutation lease / `WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대
 command sandbox 없음, OS 강제 없는 restricted 네트워크 정책입니다.
+`output_combined=true`는 `read_process`가 하나의 combined stream만
+노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
 `exec_command`는 `dispatch_status`(`confirmed` 또는
 `unknown`)를 반환합니다. `unknown` patch/exec는 실행됐을 수 있으니 새
 `operation_key`로 같은 mutation을 재시도하지 마세요.

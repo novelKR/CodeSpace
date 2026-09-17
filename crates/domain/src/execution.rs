@@ -5,7 +5,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ErrorCode;
-use crate::profile::Profile;
 
 /// Advertised PTY size. Must match the isolated PTY adapter default.
 pub const PTY_INITIAL_ROWS: u16 = 24;
@@ -36,23 +35,6 @@ pub struct EffectivePermissionInfo {
     pub exec: bool,
 }
 
-impl EffectivePermissionInfo {
-    pub fn from_profile(profile: Profile) -> Self {
-        match profile {
-            Profile::ReadOnly => Self {
-                read: true,
-                write: false,
-                exec: false,
-            },
-            Profile::WorkspaceWrite => Self {
-                read: true,
-                write: true,
-                exec: true,
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PtyCapabilityInfo {
     pub supported: bool,
@@ -69,6 +51,12 @@ pub struct ProcessCapabilityInfo {
     pub write_stdin: bool,
     pub incremental_read: bool,
     pub terminate: bool,
+    /// `read_process` exposes one output stream.
+    ///
+    /// stdout/stderr source identity is not preserved. For pipe-backed
+    /// processes stdout and stderr are pumped independently, so their
+    /// relative ordering is not guaranteed. PTY output is the terminal
+    /// master stream.
     pub output_combined: bool,
     pub tty: PtyCapabilityInfo,
 }
@@ -138,16 +126,13 @@ pub struct WorkspaceExecutionInfo {
 }
 
 impl WorkspaceExecutionInfo {
-    /// Effective contract for a registered workspace. `kind` is operator-selected.
-    pub fn for_registered(profile: Profile, kind: ClientEnvironmentKind) -> Self {
-        let backend_exec_supported = matches!(kind, ClientEnvironmentKind::Host);
-        let environment = EnvironmentExecutionInfo {
-            kind,
-            client_selectable: false,
-            exec_supported: backend_exec_supported,
-            patch_supported: backend_exec_supported,
-        };
-        let permissions = EffectivePermissionInfo::from_profile(profile);
+    /// Assemble the advertised contract from already-evaluated axes.
+    /// `process.available` is `permissions.exec && environment.exec_supported`.
+    pub fn from_effective(
+        environment: EnvironmentExecutionInfo,
+        permissions: EffectivePermissionInfo,
+        network_policy: NetworkPolicyState,
+    ) -> Self {
         let process_available = permissions.exec && environment.exec_supported;
         let process = ProcessExecutionInfo {
             available: process_available,
@@ -184,7 +169,7 @@ impl WorkspaceExecutionInfo {
                 command_sandbox: CommandSandboxState::None,
             },
             network: NetworkInfo {
-                policy: NetworkPolicyState::Restricted,
+                policy: network_policy,
                 enforcement: NetworkEnforcementState::None,
                 client_may_escalate: false,
             },
@@ -196,6 +181,27 @@ impl WorkspaceExecutionInfo {
 mod tests {
     use super::*;
 
+    fn environment(kind: ClientEnvironmentKind, supported: bool) -> EnvironmentExecutionInfo {
+        EnvironmentExecutionInfo {
+            kind,
+            client_selectable: false,
+            exec_supported: supported,
+            patch_supported: supported,
+        }
+    }
+
+    fn compose(
+        kind: ClientEnvironmentKind,
+        supported: bool,
+        permissions: EffectivePermissionInfo,
+    ) -> WorkspaceExecutionInfo {
+        WorkspaceExecutionInfo::from_effective(
+            environment(kind, supported),
+            permissions,
+            NetworkPolicyState::Restricted,
+        )
+    }
+
     fn assert_process_unavailable(exec: &WorkspaceExecutionInfo) {
         assert!(!exec.process.available);
         assert!(exec.process.capabilities.is_none());
@@ -206,22 +212,19 @@ mod tests {
 
     #[test]
     fn host_workspace_write_advertises_exec_and_fixed_pty() {
-        let exec = WorkspaceExecutionInfo::for_registered(
-            Profile::WorkspaceWrite,
+        let exec = compose(
             ClientEnvironmentKind::Host,
+            true,
+            EffectivePermissionInfo {
+                read: true,
+                write: true,
+                exec: true,
+            },
         );
         assert_eq!(exec.environment.kind, ClientEnvironmentKind::Host);
         assert!(!exec.environment.client_selectable);
         assert!(exec.environment.exec_supported);
         assert!(exec.environment.patch_supported);
-        assert_eq!(
-            exec.permissions,
-            EffectivePermissionInfo {
-                read: true,
-                write: true,
-                exec: true,
-            }
-        );
         assert!(exec.process.available);
         let caps = exec.process.capabilities.as_ref().expect("capabilities");
         assert!(caps.tty.supported);
@@ -247,15 +250,14 @@ mod tests {
 
     #[test]
     fn host_read_only_denies_write_and_exec() {
-        let exec =
-            WorkspaceExecutionInfo::for_registered(Profile::ReadOnly, ClientEnvironmentKind::Host);
-        assert_eq!(
-            exec.permissions,
+        let exec = compose(
+            ClientEnvironmentKind::Host,
+            true,
             EffectivePermissionInfo {
                 read: true,
                 write: false,
                 exec: false,
-            }
+            },
         );
         assert!(exec.environment.exec_supported);
         assert_process_unavailable(&exec);
@@ -263,9 +265,14 @@ mod tests {
 
     #[test]
     fn linux_container_write_permits_exec_policy_but_not_backend() {
-        let exec = WorkspaceExecutionInfo::for_registered(
-            Profile::WorkspaceWrite,
+        let exec = compose(
             ClientEnvironmentKind::LinuxContainer,
+            false,
+            EffectivePermissionInfo {
+                read: true,
+                write: true,
+                exec: true,
+            },
         );
         assert!(exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
@@ -280,9 +287,14 @@ mod tests {
 
     #[test]
     fn linux_container_read_only_is_unavailable() {
-        let exec = WorkspaceExecutionInfo::for_registered(
-            Profile::ReadOnly,
+        let exec = compose(
             ClientEnvironmentKind::LinuxContainer,
+            false,
+            EffectivePermissionInfo {
+                read: true,
+                write: false,
+                exec: false,
+            },
         );
         assert!(!exec.permissions.exec);
         assert!(!exec.environment.exec_supported);
