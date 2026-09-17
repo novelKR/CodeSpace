@@ -1,5 +1,7 @@
 # CodeSpace
 
+[English](README.md) | [한국어](README.ko.md)
+
 Personal **execution-tools MCP server**. ChatGPT, Cursor, or another MCP
 client decides what to do. This process reads workspace files, applies
 Codex-format patches through a pinned Rust `codex-apply-patch` engine,
