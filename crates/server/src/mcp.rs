@@ -4,13 +4,13 @@ use std::sync::Arc;
 use codespace_domain::{
     workspace_info, ApplyPatchParams, ApplyPatchResult, CoordinationHint, ErrorBody, ErrorCode,
     ExecCommandParams, ExecCommandResult, FindParams, FindResult, OperationStatusParams,
-    OperationStatusResult, PatchStatus, ReadParams, ReadProcessParams, ReadProcessResult,
-    ReadResult, SteerClaimNextResult, SteerCompleteParams, SteerStatusResult,
+    OperationStatusResult, PatchStatus, ProcessId, ReadParams, ReadProcessParams,
+    ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams, SteerStatusResult,
     TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams, WorkOpenParams, WorkOpenResult,
     WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
 };
-use codespace_policy::{Action, ClientClaims, Registry};
-use codespace_runner::PathSandbox;
+use codespace_policy::{allow, Action, ClientClaims, Registry};
+use codespace_runner::{InProcessRunner, PathSandbox, Runner};
 use codespace_store::{Begin, Store};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -21,9 +21,9 @@ use rmcp::{
     service::RequestContext,
     tool, tool_handler, tool_router, ErrorData as McpError, Json, RoleServer, ServerHandler,
 };
+use uuid::Uuid;
 
 use crate::protocol::{NegotiatedFeatures, CORE_BASELINE, SUPPORTED_PROTOCOL_VERSIONS};
-use crate::supervisor::Supervisor;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -33,7 +33,7 @@ pub struct CodeSpace {
     tool_router: ToolRouter<Self>,
     pub(crate) registry: Registry,
     pub(crate) store: Arc<Store>,
-    pub(crate) supervisor: Supervisor,
+    pub(crate) runner: InProcessRunner,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -57,12 +57,15 @@ impl CodeSpace {
     }
 
     pub fn with_store(registry: Registry, store: Arc<Store>) -> Self {
-        let supervisor = Supervisor::new(store.clone());
+        let store_for_lease = store.clone();
+        let runner = InProcessRunner::new(Arc::new(move |workspace_id| {
+            store_for_lease.clear_shell(workspace_id);
+        }));
         Self {
             tool_router: Self::tool_router(),
             registry,
             store,
-            supervisor,
+            runner,
         }
     }
 
@@ -123,7 +126,7 @@ impl CodeSpace {
 
     #[tool(
         name = "apply_patch",
-        description = "Apply a Codex V4A patch. check_only verifies without writing. status applied means disk matches. Never falls back to git apply."
+        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply."
     )]
     async fn apply_patch(
         &self,
@@ -137,33 +140,51 @@ impl CodeSpace {
 
     #[tool(
         name = "operation_status",
-        description = "Look up a server-minted operation_id. Does not re-run the operation. Distinct from HTTP request ids."
+        description = "Look up an operation by exactly one of operation_id or operation_key. Does not re-run the operation. Distinct from HTTP request ids."
     )]
     async fn operation_status(
         &self,
         Parameters(params): Parameters<OperationStatusParams>,
     ) -> Result<Json<OperationStatusResult>, String> {
         self.store
-            .status(&params.operation_id)
+            .status_lookup(params.operation_id.as_ref(), params.operation_key.as_ref())
             .map(Json)
             .map_err(err_json)
     }
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. Returns a server-minted process_id. Does not use a login shell. Request end does not kill the process."
+        description = "Start a managed argv in the workspace cwd. Returns a server-minted process_id. Does not use a login shell. Request end does not kill the process. Host process today."
     )]
     async fn exec_command(
         &self,
         Parameters(params): Parameters<ExecCommandParams>,
     ) -> Result<Json<ExecCommandResult>, String> {
-        self.supervisor
-            .exec(&self.registry, params.clone())
-            .map(|mut result| {
+        let ws = self
+            .registry
+            .get(&params.workspace_id.0)
+            .map_err(err_json)?;
+        allow(ws, Action::Exec, &ClientClaims::default()).map_err(err_json)?;
+        if params.command.is_empty() || params.command[0].is_empty() {
+            return Err(err_json(ErrorBody::new(
+                ErrorCode::InvalidPatch,
+                "command must be a non-empty argv (no shell)",
+            )));
+        }
+        let process_id = ProcessId(format!("proc-{}", Uuid::new_v4()));
+        self.store
+            .mark_shell_busy(&params.workspace_id.0, &process_id.0)
+            .map_err(err_json)?;
+        match self.runner.exec(ws, process_id, &params) {
+            Ok(mut result) => {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
-                Json(result)
-            })
-            .map_err(err_json)
+                Ok(Json(result))
+            }
+            Err(err) => {
+                self.store.clear_shell(&params.workspace_id.0);
+                Err(err_json(err))
+            }
+        }
     }
 
     #[tool(
@@ -174,7 +195,7 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<WriteStdinParams>,
     ) -> Result<Json<OkBody>, String> {
-        self.supervisor
+        self.runner
             .write_stdin(params.clone())
             .await
             .map(|_| {
@@ -194,8 +215,8 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<ReadProcessParams>,
     ) -> Result<Json<ReadProcessResult>, String> {
-        self.supervisor
-            .read(params.clone())
+        self.runner
+            .read_process(params.clone())
             .map(|mut result| {
                 result.coordination = self.process_hint(&params.process_id.0);
                 Json(result)
@@ -211,7 +232,7 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<TerminateProcessParams>,
     ) -> Result<Json<OkBody>, String> {
-        self.supervisor
+        self.runner
             .terminate(params.clone())
             .map(|_| {
                 Json(OkBody {
@@ -316,19 +337,13 @@ impl CodeSpace {
                 params.work_id.as_ref(),
             )),
             Begin::Fresh(operation_id) => {
-                let result = match self.execute_patch(ws, &params, operation_id.clone()) {
+                let result = match self.execute_patch(ws, &params, operation_id.clone()).await {
                     Ok(result) => result,
                     Err(err) => {
-                        let failed = ApplyPatchResult {
-                            status: PatchStatus::Rejected,
-                            operation_id: operation_id.clone(),
-                            replayed: false,
-                            files: Vec::new(),
-                            work_id: None,
-                            coordination: None,
-                        };
+                        let failed =
+                            ApplyPatchResult::new(PatchStatus::Rejected, operation_id.clone());
                         let _ = self.store.finish(&operation_id, &failed);
-                        return Err(err);
+                        return Err(err.with_operation_id(operation_id.0));
                     }
                 };
                 self.store.finish(&operation_id, &result)?;
@@ -345,7 +360,7 @@ impl CodeSpace {
     }
 
     fn process_hint(&self, process_id: &str) -> Option<CoordinationHint> {
-        let ws = self.supervisor.workspace_of(process_id)?;
+        let ws = self.runner.workspace_of(process_id)?;
         self.hint(&ws, None)
     }
 
@@ -360,7 +375,7 @@ impl CodeSpace {
         result
     }
 
-    fn execute_patch(
+    async fn execute_patch(
         &self,
         ws: &codespace_policy::Workspace,
         params: &ApplyPatchParams,
@@ -377,34 +392,34 @@ impl CodeSpace {
             }
         }
         if params.check_only {
-            let files = crate::patch_helper::preflight(&ws.root, &params.patch)?;
+            let preview = crate::patch_helper::preflight(&ws.root, &params.patch).await?;
+            let (changes, _) = crate::patch_verify::overlay_before(&sandbox, &preview.changes)?;
             return Ok(ApplyPatchResult {
-                status: PatchStatus::Rejected,
+                status: PatchStatus::Checked,
                 operation_id,
                 replayed: false,
-                files,
+                files: preview.files,
+                changes,
                 work_id: None,
                 coordination: None,
             });
         }
-        let planned = crate::patch_helper::preflight(&ws.root, &params.patch)?;
-        let snaps = crate::rollback::snapshot(&sandbox, &planned)?;
-        match crate::patch_helper::apply(&ws.root, &params.patch, false) {
-            Ok(files) => {
-                for path in &files {
-                    let after = sandbox.read_file(path)?;
-                    if after.path != *path {
-                        return Err(ErrorBody::new(
-                            ErrorCode::InvalidPatch,
-                            format!("apply listed {path} but read returned {}", after.path),
-                        ));
-                    }
-                }
+        let planned = crate::patch_helper::preflight(&ws.root, &params.patch).await?;
+        let (_, before) = crate::patch_verify::overlay_before(&sandbox, &planned.changes)?;
+        let snaps = crate::rollback::snapshot(&sandbox, &planned.files)?;
+        match crate::patch_helper::apply(&ws.root, &params.patch, false).await {
+            Ok(applied) => {
+                let changes = crate::patch_verify::verify_disk_matches_claimed(
+                    &sandbox,
+                    &applied.changes,
+                    &before,
+                )?;
                 Ok(ApplyPatchResult {
                     status: PatchStatus::Applied,
                     operation_id,
                     replayed: false,
-                    files,
+                    files: applied.files,
+                    changes,
                     work_id: None,
                     coordination: None,
                 })
@@ -419,7 +434,8 @@ impl CodeSpace {
                     },
                     operation_id,
                     replayed: false,
-                    files: planned,
+                    files: planned.files,
+                    changes: planned.changes,
                     work_id: None,
                     coordination: None,
                 })

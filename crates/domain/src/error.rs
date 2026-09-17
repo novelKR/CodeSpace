@@ -21,7 +21,6 @@ pub enum ErrorCode {
     ProcessNotFound,
     OutputLimit,
     Timeout,
-    CheckOnlyConflict,
     WorkNotFound,
     WorkClosed,
     IntentNotFound,
@@ -46,6 +45,11 @@ impl ErrorBody {
             message: message.into(),
             operation_id: None,
         }
+    }
+
+    pub fn with_operation_id(mut self, id: impl Into<String>) -> Self {
+        self.operation_id = Some(id.into());
+        self
     }
 }
 

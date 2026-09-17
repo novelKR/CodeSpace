@@ -12,6 +12,7 @@ codespace-domain = { path = "../domain" }
 codespace-policy = { path = "../policy" }
 sha2 = "0.10"
 hex = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
 
 [dev-dependencies]
 tempfile = "3"

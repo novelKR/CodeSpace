@@ -106,6 +106,10 @@ async fn preflight_rejects_without_writing() {
         conflict_text.contains("VERSION_CONFLICT") || conflict_text.contains("version"),
         "{conflict_text}"
     );
+    assert!(
+        conflict_text.contains("operation_id") && conflict_text.contains("op-"),
+        "{conflict_text}"
+    );
 
     let exists = client
         .call_tool(

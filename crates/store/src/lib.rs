@@ -198,14 +198,7 @@ impl Store {
         }
 
         let operation_id = OperationId(format!("op-{}", uuid::Uuid::new_v4()));
-        let pending = ApplyPatchResult {
-            status: PatchStatus::Unknown,
-            operation_id: operation_id.clone(),
-            replayed: false,
-            files: Vec::new(),
-            work_id: None,
-            coordination: None,
-        };
+        let pending = ApplyPatchResult::new(PatchStatus::Unknown, operation_id.clone());
         let result_json = serde_json::to_string(&pending).map_err(ser_err)?;
         let now = now_secs();
         conn.execute(
@@ -256,12 +249,41 @@ impl Store {
     }
 
     pub fn status(&self, operation_id: &OperationId) -> Result<OperationStatusResult, ErrorBody> {
-        let stored = self.get(operation_id)?;
-        Ok(OperationStatusResult {
-            operation_id: stored.operation_id,
-            status: stored.status,
-            replayed: false,
-        })
+        self.status_lookup(Some(operation_id), None)
+    }
+
+    pub fn status_lookup(
+        &self,
+        operation_id: Option<&OperationId>,
+        operation_key: Option<&OperationKey>,
+    ) -> Result<OperationStatusResult, ErrorBody> {
+        match (operation_id, operation_key) {
+            (Some(id), None) => {
+                let stored = self.get(id)?;
+                Ok(to_status(stored))
+            }
+            (None, Some(key)) => {
+                let conn = self.conn.lock().expect("sqlite mutex");
+                let stored = load_by_key(&conn, &key.0)?
+                    .map(|row| row.into_stored(false))
+                    .ok_or_else(|| {
+                        ErrorBody::new(ErrorCode::OperationNotFound, "unknown operation_key")
+                    })?;
+                Ok(to_status(stored))
+            }
+            _ => Err(ErrorBody::new(
+                ErrorCode::OperationNotFound,
+                "provide exactly one of operation_id or operation_key",
+            )),
+        }
+    }
+}
+
+fn to_status(stored: StoredOperation) -> OperationStatusResult {
+    OperationStatusResult {
+        operation_id: stored.operation_id,
+        status: stored.status,
+        replayed: false,
     }
 }
 
@@ -273,15 +295,9 @@ struct Row {
 
 impl Row {
     fn into_stored(self, replayed: bool) -> StoredOperation {
-        let mut result: ApplyPatchResult =
-            serde_json::from_str(&self.result_json).unwrap_or(ApplyPatchResult {
-                status: PatchStatus::Unknown,
-                operation_id: OperationId(self.operation_id.clone()),
-                replayed: false,
-                files: Vec::new(),
-                work_id: None,
-                coordination: None,
-            });
+        let mut result: ApplyPatchResult = serde_json::from_str(&self.result_json).unwrap_or(
+            ApplyPatchResult::new(PatchStatus::Unknown, OperationId(self.operation_id.clone())),
+        );
         result.replayed = replayed;
         StoredOperation {
             operation_id: OperationId(self.operation_id),
@@ -327,6 +343,7 @@ fn load_by_id(conn: &Connection, id: &str) -> Result<Option<Row>, ErrorBody> {
 fn status_str(status: PatchStatus) -> &'static str {
     match status {
         PatchStatus::Applied => "applied",
+        PatchStatus::Checked => "checked",
         PatchStatus::Rejected => "rejected",
         PatchStatus::FailedRolledBack => "failed_rolled_back",
         PatchStatus::FailedPartial => "failed_partial",
@@ -381,14 +398,7 @@ mod tests {
         else {
             panic!("expected fresh");
         };
-        let done = ApplyPatchResult {
-            status: PatchStatus::Rejected,
-            operation_id: id.clone(),
-            replayed: false,
-            files: vec![],
-            work_id: None,
-            coordination: None,
-        };
+        let done = ApplyPatchResult::new(PatchStatus::Rejected, id.clone());
         store.finish(&id, &done).unwrap();
         let Begin::Replayed(replay) = store
             .begin(first.operation_key.as_ref(), "demo", &fp)
@@ -427,6 +437,42 @@ mod tests {
             .get(&OperationId("op-does-not-exist".into()))
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::OperationNotFound);
+    }
+
+    #[test]
+    fn status_lookup_by_key_and_rejects_both_or_neither() {
+        let store = Store::memory().unwrap();
+        let first = params("patch-a", "lookup-1");
+        let fp = Store::fingerprint(&first);
+        let Begin::Fresh(id) = store
+            .begin(first.operation_key.as_ref(), "demo", &fp)
+            .unwrap()
+        else {
+            panic!("expected fresh");
+        };
+        store
+            .finish(
+                &id,
+                &ApplyPatchResult::new(PatchStatus::Applied, id.clone()),
+            )
+            .unwrap();
+        let by_key = store
+            .status_lookup(None, first.operation_key.as_ref())
+            .unwrap();
+        assert_eq!(by_key.operation_id, id);
+        assert_eq!(by_key.status, PatchStatus::Applied);
+        assert!(!by_key.replayed);
+        assert_eq!(
+            store.status_lookup(None, None).unwrap_err().code,
+            ErrorCode::OperationNotFound
+        );
+        assert_eq!(
+            store
+                .status_lookup(Some(&id), first.operation_key.as_ref())
+                .unwrap_err()
+                .code,
+            ErrorCode::OperationNotFound
+        );
     }
 
     #[test]

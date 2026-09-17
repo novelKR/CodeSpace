@@ -52,7 +52,7 @@ pub fn http_router(
     allowed_hosts.sort();
     allowed_hosts.dedup();
 
-    // Clone one handler so HTTP sessions share the supervisor. Request and
+    // Clone one handler so HTTP sessions share the runner. Request and
     // session end are not process death; process_id stays server-minted.
     let handler = CodeSpace::with_store(registry, store);
     let inbox = crate::inbox::router(handler.clone());

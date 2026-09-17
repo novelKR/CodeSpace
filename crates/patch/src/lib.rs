@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use codespace_domain::{ErrorBody, ErrorCode};
+use codespace_domain::{ErrorBody, ErrorCode, FileChange, FileChangeKind};
 use codespace_policy::{resolve_path, Workspace};
 use codex_apply_patch::{
     apply_patch_with_options, parse_patch, ApplyPatchFileUpdateMode, ApplyPatchOptions, Hunk,
@@ -14,9 +14,24 @@ use codex_utils_path_uri::PathUri;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyOutcome {
     pub files: Vec<String>,
+    pub changes: Vec<FileChange>,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedFile {
+    abs: PathBuf,
+    relative: String,
+    kind: FileChangeKind,
 }
 
 pub fn parse_and_policy(workspace: &Workspace, patch: &str) -> Result<Vec<PathBuf>, ErrorBody> {
+    Ok(plan_files(workspace, patch)?
+        .into_iter()
+        .map(|file| file.abs)
+        .collect())
+}
+
+fn plan_files(workspace: &Workspace, patch: &str) -> Result<Vec<PlannedFile>, ErrorBody> {
     let parsed = parse_patch(patch)
         .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
     let mut files = Vec::new();
@@ -31,29 +46,51 @@ pub fn parse_and_policy(workspace: &Workspace, patch: &str) -> Result<Vec<PathBu
                         format!("{} already exists", path.display()),
                     ));
                 }
-                files.push(dest);
+                files.push(PlannedFile {
+                    abs: dest,
+                    relative: rel_display(path),
+                    kind: FileChangeKind::Add,
+                });
             }
             Hunk::DeleteFile { path } => {
                 let dest = resolve_path(workspace, path_str(path)?)?;
                 reject_symlink_ancestors(workspace, &dest)?;
-                files.push(dest);
+                files.push(PlannedFile {
+                    abs: dest,
+                    relative: rel_display(path),
+                    kind: FileChangeKind::Delete,
+                });
             }
             Hunk::UpdateFile {
                 path, move_path, ..
             } => {
                 let dest = resolve_path(workspace, path_str(path)?)?;
                 reject_symlink_ancestors(workspace, &dest)?;
-                files.push(dest);
-                if let Some(dest) = move_path {
-                    let dest_path = resolve_path(workspace, path_str(dest)?)?;
+                if let Some(moved) = move_path {
+                    let dest_path = resolve_path(workspace, path_str(moved)?)?;
                     reject_symlink_ancestors(workspace, &dest_path)?;
                     if dest_path.exists() {
                         return Err(ErrorBody::new(
                             ErrorCode::MoveDestinationExists,
-                            format!("{} already exists", dest.display()),
+                            format!("{} already exists", moved.display()),
                         ));
                     }
-                    files.push(dest_path);
+                    files.push(PlannedFile {
+                        abs: dest,
+                        relative: rel_display(path),
+                        kind: FileChangeKind::Delete,
+                    });
+                    files.push(PlannedFile {
+                        abs: dest_path,
+                        relative: rel_display(moved),
+                        kind: FileChangeKind::Move,
+                    });
+                } else {
+                    files.push(PlannedFile {
+                        abs: dest,
+                        relative: rel_display(path),
+                        kind: FileChangeKind::Update,
+                    });
                 }
             }
         }
@@ -101,9 +138,11 @@ pub async fn apply_in_workspace(
         .root
         .canonicalize()
         .map_err(|err| ErrorBody::new(ErrorCode::PathEscape, err.to_string()))?;
+    let planned = plan_files(workspace, patch)?;
     if check_only {
         return Ok(ApplyOutcome {
             files: relative_files(&root, &files),
+            changes: planned_to_changes(&planned, false)?,
         });
     }
 
@@ -129,7 +168,46 @@ pub async fn apply_in_workspace(
 
     Ok(ApplyOutcome {
         files: relative_files(&root, &files),
+        changes: planned_to_changes(&planned, true)?,
     })
+}
+
+fn planned_to_changes(
+    planned: &[PlannedFile],
+    hash_after: bool,
+) -> Result<Vec<FileChange>, ErrorBody> {
+    let mut changes = Vec::with_capacity(planned.len());
+    for file in planned {
+        let after_version = if !hash_after || file.kind == FileChangeKind::Delete {
+            None
+        } else {
+            let bytes = std::fs::read(&file.abs).map_err(|err| {
+                ErrorBody::new(
+                    ErrorCode::InvalidPatch,
+                    format!("failed to hash {}: {err}", file.relative),
+                )
+            })?;
+            Some(content_version(&bytes))
+        };
+        changes.push(FileChange {
+            path: file.relative.clone(),
+            before_version: None,
+            after_version,
+            kind: file.kind,
+        });
+    }
+    Ok(changes)
+}
+
+fn content_version(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn rel_display(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn relative_files(root: &Path, files: &[PathBuf]) -> Vec<String> {

@@ -11,6 +11,8 @@ use codespace_domain::{
 use codespace_store::CreateIntent;
 use serde::{Deserialize, Serialize};
 
+use codespace_runner::Runner;
+
 use crate::mcp::CodeSpace;
 
 pub fn router(handler: CodeSpace) -> Router {
@@ -187,7 +189,7 @@ async fn stop_work(
     let work_id = WorkId(id);
     let work = handler.store.get_work(&work_id).map_err(InboxError)?;
     let killed = handler
-        .supervisor
+        .runner
         .terminate_workspace(&work.workspace_id.0)
         .map_err(InboxError)?;
     let reason = body.and_then(|Json(b)| b.reason).unwrap_or_default();

@@ -87,7 +87,8 @@ public `Host` header. For a reverse proxy, allow the external hostname
 separately; do not treat `0.0.0.0` as that name.
 
 If `CODESPACE_OPERATIONS_DB` is unset, operations and the intent queue
-live in memory and **do not survive restart**.
+live in memory and **do not survive restart**. Process handles never
+survive restart.
 
 ## Reproduce the MVP flow
 

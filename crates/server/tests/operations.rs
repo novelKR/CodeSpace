@@ -122,6 +122,29 @@ async fn operation_key_replays_and_conflicts_without_rewriting() {
     assert_eq!(status_body["status"], "applied");
     assert_eq!(status_body["replayed"], false);
 
+    let by_key = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_STATUS)
+                .with_arguments(object!({ "operation_key": "k-1" })),
+        )
+        .await
+        .expect("status by key");
+    let key_body = payload(&by_key);
+    assert_eq!(key_body["operation_id"], op_id);
+    assert_eq!(key_body["status"], "applied");
+
+    let both = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_STATUS)
+                .with_arguments(object!({ "operation_id": op_id, "operation_key": "k-1" })),
+        )
+        .await;
+    let both_text = err_text(&both);
+    assert!(
+        both_text.contains("OPERATION_NOT_FOUND") || both_text.contains("exactly one"),
+        "{both_text}"
+    );
+
     let missing = client
         .call_tool(
             CallToolRequestParams::new(TOOL_OPERATION_STATUS)

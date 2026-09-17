@@ -1,24 +1,42 @@
 //! Managed workspace processes. Request lifetime is not process lifetime.
+//! Spawns host `tokio::process::Command`. Container dispatch is not wired.
 
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use codespace_domain::{
     ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ProcessId, ReadProcessParams,
     ReadProcessResult, TerminateProcessParams, WriteStdinParams,
 };
-use codespace_policy::{allow, Action, ClientClaims, Registry};
-use codespace_store::Store;
+use codespace_policy::Workspace;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_PROCESSES: usize = 8;
+pub const DEFAULT_COMPLETED_TTL: Duration = Duration::from_secs(15 * 60);
+pub const DEFAULT_MAX_COMPLETED: usize = 64;
+
+pub type ShellRelease = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Debug, Clone)]
+pub struct RetentionPolicy {
+    pub ttl: Duration,
+    pub max_completed: usize,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            ttl: DEFAULT_COMPLETED_TTL,
+            max_completed: DEFAULT_MAX_COMPLETED,
+        }
+    }
+}
 
 fn process_timeout() -> Duration {
     std::env::var("CODESPACE_PROCESS_TIMEOUT_SECS")
@@ -41,10 +59,28 @@ fn child_path() -> String {
     std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into())
 }
 
+pub trait Runner: Send + Sync {
+    fn exec(
+        &self,
+        ws: &Workspace,
+        process_id: ProcessId,
+        params: &ExecCommandParams,
+    ) -> Result<ExecCommandResult, ErrorBody>;
+    fn write_stdin(
+        &self,
+        params: WriteStdinParams,
+    ) -> impl std::future::Future<Output = Result<(), ErrorBody>> + Send;
+    fn read_process(&self, params: ReadProcessParams) -> Result<ReadProcessResult, ErrorBody>;
+    fn terminate(&self, params: TerminateProcessParams) -> Result<(), ErrorBody>;
+    fn workspace_of(&self, process_id: &str) -> Option<String>;
+    fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody>;
+}
+
 #[derive(Clone)]
-pub struct Supervisor {
-    store: Arc<Store>,
+pub struct InProcessRunner {
     inner: Arc<Mutex<HashMap<String, Slot>>>,
+    on_release: ShellRelease,
+    retention: RetentionPolicy,
 }
 
 struct Slot {
@@ -52,6 +88,7 @@ struct Slot {
     child: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     output: Arc<Mutex<OutputBuf>>,
+    completed_at: Arc<Mutex<Option<Instant>>>,
 }
 
 #[derive(Default)]
@@ -63,18 +100,52 @@ struct OutputBuf {
     timed_out: bool,
 }
 
-impl Supervisor {
-    pub fn new(store: Arc<Store>) -> Self {
+impl InProcessRunner {
+    pub fn new(on_release: ShellRelease) -> Self {
+        Self::with_retention(on_release, RetentionPolicy::default())
+    }
+
+    pub fn with_retention(on_release: ShellRelease, retention: RetentionPolicy) -> Self {
         Self {
-            store,
             inner: Arc::new(Mutex::new(HashMap::new())),
+            on_release,
+            retention,
         }
     }
 
-    pub fn exec(
+    fn evict_completed(&self, map: &mut HashMap<String, Slot>) {
+        let now = Instant::now();
+        let ttl = self.retention.ttl;
+        map.retain(|_, slot| {
+            let completed = slot.completed_at.lock().ok().and_then(|guard| *guard);
+            !matches!(completed, Some(at) if now.duration_since(at) > ttl)
+        });
+        let mut completed: Vec<(String, Instant)> = map
+            .iter()
+            .filter_map(|(id, slot)| {
+                slot.completed_at
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.map(|at| (id.clone(), at)))
+            })
+            .collect();
+        if completed.len() <= self.retention.max_completed {
+            return;
+        }
+        completed.sort_by_key(|(_, at)| *at);
+        let drop_n = completed.len() - self.retention.max_completed;
+        for (id, _) in completed.into_iter().take(drop_n) {
+            map.remove(&id);
+        }
+    }
+}
+
+impl Runner for InProcessRunner {
+    fn exec(
         &self,
-        registry: &Registry,
-        params: ExecCommandParams,
+        ws: &Workspace,
+        process_id: ProcessId,
+        params: &ExecCommandParams,
     ) -> Result<ExecCommandResult, ErrorBody> {
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(ErrorBody::new(
@@ -82,12 +153,6 @@ impl Supervisor {
                 "command must be a non-empty argv (no shell)",
             ));
         }
-        let ws = registry.get(&params.workspace_id.0)?;
-        allow(ws, Action::Exec, &ClientClaims::default())?;
-        let process_id = ProcessId(format!("proc-{}", Uuid::new_v4()));
-        self.store
-            .mark_shell_busy(&params.workspace_id.0, &process_id.0)?;
-
         let mut child = Command::new(&params.command[0]);
         if params.command.len() > 1 {
             child.args(&params.command[1..]);
@@ -101,30 +166,28 @@ impl Supervisor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // Dropping an HTTP session clone must not kill the child. The
-            // shared supervisor holds the Child until timeout, terminate, or
-            // exit. Server shutdown still drops that table.
             .kill_on_drop(true);
-        let mut spawned = child.spawn().map_err(|err| {
-            self.store.clear_shell(&params.workspace_id.0);
-            ErrorBody::new(ErrorCode::InvalidPatch, err.to_string())
-        })?;
+        let mut spawned = child
+            .spawn()
+            .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
         let stdin = spawned.stdin.take();
         let stdout = spawned.stdout.take();
         let stderr = spawned.stderr.take();
         let child = Arc::new(Mutex::new(spawned));
         let output = Arc::new(Mutex::new(OutputBuf::default()));
+        let completed_at = Arc::new(Mutex::new(None));
         let slot = Slot {
             workspace_id: params.workspace_id.0.clone(),
             child: child.clone(),
             stdin: Arc::new(Mutex::new(stdin)),
             output: output.clone(),
+            completed_at: completed_at.clone(),
         };
         {
-            let mut map = self.inner.lock().expect("supervisor");
+            let mut map = self.inner.lock().expect("runner");
+            self.evict_completed(&mut map);
             if live_count(&map) >= max_processes() {
                 let _ = child.lock().expect("child").start_kill();
-                self.store.clear_shell(&params.workspace_id.0);
                 return Err(ErrorBody::new(
                     ErrorCode::WorkspaceBusy,
                     "live process limit reached",
@@ -144,7 +207,7 @@ impl Supervisor {
 
         let wait_child = child.clone();
         let wait_out = output.clone();
-        let wait_store = self.store.clone();
+        let wait_release = self.on_release.clone();
         let wait_ws = params.workspace_id.0.clone();
         tokio::spawn(async move {
             reap_child(wait_child).await;
@@ -153,7 +216,10 @@ impl Supervisor {
             if let Ok(mut buf) = wait_out.lock() {
                 buf.eof = true;
             }
-            wait_store.clear_shell(&wait_ws);
+            if let Ok(mut done) = completed_at.lock() {
+                *done = Some(Instant::now());
+            }
+            wait_release(&wait_ws);
         });
 
         let timeout_child = child;
@@ -175,9 +241,10 @@ impl Supervisor {
         })
     }
 
-    pub async fn write_stdin(&self, params: WriteStdinParams) -> Result<(), ErrorBody> {
+    async fn write_stdin(&self, params: WriteStdinParams) -> Result<(), ErrorBody> {
         let stdin = {
-            let map = self.inner.lock().expect("supervisor");
+            let mut map = self.inner.lock().expect("runner");
+            self.evict_completed(&mut map);
             let slot = map
                 .get(&params.process_id.0)
                 .ok_or_else(|| missing(&params.process_id.0))?;
@@ -198,8 +265,9 @@ impl Supervisor {
         result.map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))
     }
 
-    pub fn read(&self, params: ReadProcessParams) -> Result<ReadProcessResult, ErrorBody> {
-        let map = self.inner.lock().expect("supervisor");
+    fn read_process(&self, params: ReadProcessParams) -> Result<ReadProcessResult, ErrorBody> {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
         let slot = map
             .get(&params.process_id.0)
             .ok_or_else(|| missing(&params.process_id.0))?;
@@ -227,8 +295,9 @@ impl Supervisor {
         })
     }
 
-    pub fn terminate(&self, params: TerminateProcessParams) -> Result<(), ErrorBody> {
-        let map = self.inner.lock().expect("supervisor");
+    fn terminate(&self, params: TerminateProcessParams) -> Result<(), ErrorBody> {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
         let slot = map
             .get(&params.process_id.0)
             .ok_or_else(|| missing(&params.process_id.0))?;
@@ -242,16 +311,15 @@ impl Supervisor {
         Ok(())
     }
 
-    pub fn workspace_of(&self, process_id: &str) -> Option<String> {
-        self.inner
-            .lock()
-            .ok()?
-            .get(process_id)
-            .map(|slot| slot.workspace_id.clone())
+    fn workspace_of(&self, process_id: &str) -> Option<String> {
+        let mut map = self.inner.lock().ok()?;
+        self.evict_completed(&mut map);
+        map.get(process_id).map(|slot| slot.workspace_id.clone())
     }
 
-    pub fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody> {
-        let map = self.inner.lock().expect("supervisor");
+    fn terminate_workspace(&self, workspace_id: &str) -> Result<u32, ErrorBody> {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
         let mut killed = 0u32;
         for slot in map.values() {
             if slot.workspace_id != workspace_id {
@@ -326,4 +394,141 @@ fn missing(id: &str) -> ErrorBody {
         ErrorCode::ProcessNotFound,
         format!("unknown process_id `{id}`"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codespace_domain::{ProcessId, Profile, WorkspaceId};
+    use codespace_policy::Workspace;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
+
+    fn workspace(root: &std::path::Path) -> Workspace {
+        Workspace {
+            id: WorkspaceId("demo".into()),
+            root: root.to_path_buf(),
+            profile: Profile::WorkspaceWrite,
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_handles_evict_after_ttl() {
+        let dir = tempdir().unwrap();
+        let released = Arc::new(AtomicUsize::new(0));
+        let flag = released.clone();
+        let runner = InProcessRunner::with_retention(
+            Arc::new(move |_| {
+                flag.fetch_add(1, Ordering::SeqCst);
+            }),
+            RetentionPolicy {
+                ttl: Duration::from_millis(150),
+                max_completed: 64,
+            },
+        );
+        let ws = workspace(dir.path());
+        let params = ExecCommandParams {
+            workspace_id: WorkspaceId("demo".into()),
+            command: vec!["/bin/echo".into(), "hi".into()],
+            work_id: None,
+        };
+        let process_id = ProcessId("proc-ttl".into());
+        runner.exec(&ws, process_id.clone(), &params).unwrap();
+        for _ in 0..50 {
+            if released.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(released.load(Ordering::SeqCst) >= 1);
+        runner
+            .read_process(ReadProcessParams {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let err = runner
+            .read_process(ReadProcessParams {
+                process_id,
+                cursor: 0,
+            })
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProcessNotFound);
+    }
+
+    #[tokio::test]
+    async fn completed_handles_evict_by_max_count() {
+        let dir = tempdir().unwrap();
+        let runner = InProcessRunner::with_retention(
+            Arc::new(|_| {}),
+            RetentionPolicy {
+                ttl: Duration::from_secs(60),
+                max_completed: 1,
+            },
+        );
+        let ws = workspace(dir.path());
+        let first = ProcessId("proc-old".into());
+        let second = ProcessId("proc-new".into());
+        runner
+            .exec(
+                &ws,
+                first.clone(),
+                &ExecCommandParams {
+                    workspace_id: WorkspaceId("demo".into()),
+                    command: vec!["/bin/echo".into(), "one".into()],
+                    work_id: None,
+                },
+            )
+            .unwrap();
+        for _ in 0..50 {
+            if runner
+                .read_process(ReadProcessParams {
+                    process_id: first.clone(),
+                    cursor: 0,
+                })
+                .unwrap()
+                .eof
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        runner
+            .exec(
+                &ws,
+                second.clone(),
+                &ExecCommandParams {
+                    workspace_id: WorkspaceId("demo".into()),
+                    command: vec!["/bin/echo".into(), "two".into()],
+                    work_id: None,
+                },
+            )
+            .unwrap();
+        for _ in 0..50 {
+            if runner
+                .read_process(ReadProcessParams {
+                    process_id: second.clone(),
+                    cursor: 0,
+                })
+                .unwrap()
+                .eof
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Trigger eviction of the oldest completed slot.
+        let _ = runner.read_process(ReadProcessParams {
+            process_id: second,
+            cursor: 0,
+        });
+        let err = runner
+            .read_process(ReadProcessParams {
+                process_id: first,
+                cursor: 0,
+            })
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProcessNotFound);
+    }
 }

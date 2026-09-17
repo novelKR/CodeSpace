@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "codespace-domain"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "schemars 1.2.1",
  "serde",
@@ -722,22 +722,24 @@ dependencies = [
 
 [[package]]
 name = "codespace-patch"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "codespace-domain",
  "codespace-policy",
  "codex-apply-patch",
  "codex-exec-server",
  "codex-utils-path-uri",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]
 
 [[package]]
 name = "codespace-policy"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "codespace-domain",
  "serde",

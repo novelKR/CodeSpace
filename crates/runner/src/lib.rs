@@ -64,8 +64,13 @@ impl PathSandbox {
 }
 
 mod files;
+mod process;
 
 pub use files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT, VERSION_ABSENT};
+pub use process::{
+    InProcessRunner, RetentionPolicy, Runner, ShellRelease, DEFAULT_COMPLETED_TTL,
+    DEFAULT_MAX_COMPLETED, DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT, MAX_OUTPUT_BYTES,
+};
 
 pub fn compose_allows_marker(compose: &str, marker: &str) -> bool {
     compose.contains(marker)
