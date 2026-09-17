@@ -1,4 +1,6 @@
-# Operations (W12)
+# Operations
+
+[English](operations.md) | [한국어](ko/operations.md)
 
 Reproduce a local CodeSpace from a clean clone: install, start the
 gateway, then `workspace_info` → `read` → `apply_patch` → `exec_command`.

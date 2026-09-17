@@ -1,4 +1,6 @@
-# ChatGPT connector experiment (W02)
+# ChatGPT connector experiment
+
+[English](chatgpt-connector.md) | [한국어](ko/chatgpt-connector.md)
 
 CodeSpace is a Rust `rmcp` process. It speaks **stdio** and **Streamable HTTP**
 with the same live tools (`workspace_info`, `read`, `find`, `apply_patch`,

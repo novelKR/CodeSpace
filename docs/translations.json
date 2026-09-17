@@ -42,8 +42,8 @@
         "find-your-next-step",
         "다음-단계"
       ],
-      "source_sha256": "ddadbb8f0787233b40a74fca769b54b28d5f3d28453721265a30fa9a9cd8554e",
-      "translation_sha256": "ebb4383530307d6b84032198e6675e22f5043ff004916debb041e473f387be91"
+      "source_sha256": "3a0d2fe08c48b809de1dc9a440899ebe324ac6ccb9d2f818c9796fd04191b658",
+      "translation_sha256": "6ad6549186c678a4a6821233591dfc02b8838018a3663a62ac9fe5dcbdead113"
     },
     {
       "id": "getting-started",
@@ -63,6 +63,58 @@
       ],
       "source_sha256": "6066cd16dfc9559987a276b484cb2154384e46497b20b078e9263b17cfe5a905",
       "translation_sha256": "cef4867649f9052da08158a3ce6e941b9e882e77179c799d6afc4c3575d61201"
+    },
+    {
+      "id": "operations",
+      "section": "start",
+      "order": 2,
+      "route": "/guide/operations",
+      "source": "docs/operations.md",
+      "translation": "docs/ko/operations.md",
+      "anchors": [
+        "install",
+        "linux-isolation-fixture",
+        "linux-격리-픽스처",
+        "logs",
+        "mvp-흐름-재현",
+        "operations",
+        "recovery-after-disconnect-or-restart",
+        "reproduce-the-mvp-flow",
+        "run-the-gateway",
+        "what-this-document-does-not-verify",
+        "workspace-registry",
+        "게이트웨이-실행",
+        "로그",
+        "설치",
+        "연결-끊김-또는-재시작-후-복구",
+        "운영",
+        "워크스페이스-레지스트리",
+        "이-문서가-검증하지-않는-것"
+      ],
+      "source_sha256": "0a31118f3079f05527613e22a57455e5c5ba0159026aa5bbcc3d7b1186461640",
+      "translation_sha256": "26bf47665443f7d383feeb6e562e0a518802d9d228a1351d19f76e694fc0c638"
+    },
+    {
+      "id": "chatgpt-connector",
+      "section": "start",
+      "order": 3,
+      "route": "/guide/chatgpt-connector",
+      "source": "docs/chatgpt-connector.md",
+      "translation": "docs/ko/chatgpt-connector.md",
+      "anchors": [
+        "chatgpt-account-connection",
+        "chatgpt-connector-experiment",
+        "chatgpt-계정-연결",
+        "chatgpt-커넥터-실험",
+        "local-stdio-verified-by-cargo-test",
+        "local-streamable-http-experiment",
+        "secrets",
+        "로컬-stdio-cargo-test로-검증",
+        "로컬-streamable-http-실험",
+        "비밀"
+      ],
+      "source_sha256": "ecda1e91f3a47fa9c16a09a9e846afa66aaa624c0b756db6ddc88f9f9a325aec",
+      "translation_sha256": "d7a4bcad8dfd17f2278699952d7bdd885e61e250f31eeaa2b89fe674e8625339"
     },
     {
       "id": "documentation",
