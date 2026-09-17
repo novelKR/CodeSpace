@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "ea0ce5511b84242e0988ce4eda7db0e91acd110c8d0e3b99d4e23e2ef58fae94",
-      "translation_sha256": "e83905f5420b58679530037f7aa56574af242e7b9cefced658a127bcf992c5e0"
+      "source_sha256": "1b5fe5472ed386cf78fcaf86569cd4f8d1b341eff80c1018fdbbbf70113b9625",
+      "translation_sha256": "b9458a5fdef87b8346f16c97a4436a9885a9337622cd0b16b31d35e8fa17b6a9"
     },
     {
       "id": "chatgpt-connector",

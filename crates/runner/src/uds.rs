@@ -5,14 +5,17 @@
 //! per worker. Replay is connection-local.
 
 use std::collections::HashMap;
+use std::io;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use codespace_domain::{ErrorBody, ErrorCode, FindResult, ProcessId, ReadResult};
 use codespace_policy::Workspace;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::timeout;
@@ -147,12 +150,16 @@ impl UdsRunner {
                 .insert(request_id.clone(), tx);
         }
         let envelope = WireEnvelope::request(request_id.clone(), op);
-        {
+        let write_result = {
             let mut writer = self.shared.writer.lock().await;
-            if let Err(err) = write_frame(&mut *writer, &envelope).await {
-                self.shared.pending.lock().await.remove(&request_id);
-                return Err(RunnerError::before_dispatch(err.to_string()));
+            write_envelope(&mut *writer, &envelope).await
+        };
+        if let Err(err) = write_result {
+            self.shared.pending.lock().await.remove(&request_id);
+            if matches!(err, RunnerError::TransportAmbiguous { .. }) {
+                self.close().await;
             }
+            return Err(err);
         }
         match timeout(RUNNER_CALL_DEADLINE, rx).await {
             Ok(Ok(Ok(response))) => decode_response(response),
@@ -213,6 +220,56 @@ async fn fail_pending(shared: &Shared, err: RunnerError) {
     for (_, tx) in pending.drain() {
         let _ = tx.send(Err(err.clone()));
     }
+}
+
+/// Records whether `write_frame` reached socket I/O. Encode errors happen
+/// before `poll_write`; a later `write_all` / `flush` failure is ambiguous.
+struct WriteProbe<W> {
+    inner: W,
+    started: bool,
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for WriteProbe<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        self.started = true;
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+fn write_failure(err: io::Error, started: bool) -> RunnerError {
+    if started {
+        RunnerError::ambiguous(err.to_string())
+    } else {
+        RunnerError::before_dispatch(err.to_string())
+    }
+}
+
+async fn write_envelope<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    envelope: &WireEnvelope,
+) -> Result<(), RunnerError> {
+    let mut probe = WriteProbe {
+        inner: writer,
+        started: false,
+    };
+    write_frame(&mut probe, envelope)
+        .await
+        .map_err(|err| write_failure(err, probe.started))
 }
 
 fn decode_response(response: WireEnvelope) -> Result<RunnerOpResult, RunnerError> {
@@ -360,5 +417,94 @@ impl Runner for UdsRunner {
             RunnerOpResult::TerminateWorkspace(count) => Ok(count),
             other => Err(unexpected(other)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FailOnWrite;
+
+    impl AsyncWrite for FailOnWrite {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<Result<usize, io::Error>> {
+            Poll::Ready(Err(io::Error::other("write failed")))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), io::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct FailOnFlush;
+
+    impl AsyncWrite for FailOnFlush {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<Result<usize, io::Error>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+            Poll::Ready(Err(io::Error::other("flush failed")))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), io::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn hello_envelope() -> WireEnvelope {
+        WireEnvelope::request("rrpc-1".into(), RunnerOp::Hello)
+    }
+
+    #[test]
+    fn encode_or_unstarted_write_is_before_dispatch() {
+        let err = write_failure(io::Error::other("encode failed"), false);
+        assert!(
+            matches!(err, RunnerError::TransportBeforeDispatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_poll_write_error_is_ambiguous() {
+        let mut writer = FailOnWrite;
+        let err = write_envelope(&mut writer, &hello_envelope())
+            .await
+            .expect_err("write should fail");
+        // `exec_command` keeps the workspace lease only on this variant.
+        assert!(
+            matches!(err, RunnerError::TransportAmbiguous { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_error_after_write_is_ambiguous() {
+        let mut writer = FailOnFlush;
+        let err = write_envelope(&mut writer, &hello_envelope())
+            .await
+            .expect_err("flush should fail");
+        assert!(
+            matches!(err, RunnerError::TransportAmbiguous { .. }),
+            "{err:?}"
+        );
     }
 }

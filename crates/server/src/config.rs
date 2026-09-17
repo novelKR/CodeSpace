@@ -9,6 +9,13 @@ pub enum TransportMode {
     Http,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RunnerMode {
+    #[value(name = "in-process")]
+    InProcess,
+    Uds,
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "codespace-mcp",
@@ -42,9 +49,9 @@ pub struct Cli {
     #[arg(long, env = "CODESPACE_OPERATIONS_DB")]
     pub operations_db: Option<std::path::PathBuf>,
 
-    /// Runner backend. `in-process` is the default host supervisor. `uds` uses UdsRunner.
-    #[arg(long, env = "CODESPACE_RUNNER", default_value = "in-process")]
-    pub runner: String,
+    /// Runner backend. Allowed values: `in-process` (default host supervisor) or `uds`.
+    #[arg(long, env = "CODESPACE_RUNNER", value_enum, default_value_t = RunnerMode::InProcess)]
+    pub runner: RunnerMode,
 
     /// Unix socket for `CODESPACE_RUNNER=uds` when connecting to an
     /// already-running worker. Spawn path uses `--runner-dir` instead
@@ -90,4 +97,26 @@ pub struct HttpConfig {
     pub host: String,
     pub port: u16,
     pub bearer_token: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runner_mode_rejects_unknown_value() {
+        let err = Cli::try_parse_from(["codespace-mcp", "--runner", "udss"])
+            .expect_err("unknown runner value");
+        let message = err.to_string();
+        assert!(message.contains("udss"), "{message}");
+    }
+
+    #[test]
+    fn runner_mode_accepts_uds_and_in_process() {
+        let uds = Cli::try_parse_from(["codespace-mcp", "--runner", "uds"]).expect("uds");
+        assert_eq!(uds.runner, RunnerMode::Uds);
+        let host =
+            Cli::try_parse_from(["codespace-mcp", "--runner", "in-process"]).expect("in-process");
+        assert_eq!(host.runner, RunnerMode::InProcess);
+    }
 }
