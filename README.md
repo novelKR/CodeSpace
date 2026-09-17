@@ -3,18 +3,22 @@
 Personal **execution-tools MCP server**. ChatGPT, Cursor, or another MCP
 client decides what to do. This process reads workspace files, applies
 Codex-format patches through a pinned Rust `codex-apply-patch` engine,
-and runs commands in an isolated Linux environment.
+and runs managed commands in the registered workspace.
 
 The server is a **Cargo workspace** built with [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)
-(stdio and Streamable HTTP). There is no TypeScript gateway and no
-native/patch-worker IPC. The patch crate calls Codex **in-process**. A
-later runner split is a process boundary; both sides stay Rust.
+(stdio and Streamable HTTP). There is no TypeScript gateway and no legacy
+`native/patch-worker`. The gateway talks to a Rust `codespace-patch`
+helper over JSON stdin/stdout. That helper process calls Codex
+**in-process**. `exec_command` currently spawns a **host** process
+(`tokio::process::Command`) with the workspace as cwd. Isolated Linux
+dispatch is the target runner boundary, not the current exec path.
 
 This is **not**:
 
 - a fork of CoS or cokacremote
 - a Codex agent wrapper
 - a host that calls a model internally
+- a completed Linux sandbox runner
 
 There are no internal model calls. The MCP client owns judgment; CodeSpace
 owns execution contracts: path policy, operation idempotency, patch
@@ -26,10 +30,12 @@ Live MCP tools include `workspace_info`, `read`, `find`, `apply_patch`,
 `operation_status`, `exec_command`, `write_stdin`, `read_process`,
 `terminate_process`, `work_open`, `steer_status`, `steer_claim_next`,
 `steer_complete`, and `work_finish`. Codex V4A apply is `crates/patch`
-calling the pinned submodule in-process
+inside the `codespace-patch` helper
 (see [docs/upstream-lock.md](docs/upstream-lock.md)).
 Deferred user intent is edited on HTTP `/inbox` (not MCP).
 
+Current vs target process layout:
+[docs/architecture.md](docs/architecture.md).
 Install, HTTP/stdio, logs, and recovery:
 [docs/operations.md](docs/operations.md).
 Do not commit features directly to `main`.

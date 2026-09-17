@@ -1,6 +1,7 @@
-//! Runner isolation. Linux containers are the execution OS. macOS hosts may
-//! run the path sandbox for unit tests; that does **not** verify Linux
-//! isolation.
+//! Path sandbox, in-process host process supervisor, and isolation-fixture
+//! checks. Linux containers are the **target** execution OS. macOS hosts
+//! may run the path sandbox for unit tests; that does **not** verify Linux
+//! isolation. `exec_command` is not dispatched into compose.
 
 use std::fs;
 use std::os::unix::fs::FileTypeExt;

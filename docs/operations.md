@@ -10,7 +10,7 @@ See [chatgpt-connector.md](chatgpt-connector.md).
 
 ## Install
 
-Needs Rust 1.88+, Git, and (for the Linux runner example) Docker.
+Needs Rust 1.88+, Git, and (for the Linux isolation fixture) Docker.
 
 ```bash
 git clone --recurse-submodules https://github.com/novelKR/CodeSpace.git
@@ -34,8 +34,9 @@ cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
 ```
 
-`codespace-patch` hosts the pinned Codex crate **in-process**. It is not
-the upstream standalone `apply_patch` binary.
+`codespace-patch` is a host child process. It hosts the pinned Codex
+crate **in-process**. It is not the upstream standalone `apply_patch`
+binary and not the retired `native/patch-worker`.
 
 ## Workspace registry
 
@@ -97,8 +98,7 @@ cargo test -p codespace-server --test apply
 cargo test -p codespace-server --test process
 cargo test -p codespace-server --test protocol_compat
 cargo test -p codespace-server --test inbox
-# When this revision includes tests/e2e (W11):
-# cargo test -p codespace-server --test e2e
+cargo test -p codespace-server --test e2e
 ```
 
 Those tests cover patch apply/disk confirmation and managed processes
@@ -108,21 +108,21 @@ Manual stdio: connect an MCP client to `./dist/codespace-mcp` with the
 env vars above, then call those tools against `workspace_id: "demo"`
 (after the JSON `root` exists and the profile allows writes).
 
-## Linux runner example
+## Linux isolation fixture
 
-[`deploy/compose.yml`](../deploy/compose.yml) bind-mounts **only** the
-project at `/workspace` as uid `10001`. It does not mount host `$HOME`,
-SSH agent sockets, `/var/run/docker.sock`, gateway `.env`, Bearer files,
-or the operations SQLite file.
+[`deploy/compose.yml`](../deploy/compose.yml) is a sleeper fixture. It
+bind-mounts **only** the project at `/workspace` as uid `10001`. It does
+not mount host `$HOME`, SSH agent sockets, `/var/run/docker.sock`,
+gateway `.env`, Bearer files, or the operations SQLite file. It does not
+run `codespace-mcp` and is **not** connected to `exec_command`.
 
 ```bash
 export CODESPACE_WORKSPACE=/absolute/path/to/your/project
 docker compose -f deploy/compose.yml up --build
 ```
 
-The gateway still runs on the host in MVP. The compose file is the
-**execution isolation example**, not a claim that ChatGPT was connected
-through it.
+The gateway still runs on the host. `exec_command` is a host
+`tokio::process::Command` with the workspace as cwd.
 
 ## Logs
 
@@ -131,16 +131,19 @@ through it.
   structured sanitizers. Do not print `CODESPACE_HTTP_TOKEN` in shell
   history docs you share.
 - Rotate or truncate stderr capture yourself. There is no log SaaS.
-- The operations SQLite file grows with apply/exec records. Keep it off
-  the runner mount. Deleting it forgets idempotency keys.
+- The operations SQLite file grows with **patch operation** rows plus
+  works/intents. Process handles and write/shell leases are volatile
+  memory. Keep the database off any future runner mount. Deleting it
+  forgets idempotency keys.
 
 ## Recovery after disconnect or restart
 
 HTTP/JSON-RPC request id ≠ `operation_id` ≠ `process_id` ≠ `work_id`. A lost HTTP
 response is not an execution failure.
 
-- Call `operation_status` with the server-minted id or `operation_key`
-  instead of blindly re-running `apply_patch`.
+- Call `operation_status` with **exactly one** of the server-minted
+  `operation_id` or the client `operation_key` instead of blindly
+  re-running `apply_patch`. Providing both or neither is an error.
 - After a crash, unfinished rows are `unknown`. The server does **not**
   auto-replay them. Inspect the workspace, then start a **new**
   `operation_key` if you still want the change.

@@ -3,7 +3,7 @@
 CodeSpace is a personal **execution-tools MCP server**. An outer client
 (ChatGPT, Cursor, or another MCP host) decides what to do. This process
 never calls a model. It reads files, applies Codex V4A patches through a
-pinned Rust engine, and runs commands in an isolated Linux environment.
+pinned Rust engine, and runs managed commands in a registered workspace.
 
 ## Identity
 
@@ -11,8 +11,8 @@ pinned Rust engine, and runs commands in an isolated Linux environment.
 | --- | --- |
 | Independent MCP server | Fork of CoS or cokacremote |
 | Execution environment + contract | Codex agent wrapper |
-| File read / patch / isolated exec | Internal chat, Goal/Loop, multi-agent |
-| Gateway policy + OS/container isolation | Kernel sandbox equivalent to Codex CLI |
+| File read / patch / managed exec | Internal chat, Goal/Loop, multi-agent |
+| Gateway policy + (target) OS/container isolation | Kernel sandbox equivalent to Codex CLI |
 
 Borrowed ideas (not code dumps):
 
@@ -26,39 +26,39 @@ Not taken: Electron, Chrome extension, ChatGPT DOM, agents spawn, Desktop,
 plugin marketplace, TypeScript `apply-patch` port, `git apply --unsafe-paths`,
 wrapping the standalone `apply_patch` binary as the security boundary
 (that path uses sandbox `None` and follows symlinks by default), a
-TypeScript MCP gateway, or native/patch-worker JSON IPC.
+TypeScript MCP gateway, or the retired `native/patch-worker` tree.
 
-## Control plane vs execution plane
+## Current layout
 
-Both planes are **Rust**. Language is not a security boundary. Isolation is
-gateway policy plus the Linux runner process (in-process for MVP; Unix
-socket later if a split is required). User intent lives in SQLite with
-operations; it is not MCP session state.
+MVP is **one host process**: `codespace-mcp`. `exec_command` is not
+dispatched into a container. [`deploy/compose.yml`](../deploy/compose.yml)
+is an isolation **fixture** only.
 
 ```text
-ChatGPT / other MCP client
-             │
-             │ stdio  or  HTTPS + optional Bearer
-             ▼
-┌──────────────────────────────────────────┐
-│ MCP Gateway — Rust (rmcp, crates/server) │
-│  tool schemas, auth check, policy        │
-│  operation store, work/intent store      │
-│  /mcp tools/call + HTTP /inbox           │
-└───────────────────┬──────────────────────┘
-                    │ in-process now;
-                    │ Unix socket later
-                    ▼
-┌──────────────────────────────────────────┐
-│ Workspace Runner — isolated Linux, Rust  │
-│  filesystem + process supervisor         │
-│  crates/patch calls Codex in-process     │
-│  reachable tree: /workspace              │
-└──────────────────────────────────────────┘
+CURRENT
+
+MCP Client
+   │
+   ▼
+codespace-mcp  (host)
+   ├─ policy / store / rollback
+   ├─ structured logging (stderr tracing)
+   ├─ read/find via PathSandbox
+   ├─ exec_command ──────────────> host process
+   │                                 (tokio::process::Command,
+   │                                  workspace cwd, env_clear)
+   └─ patch_helper
+          │ JSON stdin/stdout
+          ▼
+      codespace-patch (host child)
+          └─ Codex Rust crate in-process
+
+deploy/compose.yml
+   └─ isolation fixture only; not connected to exec_command
 ```
 
 ```text
-MCP JSON  →  domain request  →  PatchService / ProcessService  →  domain result  →  MCP
+MCP JSON  →  domain request  →  gateway handlers  →  domain result  →  MCP
                  │
                  └─ rmcp types stay inside crates/server
 ```
@@ -66,20 +66,61 @@ MCP JSON  →  domain request  →  PatchService / ProcessService  →  domain r
 The gateway owns **who may do what in which workspace**. Tokens, server
 config, workspace registry, and the operations database live here.
 
-The runner owns **performing an allowed action**. Model-authored shell and
-patched project files run here. Gateway secrets, `.env`, SQLite, and SSH
-must not be mounted into the runner.
+`crates/runner` currently owns path sandboxing, the in-process host
+process supervisor, and compose-fixture checks. It does **not** start a
+container or open a control socket.
 
-MVP is **one process**: `codespace-mcp`. If isolation needs a process
-boundary later, `crates/server` and `crates/runner` both build from this
-Cargo workspace. Do not reintroduce a TypeScript gateway or a separate
-patch-worker IPC just to call Codex.
+`codespace-patch` is a product helper process, not the upstream
+standalone `apply_patch` binary and not `native/patch-worker`.
+Gateway ↔ helper is JSON stdin/stdout. Codex itself runs in-process
+**inside that helper**.
 
-Single instance is enough for MVP. SQLite for operations is allowed. No
-message broker.
+Single instance is enough for MVP. SQLite stores **patch operations**
+plus works/intents. Process handles and write/shell leases are
+in-memory. No message broker.
 
-Gateway unit tests may run on the macOS development host. **Execution
-isolation OS is a Linux container.**
+Gateway unit tests may run on the macOS development host. A Linux
+container is the **target** isolation OS, not the current exec boundary.
+
+## Target layout
+
+A later runner split stays Rust on both sides. Do not reintroduce a
+TypeScript gateway or `native/patch-worker` just to call Codex.
+
+```text
+TARGET
+
+MCP Client
+   │
+   ▼
+Gateway
+   │ authorized RunnerRequest
+   │ (policy, operation_key replay, write lock,
+   │  dispatch, result persistence)
+   ▼
+Runner process boundary
+   │
+   ├─ filesystem
+   ├─ patch transaction (one runner-side operation)
+   └─ process supervisor
+          │
+          ▼
+   isolated Linux workspace
+```
+
+The next isolated-exec work package inserts a process boundary behind
+the existing `Runner` / `InProcessRunner` types. It must **not** split
+patch apply into multiple gateway-driven RPCs:
+
+```text
+Runner.apply_patch(request)
+  expected versions → path policy → preflight → snapshot
+  → Codex apply → after-version verify → rollback on failure
+```
+
+Gateway keeps authorization, `operation_key` replay, the write lock,
+dispatch, and persistence. Unix socket / `ContainerRunner` are future
+work. There is no runner control socket today.
 
 ## Protocol compatibility
 
@@ -106,11 +147,11 @@ Execution tools:
 | `read` | File contents + version |
 | `find` | Relative-path search |
 | `apply_patch` | Codex V4A only |
-| `exec_command` | Start a managed process |
+| `exec_command` | Start a managed **host** process |
 | `write_stdin` | Write to a managed process |
 | `read_process` | Cursor-based output |
 | `terminate_process` | Kill a server-issued handle |
-| `operation_status` | Recover after disconnect; do not re-run blindly |
+| `operation_status` | Recover by `operation_id` **or** `operation_key` |
 
 Coordination tools (ordinary `tools/call`, MCP 2025-11-25 first-class):
 
@@ -127,7 +168,7 @@ Intent bodies are instructions, never capabilities.
 
 No internal model-calling tool exists. `git_apply_patch` is out of MVP.
 Error codes and transport-vs-execution rules: [error-codes.md](error-codes.md).
-Linux runner isolation: [runner-isolation.md](runner-isolation.md).
+Linux isolation fixture: [runner-isolation.md](runner-isolation.md).
 
 ## IDs
 
@@ -150,6 +191,11 @@ ignored. User-intent text does not raise the permission profile.
 
 ## Patch apply pipeline
 
+Today the gateway still orchestrates the transaction and talks to the
+helper for Codex parse/preflight/apply. The **contract** is that this
+whole sequence is one execution-plane operation and will move behind
+`Runner.apply_patch` later as a single call.
+
 ```text
 validate request
   → auth + workspace policy
@@ -161,18 +207,21 @@ validate request
   → full preflight (no writes)
   → save rollback snapshot
   → original engine apply (`apply_patch_with_options`)
-  → verify disk == claimed result
+  → verify disk hash == helper claimed after_version
   → persist operation status
   → MCP response
 ```
 
-`crates/patch` calls `parse_patch`, then product policy, then
-`apply_patch_with_options` **in-process**. It does not wrap the standalone
-`apply_patch` binary and does not reimplement the parser.
+`crates/patch` (inside `codespace-patch`) calls `parse_patch`, then
+product policy, then `apply_patch_with_options` **in-process**. It does
+not wrap the standalone `apply_patch` binary and does not reimplement
+the parser.
 
-`apply_patch` never silently falls back to `git apply`. Status values are
-`applied` / `rejected` / `failed_rolled_back` / `failed_partial` /
-`unknown`. Success copy without disk verification is forbidden.
+`apply_patch` never silently falls back to `git apply`. Status values
+are `applied` / `checked` / `rejected` / `failed_rolled_back` /
+`failed_partial` / `unknown`. `checked` is a successful `check_only`
+preview (no writes). `rejected` is an actual refusal. Success copy
+without after-version verification is forbidden.
 
 Rollback must not use `git reset --hard` and must not overwrite a whole
 directory tree as a substitute for per-file restore.
@@ -181,19 +230,16 @@ directory tree as a substitute for per-file restore.
 
 ```text
 Cargo.toml              workspace root
-crates/server/          bin codespace-mcp: rmcp stdio + Streamable HTTP
+crates/server/          bin codespace-mcp: rmcp stdio + Streamable HTTP + /inbox
 crates/domain/          workspace, capabilities, operation, errors (no rmcp)
 crates/policy/          registry and path policy
-crates/patch/           Codex adapter + rollback (W06)
-crates/fs/              read / find / versions
-crates/exec/            process supervisor
+crates/patch/           Codex adapter + codespace-patch helper (own workspace)
 crates/store/           SQLite operations, works, and intents
-crates/runner/          later process split; MVP called in-process
-crates/server/          /mcp tools plus HTTP /inbox (no browser UI)
+crates/runner/          PathSandbox, in-process process supervisor, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
-tests/{contract,parity,security,recovery,e2e}/
-docs/                  including operations.md (W12)
-deploy/                 unprivileged Linux runner example
+tests/{security,recovery,e2e}/
+docs/                   including operations.md (W12)
+deploy/                 unprivileged Linux isolation fixture
 ```
 
 ## Out of scope (initial)
@@ -201,4 +247,4 @@ deploy/                 unprivileged Linux runner example
 Browser extension, ChatGPT DOM automation, Goal/Loop, multi-agent,
 Desktop control, plugin marketplace, a full OAuth server, automatic
 unified-diff conversion, forwarding the entire Codex App Server RPC,
-internal model calls, TypeScript MCP SDK, native/patch-worker IPC.
+internal model calls, TypeScript MCP SDK, `native/patch-worker`.

@@ -1,9 +1,11 @@
 # Security model
 
 CodeSpace is not a kernel sandbox. CoS and cokacremote are not either.
-Authorization is **gateway policy + OS/container isolation**. The Codex
-patch crate does not supply the product boundary. Gateway and runner are
-both Rust; splitting languages would not add a trust boundary.
+Authorization is **gateway policy**. Linux container isolation is the
+**target** execution OS; current `exec_command` is a host process with
+workspace cwd. The Codex patch crate does not supply the product
+boundary. Gateway and runner are both Rust; splitting languages would
+not add a trust boundary.
 
 ## Trust boundaries
 
@@ -14,14 +16,17 @@ both Rust; splitting languages would not add a trust boundary.
    authenticate the transport (optional static Bearer on HTTP
    experiments), select a registered workspace, and refuse work the
    profile does not allow.
-3. **Runner (`crates/runner`, in-process for MVP)** — trusted to enforce
-   filesystem and process isolation for an already-authorized action.
-   Untrusted to see gateway secrets. A later Unix-socket split keeps the
-   same Rust workspace; it is a process boundary, not a language one.
-4. **Patch crate (`crates/patch`)** — trusted to parse/verify/apply Codex
-   V4A in-process under options the gateway chooses. Untrusted as a
+3. **Runner (`crates/runner`, in-process today)** — trusted to enforce
+   path policy (`PathSandbox`) and to supervise **host** processes for
+   an already-authorized action. Untrusted to see gateway secrets. A
+   later Unix-socket / container split keeps the same Rust workspace; it
+   is a process boundary, not a language one. Compose under `deploy/` is
+   an isolation fixture, not this process.
+4. **Patch helper (`codespace-patch` + `crates/patch`)** — trusted to
+   parse/verify/apply Codex V4A **in-process inside the helper child**.
+   The gateway talks to that child over JSON stdin/stdout. Untrusted as a
    sandbox (upstream standalone apply uses sandbox `None` and may follow
-   symlinks).
+   symlinks). This is not the retired `native/patch-worker`.
 
 ## Authentication vs selection
 
@@ -67,37 +72,52 @@ See [behavior-differences.md](behavior-differences.md).
 
 ## Runner isolation (Linux)
 
-Unprivileged container user. Mount the workspace at `/workspace` (or an
-equivalent dedicated volume). Do **not** mount:
+**Current:** `exec_command` runs on the host as argv + workspace cwd +
+`env_clear`. Path sandboxing applies to `read` / `find` / versions /
+rollback, not as a Linux namespace.
+
+**Target / fixture:** unprivileged container user. Mount the workspace
+at `/workspace` (or an equivalent dedicated volume). Do **not** mount:
 
 - host home
 - SSH agent socket
 - `/var/run/docker.sock`
 - gateway `.env`, Bearer files, SQLite
 
+[`deploy/compose.yml`](../deploy/compose.yml) demonstrates those
+properties with `sleep infinity`. It is not connected to
+`exec_command`. There is no runner control socket today.
+
 Gateway unit tests may run on macOS. That is not a claim that Linux
 isolation was verified on the development laptop.
 
 ## Patch honesty
 
-Statuses: `applied`, `rejected`, `failed_rolled_back`, `failed_partial`,
-`unknown`.
+Statuses: `applied`, `checked`, `rejected`, `failed_rolled_back`,
+`failed_partial`, `unknown`.
 
-- Preflight failure → no file changes (`rejected`).
+- Successful `check_only` preview → no file changes (`checked`).
+- Preflight / policy failure → no file changes (`rejected`).
 - Apply failure that restored snapshots → `failed_rolled_back`.
 - Apply failure with leftover drift → `failed_partial` or `unknown`.
-- Never report `applied` without checking disk.
+- Never report `applied` unless disk hashes match the helper's claimed
+  `after_version` (deletes must be absent).
 - Never `git reset --hard`.
 - Never treat HTTP timeout as rollback or as success.
+
+After `Store::begin` mints an `operation_id`, execution errors include
+that id on `ErrorBody`. Transport and pre-`begin` refusals do not.
 
 ## Process honesty
 
 `process_id` values are minted by the server. Clients cannot invent
-handles. Output is read by cursor and bounded. Time, output size, and
-process count are limited. Disconnect does not imply the process died.
+handles. Output is read by cursor and bounded (256 KiB per process).
+Time, live process count, and **completed-handle retention** (15 minutes
+or 64 completed slots) are limited. Disconnect does not imply the
+process died. Process state is volatile: it is not stored in SQLite.
 
 ## Logging
 
 Redact Authorization headers, Bearer tokens, and `.env` values. Prefer
 structured fields (`workspace_id`, `operation_id`) over dumping raw
-requests.
+requests. There is no separate audit subsystem.

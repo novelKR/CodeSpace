@@ -5,6 +5,8 @@ with the same live tools (`workspace_info`, `read`, `find`, `apply_patch`,
 `operation_status`, `exec_command`, `write_stdin`, `read_process`,
 `terminate_process`, `work_open`, `steer_status`, `steer_claim_next`,
 `steer_complete`, `work_finish`). User drafts are HTTP `/inbox`, not MCP.
+`exec_command` is a host process today; the compose file is an isolation
+fixture and is not a ChatGPT connection path.
 
 Core protocol baseline is **MCP 2025-11-25**. See
 [protocol-compatibility.md](protocol-compatibility.md).

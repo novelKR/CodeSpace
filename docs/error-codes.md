@@ -35,11 +35,10 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `MOVE_DESTINATION_EXISTS` | Move destination already exists |
 | `VERSION_CONFLICT` | `expected_versions` mismatch |
 | `OPERATION_KEY_CONFLICT` | Same key, different request (W08) |
-| `OPERATION_NOT_FOUND` | Unknown `operation_id` |
+| `OPERATION_NOT_FOUND` | Unknown `operation_id` / `operation_key`, or `operation_status` did not receive exactly one of them |
 | `PROCESS_NOT_FOUND` | Unknown `process_id` |
 | `OUTPUT_LIMIT` | Reserved; live `read_process` drops oldest bytes instead of storing unbounded output |
 | `TIMEOUT` | Managed process time limit (default 30s; `CODESPACE_PROCESS_TIMEOUT_SECS`) |
-| `CHECK_ONLY_CONFLICT` | `check_only` would not be a no-op |
 | `WORK_NOT_FOUND` | Unknown `work_id` |
 | `WORK_CLOSED` | Mutating steer on a closed work |
 | `INTENT_NOT_FOUND` | Unknown `intent_id` |
@@ -48,9 +47,16 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `INTENT_REVISION_CONFLICT` | Optimistic `revision` mismatch |
 | `QUEUE_NOT_EMPTY` | Reserved; `work_finish` returns `closed: false` instead of this error |
 
-Apply results use `status` (`applied`, `rejected`, `failed_rolled_back`,
-`failed_partial`, `unknown`). A failed apply never reports `applied`.
-Restart leaves unfinished rows as `unknown` and does not auto-apply.
+Apply results use `status` (`applied`, `checked`, `rejected`,
+`failed_rolled_back`, `failed_partial`, `unknown`). `checked` is a
+successful `check_only` preview. `rejected` is an actual refusal. A
+failed apply never reports `applied`. `applied` requires disk hashes to
+match the helper's claimed `after_version`. Restart leaves unfinished
+rows as `unknown` and does not auto-apply.
+
+After `begin` mints an `operation_id`, tool errors include that id on
+`ErrorBody.operation_id`. Policy / lock / key-conflict refusals before
+`begin` do not.
 
 `work_finish` with pending user input is **not** a transport failure. It
 returns `{ "closed": false, "reason": "pending_user_input" }`.
