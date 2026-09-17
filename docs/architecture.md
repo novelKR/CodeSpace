@@ -32,7 +32,8 @@ TypeScript MCP gateway, or native/patch-worker JSON IPC.
 
 Both planes are **Rust**. Language is not a security boundary. Isolation is
 gateway policy plus the Linux runner process (in-process for MVP; Unix
-socket later if a split is required).
+socket later if a split is required). User intent lives in SQLite with
+operations; it is not MCP session state.
 
 ```text
 ChatGPT / other MCP client
@@ -42,7 +43,8 @@ ChatGPT / other MCP client
 ┌──────────────────────────────────────────┐
 │ MCP Gateway — Rust (rmcp, crates/server) │
 │  tool schemas, auth check, policy        │
-│  operation store, audit, result limits   │
+│  operation store, work/intent store      │
+│  /mcp tools/call + HTTP /inbox           │
 └───────────────────┬──────────────────────┘
                     │ in-process now;
                     │ Unix socket later
@@ -94,7 +96,9 @@ middleware; dispatch is `/mcp` → rmcp tools. `ProtocolVersion` and
 2024-11-05 HTTP+SSE is not a goal. Full matrix:
 [protocol-compatibility.md](protocol-compatibility.md).
 
-## MVP tools (9)
+## MVP tools
+
+Execution tools:
 
 | Tool | Role |
 | --- | --- |
@@ -108,18 +112,41 @@ middleware; dispatch is `/mcp` → rmcp tools. `ProtocolVersion` and
 | `terminate_process` | Kill a server-issued handle |
 | `operation_status` | Recover after disconnect; do not re-run blindly |
 
+Coordination tools (ordinary `tools/call`, MCP 2025-11-25 first-class):
+
+| Tool | Role |
+| --- | --- |
+| `work_open` | Mint a `work_id` for one logical job |
+| `steer_status` | Counts only; no intent bodies |
+| `steer_claim_next` | Atomically claim one queued item |
+| `steer_complete` | Mark claimed intent done or blocked |
+| `work_finish` | Close only if the queue is drained |
+
+Users edit drafts and reorder queued items on HTTP `/inbox`, not MCP.
+Intent bodies are instructions, never capabilities.
+
 No internal model-calling tool exists. `git_apply_patch` is out of MVP.
 Error codes and transport-vs-execution rules: [error-codes.md](error-codes.md).
 Linux runner isolation: [runner-isolation.md](runner-isolation.md).
 
 ## IDs
 
-HTTP/JSON-RPC request id, `operation_id`, and `process_id` are three
-different identifiers. A lost HTTP response is not an execution failure.
-Clients call `operation_status` instead of replaying a mutating tool.
+HTTP/JSON-RPC request id, `operation_id`, `process_id`, `work_id`, and
+`intent_id` are different identifiers. A lost HTTP response is not an
+execution failure. Clients call `operation_status` instead of replaying
+a mutating tool.
 
-`workspace_id` is a **selector**, never proof of authorization. Client
-arguments `approved: true` and `user_id` are ignored.
+```text
+Workspace (workspace_id)
+  └── Work (work_id)
+        ├── Operation (operation_id)
+        ├── Process (process_id)
+        └── User Intent Queue (intent_id)
+```
+
+`workspace_id` and `work_id` are **selectors**, never proof of
+authorization. Client arguments `approved: true` and `user_id` are
+ignored. User-intent text does not raise the permission profile.
 
 ## Patch apply pipeline
 
@@ -160,8 +187,9 @@ crates/policy/          registry and path policy
 crates/patch/           Codex adapter + rollback (W06)
 crates/fs/              read / find / versions
 crates/exec/            process supervisor
-crates/store/           SQLite operations
+crates/store/           SQLite operations, works, and intents
 crates/runner/          later process split; MVP called in-process
+crates/server/          /mcp tools plus HTTP /inbox (no browser UI)
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{contract,parity,security,recovery,e2e}/
 docs/                  including operations.md (W12)

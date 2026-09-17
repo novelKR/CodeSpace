@@ -53,6 +53,7 @@ impl PathSandbox {
             content: String::from_utf8_lossy(slice).into_owned(),
             version: Self::version_of(&bytes),
             truncated,
+            coordination: None,
         })
     }
 
@@ -72,7 +73,11 @@ impl PathSandbox {
             &mut truncated,
         )?;
         paths.sort();
-        Ok(FindResult { paths, truncated })
+        Ok(FindResult {
+            paths,
+            truncated,
+            coordination: None,
+        })
     }
 }
 

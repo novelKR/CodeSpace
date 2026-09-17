@@ -1,6 +1,7 @@
 use clap::{Parser, ValueEnum};
 
 pub const MCP_PATH: &str = "/mcp";
+pub const INBOX_PATH: &str = "/inbox";
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum TransportMode {

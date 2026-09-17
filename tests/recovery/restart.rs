@@ -134,6 +134,7 @@ async fn restart_replays_instead_of_reapplying_and_unknown_stays_inert() {
         expected_versions: BTreeMap::new(),
         operation_key: Some(OperationKey("unfinished-1".into())),
         check_only: false,
+        work_id: None,
     };
     let store = Store::open(&db).unwrap();
     let Begin::Fresh(pending_id) = store

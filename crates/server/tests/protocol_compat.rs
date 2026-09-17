@@ -4,22 +4,30 @@
 //! and `transport_contract.rs` do **not** replace 2025-11-25-only coverage.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use codespace_domain::{
-    LIVE_TOOLS, SERVER_NAME, TOOL_WORKSPACE_INFO, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
+    Profile, WorkspaceId, LIVE_TOOLS, SERVER_NAME, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND,
+    TOOL_OPERATION_STATUS, TOOL_READ, TOOL_STEER_CLAIM_NEXT, TOOL_STEER_COMPLETE,
+    TOOL_STEER_STATUS, TOOL_WORKSPACE_INFO, TOOL_WORK_FINISH, TOOL_WORK_OPEN, TRANSPORT_STDIO,
+    TRANSPORT_STREAMABLE_HTTP,
 };
-use codespace_server::config::{HttpConfig, MCP_PATH};
-use codespace_server::http::router;
+use codespace_policy::{Registry, Workspace};
+use codespace_server::config::{HttpConfig, INBOX_PATH, MCP_PATH};
+use codespace_server::http::{http_router, router};
+use codespace_store::Store;
 use rmcp::{
     model::{
         CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
     },
-    transport::{StreamableHttpClientTransport, TokioChildProcess},
+    object,
+    transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess},
     ClientLifecycleMode, ClientServiceExt,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 fn payload(result: &rmcp::model::CallToolResult) -> Value {
     result.structured_content.clone().unwrap_or_else(|| {
@@ -198,5 +206,276 @@ async fn http_forced_2026_07_28_without_legacy_fallback() {
     );
     assert_workspace_info_contract(&body);
 
+    client.cancel().await.expect("cancel http");
+}
+
+fn write_workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let ws = root.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    std::fs::write(ws.join("hello.txt"), "hi\n").unwrap();
+    let cfg = root.path().join("workspaces.json");
+    std::fs::write(
+        &cfg,
+        serde_json::json!({
+            "workspaces": { "demo": { "root": &ws, "profile": "workspace-write" } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let db = root.path().join("ops.sqlite");
+    (root, cfg, db)
+}
+
+fn stdio_workspace(cfg: &std::path::Path, db: &std::path::Path) -> TokioChildProcess {
+    let bin = env!("CARGO_BIN_EXE_codespace-mcp");
+    let patch = codespace_server::patch_helper::ensure_helper_for_tests();
+    TokioChildProcess::new(Command::new(bin).configure(|cmd| {
+        cmd.env("CODESPACE_CONFIG", cfg)
+            .env("CODESPACE_OPERATIONS_DB", db)
+            .env("CODESPACE_PATCH_BIN", patch);
+    }))
+    .expect("spawn stdio mcp")
+}
+
+async fn spawn_http_workspace() -> (tempfile::TempDir, SocketAddr, Arc<Store>) {
+    let root = tempfile::tempdir().unwrap();
+    let ws = root.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    std::fs::write(ws.join("hello.txt"), "hi\n").unwrap();
+    let mut registry = Registry::new();
+    registry.insert(Workspace {
+        id: WorkspaceId("demo".into()),
+        root: ws,
+        profile: Profile::WorkspaceWrite,
+    });
+    let store = Arc::new(Store::memory().expect("store"));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind http");
+    let addr = listener.local_addr().expect("local addr");
+    let app = http_router(
+        &HttpConfig {
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            bearer_token: None,
+        },
+        registry,
+        store.clone(),
+        CancellationToken::new(),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("http serve");
+    });
+    (root, addr, store)
+}
+
+async fn connect_http(
+    addr: SocketAddr,
+    protocol: ProtocolVersion,
+    lifecycle: ClientLifecycleMode,
+) -> rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::InitializeRequestParams> {
+    client_config()
+        .with_protocol_version(protocol)
+        .serve_with_lifecycle(
+            StreamableHttpClientTransport::from_uri(format!("http://{addr}{MCP_PATH}")),
+            lifecycle,
+        )
+        .await
+        .expect("http initialize")
+}
+
+#[tokio::test]
+async fn stdio_forced_2025_11_25_read_patch_exec() {
+    let (_root, cfg, db) = write_workspace();
+    let client = client_config()
+        .with_protocol_version(ProtocolVersion::V_2025_11_25)
+        .serve_with_lifecycle(stdio_workspace(&cfg, &db), lifecycle_1125())
+        .await
+        .expect("stdio initialize 2025-11-25");
+    assert_eq!(
+        client.peer_info().expect("peer info").protocol_version,
+        ProtocolVersion::V_2025_11_25
+    );
+
+    let read = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_READ)
+                    .with_arguments(object!({ "workspace_id": "demo", "path": "hello.txt" })),
+            )
+            .await
+            .expect("read"),
+    );
+    assert_eq!(read["content"], "hi\n");
+    assert!(read["coordination"].is_null());
+
+    let patch = "*** Begin Patch\n*** Add File: extra.txt\n+ok\n*** End Patch\n";
+    let applied = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                    "workspace_id": "demo",
+                    "patch": patch,
+                    "operation_key": "compat-apply"
+                })),
+            )
+            .await
+            .expect("apply"),
+    );
+    assert_eq!(applied["status"], "applied");
+    let op_id = applied["operation_id"].as_str().unwrap();
+    let status = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_OPERATION_STATUS)
+                    .with_arguments(object!({ "operation_id": op_id })),
+            )
+            .await
+            .expect("operation_status"),
+    );
+    assert_eq!(status["status"], "applied");
+
+    let started = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                    "workspace_id": "demo",
+                    "command": ["/bin/echo", "compat"]
+                })),
+            )
+            .await
+            .expect("exec"),
+    );
+    assert!(started["process_id"].as_str().unwrap().starts_with("proc-"));
+    client.cancel().await.expect("cancel stdio");
+}
+
+#[tokio::test]
+async fn http_forced_2025_11_25_steering_checkpoint() {
+    let (_root, addr, _store) = spawn_http_workspace().await;
+    let client = connect_http(addr, ProtocolVersion::V_2025_11_25, lifecycle_1125()).await;
+    assert_eq!(
+        client.peer_info().expect("peer info").protocol_version,
+        ProtocolVersion::V_2025_11_25
+    );
+
+    let opened = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_WORK_OPEN)
+                    .with_arguments(object!({ "workspace_id": "demo", "title": "auth" })),
+            )
+            .await
+            .expect("work_open"),
+    );
+    let work_id = opened["work_id"].as_str().unwrap().to_string();
+    assert!(work_id.starts_with("work-"));
+
+    let http = reqwest::Client::new();
+    let created = http
+        .post(format!("http://{addr}{INBOX_PATH}/works/{work_id}/intents"))
+        .json(&serde_json::json!({
+            "body": "README also",
+            "delivery": "next_checkpoint"
+        }))
+        .send()
+        .await
+        .expect("create draft")
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(created["state"], "draft");
+    let intent_id = created["intent_id"].as_str().unwrap();
+    let revision = created["revision"].as_u64().unwrap();
+    let queued = http
+        .post(format!(
+            "http://{addr}{INBOX_PATH}/intents/{intent_id}/queue"
+        ))
+        .json(&serde_json::json!({ "revision": revision }))
+        .send()
+        .await
+        .expect("queue")
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(queued["state"], "queued");
+
+    let status = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_STEER_STATUS)
+                    .with_arguments(object!({ "work_id": work_id })),
+            )
+            .await
+            .expect("steer_status"),
+    );
+    assert_eq!(status["queued"], 1);
+    assert_eq!(status["claimable_now"], 1);
+    assert!(status.get("content").is_none());
+    assert!(status.get("body").is_none());
+
+    let claimed = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_STEER_CLAIM_NEXT)
+                    .with_arguments(object!({ "work_id": work_id })),
+            )
+            .await
+            .expect("claim"),
+    );
+    assert_eq!(claimed["item"]["content"], "README also");
+    let item_id = claimed["item"]["intent_id"].as_str().unwrap();
+
+    let pending = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_WORK_FINISH)
+                    .with_arguments(object!({ "work_id": work_id })),
+            )
+            .await
+            .expect("finish pending"),
+    );
+    assert_eq!(pending["closed"], false);
+    assert_eq!(pending["reason"], "pending_user_input");
+
+    client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_STEER_COMPLETE)
+                .with_arguments(object!({ "work_id": work_id, "intent_id": item_id })),
+        )
+        .await
+        .expect("complete");
+    let closed = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_WORK_FINISH)
+                    .with_arguments(object!({ "work_id": work_id })),
+            )
+            .await
+            .expect("finish closed"),
+    );
+    assert_eq!(closed["closed"], true);
+    client.cancel().await.expect("cancel http");
+}
+
+#[tokio::test]
+async fn http_forced_2026_07_28_steering_is_ordinary_tools_call() {
+    let (_root, addr, _store) = spawn_http_workspace().await;
+    let client = connect_http(addr, ProtocolVersion::V_2026_07_28, lifecycle_0728()).await;
+    assert_eq!(
+        client.peer_info().expect("peer info").protocol_version,
+        ProtocolVersion::V_2026_07_28
+    );
+    let tools = client.list_all_tools().await.expect("tools/list");
+    assert_live_tools(tools.iter().map(|t| t.name.as_ref()));
+    let opened = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_WORK_OPEN)
+                    .with_arguments(object!({ "workspace_id": "demo" })),
+            )
+            .await
+            .expect("work_open on 0728 still tools/call"),
+    );
+    assert!(opened["work_id"].as_str().unwrap().starts_with("work-"));
     client.cancel().await.expect("cancel http");
 }

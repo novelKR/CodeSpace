@@ -55,6 +55,7 @@ pub fn http_router(
     // Clone one handler so HTTP sessions share the supervisor. Request and
     // session end are not process death; process_id stays server-minted.
     let handler = CodeSpace::with_store(registry, store);
+    let inbox = crate::inbox::router(handler.clone());
     let service = StreamableHttpService::new(
         move || Ok(handler.clone()),
         LocalSessionManager::default().into(),
@@ -66,7 +67,7 @@ pub fn http_router(
     let state = HttpState {
         bearer_token: config.bearer_token.clone().map(Arc::from),
     };
-    Router::new()
+    inbox
         .nest_service("/mcp", service)
         .layer(middleware::from_fn_with_state(state, bearer_middleware))
 }
@@ -94,6 +95,7 @@ pub async fn serve_http(
         transport = "streamable-http",
         %bound,
         path = "/mcp",
+        inbox = "/inbox",
         bearer_required,
         "codespace mcp listening"
     );

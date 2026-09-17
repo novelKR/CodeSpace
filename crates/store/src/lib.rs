@@ -73,7 +73,37 @@ impl Store {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_key
                 ON operations(operation_key)
-                WHERE operation_key IS NOT NULL;",
+                WHERE operation_key IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS works (
+                work_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                title TEXT,
+                state TEXT NOT NULL,
+                queue_revision INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                closed_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_works_workspace ON works(workspace_id);
+            CREATE TABLE IF NOT EXISTS intents (
+                intent_id TEXT PRIMARY KEY,
+                work_id TEXT,
+                workspace_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                kind TEXT NOT NULL,
+                delivery TEXT NOT NULL,
+                body TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                claimed_at INTEGER,
+                completed_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_intents_work_state
+                ON intents(work_id, state, position);
+            CREATE INDEX IF NOT EXISTS idx_intents_workspace_next
+                ON intents(workspace_id, state)
+                WHERE work_id IS NULL;",
         )
         .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -173,6 +203,8 @@ impl Store {
             operation_id: operation_id.clone(),
             replayed: false,
             files: Vec::new(),
+            work_id: None,
+            coordination: None,
         };
         let result_json = serde_json::to_string(&pending).map_err(ser_err)?;
         let now = now_secs();
@@ -247,6 +279,8 @@ impl Row {
                 operation_id: OperationId(self.operation_id.clone()),
                 replayed: false,
                 files: Vec::new(),
+                work_id: None,
+                coordination: None,
             });
         result.replayed = replayed;
         StoredOperation {
@@ -308,12 +342,16 @@ fn ser_err(err: serde_json::Error) -> ErrorBody {
     ErrorBody::new(ErrorCode::InvalidPatch, err.to_string())
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+mod coord;
+
+pub use coord::CreateIntent;
 
 #[cfg(test)]
 mod tests {
@@ -328,6 +366,7 @@ mod tests {
             expected_versions: BTreeMap::new(),
             operation_key: Some(OperationKey(key.into())),
             check_only: false,
+            work_id: None,
         }
     }
 
@@ -347,6 +386,8 @@ mod tests {
             operation_id: id.clone(),
             replayed: false,
             files: vec![],
+            work_id: None,
+            coordination: None,
         };
         store.finish(&id, &done).unwrap();
         let Begin::Replayed(replay) = store

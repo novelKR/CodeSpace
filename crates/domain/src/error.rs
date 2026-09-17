@@ -22,6 +22,13 @@ pub enum ErrorCode {
     OutputLimit,
     Timeout,
     CheckOnlyConflict,
+    WorkNotFound,
+    WorkClosed,
+    IntentNotFound,
+    IntentAlreadyClaimed,
+    IntentNotEditable,
+    IntentRevisionConflict,
+    QueueNotEmpty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -76,6 +83,10 @@ mod tests {
         assert_eq!(json, "\"UNAUTHORIZED\"");
         let json = serde_json::to_string(&ErrorCode::InvalidPatch).unwrap();
         assert_eq!(json, "\"INVALID_PATCH\"");
+        let json = serde_json::to_string(&ErrorCode::IntentAlreadyClaimed).unwrap();
+        assert_eq!(json, "\"INTENT_ALREADY_CLAIMED\"");
+        let json = serde_json::to_string(&ErrorCode::WorkClosed).unwrap();
+        assert_eq!(json, "\"WORK_CLOSED\"");
     }
 
     #[test]

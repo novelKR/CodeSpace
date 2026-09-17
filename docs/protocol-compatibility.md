@@ -15,7 +15,9 @@ do. This process never calls a model.
 Required primitives for core execution: `initialize`, `tools/list`,
 `tools/call`. Live tools today are `workspace_info`, `read`, `find`,
 `apply_patch`, `operation_status`, `exec_command`, `write_stdin`,
-`read_process`, and `terminate_process`. They still use `tools/call`.
+`read_process`, `terminate_process`, `work_open`, `steer_status`,
+`steer_claim_next`, `steer_complete`, and `work_finish`. They still use
+`tools/call`. User drafts and reorder live on HTTP `/inbox`, not MCP.
 
 ## What core must not require
 
@@ -33,11 +35,12 @@ Auth and routing stay Bearer middleware (optional) plus `/mcp` → rmcp
 tool dispatch. Dispatch reads the JSON-RPC method and tool name from the
 body. It does not route on `Mcp-Name`.
 
-`crates/domain`, `crates/policy`, `crates/patch`, and `crates/runner` do
+`crates/domain`, `crates/policy`, `crates/patch`, `crates/store`, and `crates/runner` do
 not import `ProtocolVersion` or `NegotiatedFeatures`. The server adapter
 in `crates/server/src/protocol.rs` maps a negotiated revision to
 enhancement flags. Handlers keep `tools/call` even when those flags are
-true.
+true. Work/steer is application state (`work_id` / `intent_id`), not MCP
+Tasks, MRTR, or subscriptions.
 
 ## 2026-07-28
 
@@ -52,8 +55,9 @@ prove fallback. They do **not** replace 2025-11-25-only coverage.
 
 - **2024-11-05 HTTP+SSE.** Not a target. `rmcp` 3.x does not provide that
   transport.
-- User-opinion / steering queues (`steer_*`, IntentQueue, Web UI).
-- Implementing MRTR, Tasks, or subscriptions.
+- Implementing MRTR, Tasks, or subscriptions. Those remain optional
+  progressive enhancement and are **not** required for work/steer.
+- Browser Inbox UI (HTTP `/inbox` JSON is in this release).
 
 ## Tests
 
@@ -65,4 +69,7 @@ prove fallback. They do **not** replace 2025-11-25-only coverage.
    (`Auto { preferred_versions: [V_2026_07_28], legacy_version: None }`).
 
 After handshake, `tools/list` includes `workspace_info` and `tools/call`
-matches the existing payload contract.
+matches the existing payload contract. Forced 2025-11-25 also covers
+`read` / `apply_patch` / `exec_command` / `operation_status` and the
+work/steer checkpoint (`work_open` → `/inbox` queue → `steer_claim_next`
+→ `work_finish`). Forced 2026-07-28 uses the same `tools/call` surface.

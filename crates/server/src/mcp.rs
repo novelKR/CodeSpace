@@ -2,10 +2,12 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use codespace_domain::{
-    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, ExecCommandParams,
-    ExecCommandResult, FindParams, FindResult, OperationStatusParams, OperationStatusResult,
-    PatchStatus, ReadParams, ReadProcessParams, ReadProcessResult, ReadResult,
-    TerminateProcessParams, WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
+    workspace_info, ApplyPatchParams, ApplyPatchResult, CoordinationHint, ErrorBody, ErrorCode,
+    ExecCommandParams, ExecCommandResult, FindParams, FindResult, OperationStatusParams,
+    OperationStatusResult, PatchStatus, ReadParams, ReadProcessParams, ReadProcessResult,
+    ReadResult, SteerClaimNextResult, SteerCompleteParams, SteerStatusResult,
+    TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams, WorkOpenParams, WorkOpenResult,
+    WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
 };
 use codespace_policy::{Action, ClientClaims, Registry};
 use codespace_runner::PathSandbox;
@@ -29,9 +31,9 @@ use serde::Serialize;
 pub struct CodeSpace {
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
-    registry: Registry,
-    store: Arc<Store>,
-    supervisor: Supervisor,
+    pub(crate) registry: Registry,
+    pub(crate) store: Arc<Store>,
+    pub(crate) supervisor: Supervisor,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -41,6 +43,8 @@ fn err_json(err: ErrorBody) -> String {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 struct OkBody {
     ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coordination: Option<CoordinationHint>,
 }
 
 #[tool_router]
@@ -89,7 +93,10 @@ impl CodeSpace {
             .map_err(err_json)?;
         PathSandbox::new(ws.clone())
             .read_file(&params.path)
-            .map(Json)
+            .map(|mut result| {
+                result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
+                Json(result)
+            })
             .map_err(err_json)
     }
 
@@ -107,7 +114,10 @@ impl CodeSpace {
             .map_err(err_json)?;
         PathSandbox::new(ws.clone())
             .find(params.glob.as_deref())
-            .map(Json)
+            .map(|mut result| {
+                result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
+                Json(result)
+            })
             .map_err(err_json)
     }
 
@@ -148,8 +158,11 @@ impl CodeSpace {
         Parameters(params): Parameters<ExecCommandParams>,
     ) -> Result<Json<ExecCommandResult>, String> {
         self.supervisor
-            .exec(&self.registry, params)
-            .map(Json)
+            .exec(&self.registry, params.clone())
+            .map(|mut result| {
+                result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
+                Json(result)
+            })
             .map_err(err_json)
     }
 
@@ -162,9 +175,14 @@ impl CodeSpace {
         Parameters(params): Parameters<WriteStdinParams>,
     ) -> Result<Json<OkBody>, String> {
         self.supervisor
-            .write_stdin(params)
+            .write_stdin(params.clone())
             .await
-            .map(|_| Json(OkBody { ok: true }))
+            .map(|_| {
+                Json(OkBody {
+                    ok: true,
+                    coordination: self.process_hint(&params.process_id.0),
+                })
+            })
             .map_err(err_json)
     }
 
@@ -176,7 +194,13 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<ReadProcessParams>,
     ) -> Result<Json<ReadProcessResult>, String> {
-        self.supervisor.read(params).map(Json).map_err(err_json)
+        self.supervisor
+            .read(params.clone())
+            .map(|mut result| {
+                result.coordination = self.process_hint(&params.process_id.0);
+                Json(result)
+            })
+            .map_err(err_json)
     }
 
     #[tool(
@@ -188,8 +212,86 @@ impl CodeSpace {
         Parameters(params): Parameters<TerminateProcessParams>,
     ) -> Result<Json<OkBody>, String> {
         self.supervisor
-            .terminate(params)
-            .map(|_| Json(OkBody { ok: true }))
+            .terminate(params.clone())
+            .map(|_| {
+                Json(OkBody {
+                    ok: true,
+                    coordination: self.process_hint(&params.process_id.0),
+                })
+            })
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "work_open",
+        description = "Open a server-minted work_id for deferred user intent. Does not call a model. work_id is a selector, not a credential. Ordinary tools/call; does not require MCP 2026-07-28."
+    )]
+    async fn work_open(
+        &self,
+        Parameters(params): Parameters<WorkOpenParams>,
+    ) -> Result<Json<WorkOpenResult>, String> {
+        self.registry
+            .get(&params.workspace_id.0)
+            .map_err(err_json)?;
+        self.store
+            .open_work(&params.workspace_id, params.title)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "steer_status",
+        description = "Return queued/claimed counts for a work_id. Never returns intent bodies. Check at major checkpoints (after a patch, after a long process, before work_finish), not after every read."
+    )]
+    async fn steer_status(
+        &self,
+        Parameters(params): Parameters<WorkIdParams>,
+    ) -> Result<Json<SteerStatusResult>, String> {
+        self.store
+            .steer_status(&params.work_id)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "steer_claim_next",
+        description = "Atomically claim the next eligible queued user intent (one item). Drafts are never returned. Claimed content is frozen. Do not call after every tool; use after a major checkpoint and before work_finish."
+    )]
+    async fn steer_claim_next(
+        &self,
+        Parameters(params): Parameters<WorkIdParams>,
+    ) -> Result<Json<SteerClaimNextResult>, String> {
+        self.store
+            .claim_next(&params.work_id)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "steer_complete",
+        description = "Mark a claimed intent done or blocked. Does not grant permissions. Required before work_finish if any claimed items remain."
+    )]
+    async fn steer_complete(
+        &self,
+        Parameters(params): Parameters<SteerCompleteParams>,
+    ) -> Result<Json<codespace_domain::UserIntent>, String> {
+        self.store
+            .complete_intent(&params.work_id, &params.intent_id, params.outcome)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "work_finish",
+        description = "Attempt to close a work. If pending user input remains, closed is false and you must steer_claim_next. Call this before a final user-visible answer. Ordinary tools/call."
+    )]
+    async fn work_finish(
+        &self,
+        Parameters(params): Parameters<WorkIdParams>,
+    ) -> Result<Json<WorkFinishResult>, String> {
+        self.store
+            .finish_work(&params.work_id)
+            .map(Json)
             .map_err(err_json)
     }
 }
@@ -208,7 +310,11 @@ impl CodeSpace {
             &params.workspace_id.0,
             &fingerprint,
         )? {
-            Begin::Replayed(stored) => Ok(stored.result),
+            Begin::Replayed(stored) => Ok(self.with_hint(
+                stored.result,
+                &params.workspace_id.0,
+                params.work_id.as_ref(),
+            )),
             Begin::Fresh(operation_id) => {
                 let result = match self.execute_patch(ws, &params, operation_id.clone()) {
                     Ok(result) => result,
@@ -218,15 +324,40 @@ impl CodeSpace {
                             operation_id: operation_id.clone(),
                             replayed: false,
                             files: Vec::new(),
+                            work_id: None,
+                            coordination: None,
                         };
                         let _ = self.store.finish(&operation_id, &failed);
                         return Err(err);
                     }
                 };
                 self.store.finish(&operation_id, &result)?;
-                Ok(result)
+                Ok(self.with_hint(result, &params.workspace_id.0, params.work_id.as_ref()))
             }
         }
+    }
+
+    fn hint(&self, workspace_id: &str, work_id: Option<&WorkId>) -> Option<CoordinationHint> {
+        self.store
+            .coordination_hint(workspace_id, work_id)
+            .ok()
+            .flatten()
+    }
+
+    fn process_hint(&self, process_id: &str) -> Option<CoordinationHint> {
+        let ws = self.supervisor.workspace_of(process_id)?;
+        self.hint(&ws, None)
+    }
+
+    fn with_hint(
+        &self,
+        mut result: ApplyPatchResult,
+        workspace_id: &str,
+        work_id: Option<&WorkId>,
+    ) -> ApplyPatchResult {
+        result.work_id = work_id.cloned();
+        result.coordination = self.hint(workspace_id, work_id);
+        result
     }
 
     fn execute_patch(
@@ -252,6 +383,8 @@ impl CodeSpace {
                 operation_id,
                 replayed: false,
                 files,
+                work_id: None,
+                coordination: None,
             });
         }
         let planned = crate::patch_helper::preflight(&ws.root, &params.patch)?;
@@ -272,6 +405,8 @@ impl CodeSpace {
                     operation_id,
                     replayed: false,
                     files,
+                    work_id: None,
+                    coordination: None,
                 })
             }
             Err(_) => {
@@ -285,6 +420,8 @@ impl CodeSpace {
                     operation_id,
                     replayed: false,
                     files: planned,
+                    work_id: None,
+                    coordination: None,
                 })
             }
         }
@@ -322,7 +459,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_VERSION,
             ))
             .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. process_id is server-minted. Request end does not kill a process."
+                "CodeSpace execution-tools MCP. No internal model calls. workspace_id and work_id are selectors. process_id is server-minted. Request end does not kill a process. Claim user intents only at major checkpoints and before work_finish."
                     .to_string(),
             )
     }
