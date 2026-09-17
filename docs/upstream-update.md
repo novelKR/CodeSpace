@@ -7,6 +7,7 @@ paper over a workspace dependency.
 
 Current pin: [upstream-lock.md](upstream-lock.md).
 Product vs crate defaults: [behavior-differences.md](behavior-differences.md).
+What may be reused besides apply-patch: [codex-reuse.md](codex-reuse.md).
 NOTICE must keep the Apache-2.0 Codex attribution.
 
 ## Checklist
@@ -25,8 +26,20 @@ NOTICE must keep the Apache-2.0 Codex attribution.
    options, symlink policy, or parse errors changed.
 8. Update [NOTICE](../NOTICE) if the reuse description or pin string
    changed.
-9. Open a PR. CI must run the pin check **and** `crates/patch` tests.
-   A red patch job is a failed deploy, not a warning.
+9. Judge the pin’s **execution subgraph** against
+   [codex-reuse.md](codex-reuse.md): cohesive execution vs agent /
+   model semantics vs Gateway allow bypass. Treat diffs in
+   process-hardening, PTY, UDS, filesystem, linux-sandbox, and
+   network-proxy as an execution/security changelog. Update the
+   candidate table. Do not add a Codex path dep to the root
+   workspace. Isolation stays in `crates/patch` and, when it exists,
+   `crates/codex-runtime` (`codespace-codex-runtime`).
+10. Until that runtime workspace exists, the gate is SHA + patch
+    parity only. When it exists, also require: runtime adapter
+    compile, plus PTY / sandbox / process regressions. This work
+    package does not add that suite.
+11. Open a PR. CI must run the pin check **and** `crates/patch` tests.
+    A red patch job is a failed deploy, not a warning.
 
 There is **no** path that marks a failed parity run as success.
 
@@ -39,8 +52,10 @@ There is **no** path that marks a failed parity run as success.
 Exit non-zero if the submodule SHA mismatches the lock file or if
 `cargo test --manifest-path crates/patch/Cargo.toml` fails.
 
-`PIN_ONLY=1 ./scripts/check-upstream-pin.sh` checks the SHA only
-(used by CI before the existing full test step).
+`PIN_ONLY=1 ./scripts/check-upstream-pin.sh` checks the SHA only.
+CI runs that **before** fmt/clippy, then runs patch tests without
+re-checking the SHA. Locally, the unprefixed script still does SHA +
+`crates/patch` tests.
 
 ## Forbidden
 
