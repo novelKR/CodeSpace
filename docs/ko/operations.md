@@ -111,6 +111,7 @@ export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
 선택적 러너 워커(여전히 호스트 exec이며 Linux 격리가 아님). UDS는
 1:1입니다. 게이트웨이가 `RuntimeProcess`(자식, 비공개 0700 디렉터리,
 `$dir/runner.sock`)를 소유합니다. 재연결은 없습니다.
+`--runner` / `CODESPACE_RUNNER`의 허용 값은 `in-process`와 `uds`뿐입니다.
 `--runner-dir` / `CODESPACE_RUNNER_DIR`은 그 unique leaf의 부모가 될
 수 있습니다. `/`, `/tmp`, `/var/tmp`, `$HOME`을 디렉터리 자체로 주면
 거절합니다. `--runner-socket`은 이미 떠 있는 워커에 연결할 때만 쓰며

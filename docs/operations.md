@@ -109,7 +109,8 @@ survive restart.
 
 Opt-in runner worker (still host exec, not Linux isolation). UDS is
 1:1: the gateway owns `RuntimeProcess` (child, private 0700 directory,
-`$dir/runner.sock`). There is no reconnect. `--runner-dir` /
+`$dir/runner.sock`). There is no reconnect. Allowed `--runner` /
+`CODESPACE_RUNNER` values are `in-process` and `uds` only. `--runner-dir` /
 `CODESPACE_RUNNER_DIR` may name a parent for that unique leaf; `/`,
 `/tmp`, `/var/tmp`, and `$HOME` are rejected as the directory itself.
 `--runner-socket` is only for connecting to an already-running worker
