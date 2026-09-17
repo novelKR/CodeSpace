@@ -37,8 +37,8 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `OPERATION_KEY_CONFLICT` | Same key, different request (W08) |
 | `OPERATION_NOT_FOUND` | Unknown `operation_id` |
 | `PROCESS_NOT_FOUND` | Unknown `process_id` |
-| `OUTPUT_LIMIT` | Bounded output exceeded |
-| `TIMEOUT` | Managed process time limit |
+| `OUTPUT_LIMIT` | Reserved; live `read_process` drops oldest bytes instead of storing unbounded output |
+| `TIMEOUT` | Managed process time limit (default 30s; `CODESPACE_PROCESS_TIMEOUT_SECS`) |
 | `CHECK_ONLY_CONFLICT` | `check_only` would not be a no-op |
 
 Apply results use `status` (`applied`, `rejected`, `failed_rolled_back`,

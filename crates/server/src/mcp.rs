@@ -2,9 +2,10 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use codespace_domain::{
-    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, FindParams,
-    FindResult, OperationStatusParams, OperationStatusResult, PatchStatus, ReadParams, ReadResult,
-    WorkspaceInfo, WorkspaceInfoParams,
+    workspace_info, ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, ExecCommandParams,
+    ExecCommandResult, FindParams, FindResult, OperationStatusParams, OperationStatusResult,
+    PatchStatus, ReadParams, ReadProcessParams, ReadProcessResult, ReadResult,
+    TerminateProcessParams, WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
 };
 use codespace_policy::{Action, ClientClaims, Registry};
 use codespace_runner::PathSandbox;
@@ -20,6 +21,9 @@ use rmcp::{
 };
 
 use crate::protocol::{NegotiatedFeatures, CORE_BASELINE, SUPPORTED_PROTOCOL_VERSIONS};
+use crate::supervisor::Supervisor;
+use schemars::JsonSchema;
+use serde::Serialize;
 
 #[derive(Clone)]
 pub struct CodeSpace {
@@ -27,10 +31,16 @@ pub struct CodeSpace {
     tool_router: ToolRouter<Self>,
     registry: Registry,
     store: Arc<Store>,
+    supervisor: Supervisor,
 }
 
 fn err_json(err: ErrorBody) -> String {
     serde_json::to_string(&err).unwrap_or(err.message)
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct OkBody {
+    ok: bool,
 }
 
 #[tool_router]
@@ -43,10 +53,12 @@ impl CodeSpace {
     }
 
     pub fn with_store(registry: Registry, store: Arc<Store>) -> Self {
+        let supervisor = Supervisor::new(store.clone());
         Self {
             tool_router: Self::tool_router(),
             registry,
             store,
+            supervisor,
         }
     }
 
@@ -124,6 +136,60 @@ impl CodeSpace {
         self.store
             .status(&params.operation_id)
             .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "exec_command",
+        description = "Start a managed argv in the workspace cwd. Returns a server-minted process_id. Does not use a login shell. Request end does not kill the process."
+    )]
+    async fn exec_command(
+        &self,
+        Parameters(params): Parameters<ExecCommandParams>,
+    ) -> Result<Json<ExecCommandResult>, String> {
+        self.supervisor
+            .exec(&self.registry, params)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "write_stdin",
+        description = "Write to a managed process stdin. Unknown process_id is rejected."
+    )]
+    async fn write_stdin(
+        &self,
+        Parameters(params): Parameters<WriteStdinParams>,
+    ) -> Result<Json<OkBody>, String> {
+        self.supervisor
+            .write_stdin(params)
+            .await
+            .map(|_| Json(OkBody { ok: true }))
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "read_process",
+        description = "Read output from a managed process starting at cursor. Output is bounded; process_id cannot be invented."
+    )]
+    async fn read_process(
+        &self,
+        Parameters(params): Parameters<ReadProcessParams>,
+    ) -> Result<Json<ReadProcessResult>, String> {
+        self.supervisor.read(params).map(Json).map_err(err_json)
+    }
+
+    #[tool(
+        name = "terminate_process",
+        description = "Terminate a managed process. Only server-minted process_id values are accepted."
+    )]
+    async fn terminate_process(
+        &self,
+        Parameters(params): Parameters<TerminateProcessParams>,
+    ) -> Result<Json<OkBody>, String> {
+        self.supervisor
+            .terminate(params)
+            .map(|_| Json(OkBody { ok: true }))
             .map_err(err_json)
     }
 }
@@ -256,7 +322,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_VERSION,
             ))
             .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. apply_patch never returns applied after a failed rollback."
+                "CodeSpace execution-tools MCP. No internal model calls. workspace_id is a selector. process_id is server-minted. Request end does not kill a process."
                     .to_string(),
             )
     }
