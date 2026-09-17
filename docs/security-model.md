@@ -1,5 +1,7 @@
 # Security model
 
+[English](security-model.md) | [한국어](ko/security-model.md)
+
 CodeSpace is not a kernel sandbox. CoS and cokacremote are not either.
 Authorization is **gateway policy**. Linux container isolation is the
 **target** execution OS; current `exec_command` is a host process with

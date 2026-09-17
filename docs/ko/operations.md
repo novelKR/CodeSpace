@@ -21,10 +21,10 @@ cd CodeSpace
 # git submodule update --init --recursive
 ```
 
-Codex 핀은 [upstream-lock.md](../upstream-lock.md)의 커밋에 있는
+Codex 핀은 [upstream-lock.md](upstream-lock.md)의 커밋에 있는
 `third_party/codex`입니다. Codex `main`으로 `git submodule update --remote`를
 하지 마세요. 제품 런타임은 게이트웨이 밖에 둡니다.
-[codex-reuse.md](../codex-reuse.md)와
+[codex-reuse.md](codex-reuse.md)와
 [execution-substrate.md](execution-substrate.md)를 보세요.
 
 게이트웨이가 패치 헬퍼를 자기 옆에서 찾을 수 있도록 두 바이너리를
