@@ -2,9 +2,9 @@
 //! operation persistence. JsonSchema/rmcp stay in `crates/domain`.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use codespace_domain::{FileChange, PatchStatus, ProcessId, Profile};
+use codespace_domain::{ErrorBody, ErrorCode, FileChange, PatchStatus, ProcessId, Profile};
 use codespace_policy::NetworkAxis;
 use serde::{Deserialize, Serialize};
 
@@ -18,12 +18,30 @@ pub struct RunnerExecPolicy {
     pub network: NetworkAxis,
 }
 
+/// Working directory for exec. The runner resolves this against its local
+/// workspace root. Host absolute paths are not part of the wire contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerCwd {
+    WorkspaceRoot,
+}
+
+/// Exec environment. `PATH` / `HOME` / `LANG` come from the **runner
+/// process** when `use_runner_defaults` is set. The gateway does not
+/// serialize its own `PATH` or host absolute cwd.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunnerExecEnv {
+    pub use_runner_defaults: bool,
+    #[serde(default)]
+    pub overrides: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerExecRequest {
     pub argv: Vec<String>,
     pub process_id: ProcessId,
-    pub cwd: PathBuf,
-    pub env: BTreeMap<String, String>,
+    pub cwd: RunnerCwd,
+    pub env: RunnerExecEnv,
     pub timeout_ms: u64,
     pub output_bytes_cap: u64,
     pub tty: bool,
@@ -31,17 +49,15 @@ pub struct RunnerExecRequest {
 }
 
 impl RunnerExecRequest {
-    pub fn for_host(
-        argv: Vec<String>,
-        process_id: ProcessId,
-        cwd: PathBuf,
-        profile: Profile,
-    ) -> Self {
+    pub fn for_host(argv: Vec<String>, process_id: ProcessId, profile: Profile) -> Self {
         Self {
             argv,
             process_id,
-            env: default_host_exec_env(&cwd),
-            cwd,
+            cwd: RunnerCwd::WorkspaceRoot,
+            env: RunnerExecEnv {
+                use_runner_defaults: true,
+                overrides: BTreeMap::new(),
+            },
             timeout_ms: default_exec_timeout_ms(),
             output_bytes_cap: MAX_OUTPUT_BYTES as u64,
             tty: false,
@@ -53,13 +69,14 @@ impl RunnerExecRequest {
     }
 }
 
-pub fn default_host_exec_env(cwd: &Path) -> BTreeMap<String, String> {
+/// Runner-local defaults applied after `env_clear`. Not a DTO field.
+pub fn runner_local_exec_env(home: &Path) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     env.insert(
         "PATH".into(),
         std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into()),
     );
-    env.insert("HOME".into(), cwd.display().to_string());
+    env.insert("HOME".into(), home.display().to_string());
     env.insert("LANG".into(), "C".into());
     env
 }
@@ -112,17 +129,73 @@ pub struct RunnerApplyPatchResult {
     pub changes: Vec<FileChange>,
 }
 
+/// Runner-trait errors. Not MCP `ErrorBody` until the gateway maps them.
+/// No new public `ErrorCode` is added.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunnerError {
+    /// Disk/exec engine refused the request.
+    Execution(ErrorBody),
+    /// The request never left this process. Disk is unchanged.
+    TransportBeforeDispatch { message: String },
+    /// The request may have run. Result cannot be confirmed.
+    TransportAmbiguous { message: String },
+}
+
+impl RunnerError {
+    pub fn execution(body: ErrorBody) -> Self {
+        Self::Execution(body)
+    }
+
+    pub fn before_dispatch(message: impl Into<String>) -> Self {
+        Self::TransportBeforeDispatch {
+            message: message.into(),
+        }
+    }
+
+    pub fn ambiguous(message: impl Into<String>) -> Self {
+        Self::TransportAmbiguous {
+            message: message.into(),
+        }
+    }
+
+    pub fn as_execution(&self) -> Option<&ErrorBody> {
+        match self {
+            Self::Execution(body) => Some(body),
+            _ => None,
+        }
+    }
+
+    /// Gateway mapping onto the frozen MCP error catalog.
+    pub fn into_error_body(self) -> ErrorBody {
+        match self {
+            Self::Execution(body) => body,
+            Self::TransportBeforeDispatch { message } => ErrorBody::new(
+                ErrorCode::Timeout,
+                format!("runner transport failed before dispatch: {message}"),
+            ),
+            Self::TransportAmbiguous { message } => ErrorBody::new(
+                ErrorCode::Timeout,
+                format!("runner transport result is ambiguous: {message}"),
+            ),
+        }
+    }
+}
+
+impl From<ErrorBody> for RunnerError {
+    fn from(body: ErrorBody) -> Self {
+        Self::Execution(body)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn exec_request_has_no_work_id_field() {
         let req = RunnerExecRequest::for_host(
             vec!["/bin/echo".into()],
             ProcessId("proc-1".into()),
-            PathBuf::from("/tmp/ws"),
             Profile::WorkspaceWrite,
         );
         let RunnerExecRequest {
@@ -137,8 +210,9 @@ mod tests {
         } = req;
         assert_eq!(argv, ["/bin/echo"]);
         assert_eq!(process_id.0, "proc-1");
-        assert_eq!(cwd, PathBuf::from("/tmp/ws"));
-        assert_eq!(env.get("LANG").map(String::as_str), Some("C"));
+        assert_eq!(cwd, RunnerCwd::WorkspaceRoot);
+        assert!(env.use_runner_defaults);
+        assert!(env.overrides.is_empty());
         assert!(timeout_ms > 0);
         assert_eq!(output_bytes_cap, MAX_OUTPUT_BYTES as u64);
         assert!(!tty);
@@ -147,12 +221,21 @@ mod tests {
         let json = serde_json::to_value(RunnerExecRequest::for_host(
             vec!["/bin/echo".into()],
             ProcessId("proc-1".into()),
-            PathBuf::from("/tmp/ws"),
             Profile::WorkspaceWrite,
         ))
         .unwrap();
         assert!(json.get("work_id").is_none());
         assert!(json.get("operation_id").is_none());
+        assert_eq!(json["cwd"], "workspace_root");
+        assert!(json["cwd"].as_str().is_some());
+        assert!(json["env"].get("PATH").is_none());
+        assert_eq!(json["env"]["use_runner_defaults"], true);
+        assert_eq!(json["env"]["overrides"], serde_json::json!({}));
+        let dumped = json.to_string();
+        assert!(
+            !dumped.contains("/tmp/") && !dumped.contains("/Users/"),
+            "host absolute cwd must not be serialized: {dumped}"
+        );
     }
 
     #[test]

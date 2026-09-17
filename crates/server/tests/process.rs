@@ -439,6 +439,28 @@ async fn linux_container_environment_rejects_exec() {
         text.contains("UNAUTHORIZED") || text.contains("linux-container"),
         "{text}"
     );
+    assert!(
+        !text.contains("\"operation_id\""),
+        "linux-container must fail before minting operation_id: {text}"
+    );
+
+    let patch_denied = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\n"
+            })),
+        )
+        .await;
+    let patch_text = err_text(&patch_denied);
+    assert!(
+        patch_text.contains("UNAUTHORIZED") || patch_text.contains("linux-container"),
+        "{patch_text}"
+    );
+    assert!(
+        !patch_text.contains("\"operation_id\""),
+        "linux-container apply_patch must not mint operation_id: {patch_text}"
+    );
     client.cancel().await.expect("cancel");
 }
 

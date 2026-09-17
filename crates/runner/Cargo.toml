@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Runner trait, execution DTOs, InProcessRunner, and opt-in ContainerRunner"
+description = "Runner trait, execution DTOs, InProcessRunner, and opt-in UdsRunner"
 
 [dependencies]
 codespace-domain = { path = "../domain" }

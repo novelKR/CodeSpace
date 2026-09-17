@@ -37,15 +37,19 @@ seccomp/AppArmor와 Docker Desktop 대 Linux 엔진 차이도 검증되지 않�
 
 오늘은 기본으로 `codespace-mcp`가 한 프로세스입니다. `crates/runner`가
 `InProcessRunner`(`PathSandbox`, `apply_patch` 트랜잭션 하나, 호스트
-감독)와 선택적 Unix 소켓 `ContainerRunner` 클라이언트를 호스팅합니다.
+감독)와 선택적 Unix 소켓 `UdsRunner` 클라이언트를 호스팅합니다.
 워커는 격리된 `crates/codex-runtime`(`codespace-codex-runtime`)입니다.
-`codex_process_hardening::pre_main_hardening()`, `codex-uds` bind, 그다음
-같은 `InProcessRunner` 메서드입니다. 와이어는 **CodeSpace JSON**이며
+`codex_process_hardening::pre_main_hardening()`은 `main`의 첫 줄로
+유지합니다(워커/헬퍼 **프로세스** 강화이지 command sandbox가 아닙니다.
+`ctor` 없음). 그다음 `codex-uds` bind, 같은 `InProcessRunner`
+메서드입니다. 와이어는 **u32 length-prefix + CodeSpace JSON**입니다
+(`protocol: 1`, `request_id` `rrpc-…`, 이벤트에 `ProcessExited`).
 App Server가 아닙니다. 그 **전송**은 구현되어 있으며 선택적입니다
-(`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). 다음 WP는 PTY /
-filesystem / linux-sandbox / network이며 두 번째 전송 재작성이
-아닙니다. 소켓 프리미티브로 `codex-uds`를 선호하세요. Runner RPC는
-CodeSpace 계약으로 남습니다.
+(`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). **같은 호스트**이며
+Linux 격리를 주장하지 않습니다. 다음 WP는 PTY / filesystem /
+linux-sandbox / network이며 두 번째 전송 재작성이 아닙니다. 소켓
+프리미티브로 `codex-uds`를 선호하세요. Runner RPC는 CodeSpace 계약으로
+남습니다.
 
 Linux 격리는 여전히 목표 OS입니다. Landlock, seccomp, PTY 헬퍼, UDS,
 파일시스템 역학, 네트워크 격리는 **기본 자체 스택이 아닙니다**. 업스트림

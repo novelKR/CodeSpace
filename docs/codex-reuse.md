@@ -55,7 +55,7 @@ CodeSpace Core          ← only authorization authority
 
 Codex is an **implementation** dependency behind the adapter, not an
 architectural dependency of the Gateway. `InProcessRunner`,
-`ContainerRunner`, a later remote runner, or another sandbox backend
+`UdsRunner`, a later remote runner, or another sandbox backend
 can change if Codex types never leave the adapter.
 
 ## Unit of reuse is a subgraph
@@ -146,7 +146,7 @@ runtime adapter:
 - Do not file-copy a crate out of the Codex workspace.
 
 ```text
-Gateway → Runner trait → ContainerRunner (opt-in)
+Gateway → Runner trait → UdsRunner (opt-in)
        → codespace-codex-runtime helper → Codex execution crates
 ```
 
@@ -185,7 +185,7 @@ boundary. Do **not** wrap Codex App Server as an internal backend.
 
 `process_id`, stdin, terminate, and timeout converge because request
 lifetime is not process lifetime. The in-process supervisor remains the
-**default**. Opt-in `ContainerRunner` still runs that supervisor inside
+**default**. Opt-in `UdsRunner` still runs that supervisor inside
 `codespace-codex-runtime`. `operation_key` / `operation_status` recover
 a lost **remote MCP mutating RPC**, not a Codex thread.
 
@@ -215,7 +215,10 @@ Judged from the pin’s `Cargo.toml` files, not from Codex `main`.
 parity subset.
 
 **`codex-process-hardening`** via `codespace-patch` and
-`codespace-codex-runtime` `pre_main_hardening()`.
+`codespace-codex-runtime` `pre_main_hardening()`. This hardens the
+worker/helper **process**, not command sandbox. Keep it as the first
+line of `main`; do not add `ctor` unless the dependency fan-out is
+justified.
 
 **`codex-uds`** via `codespace-codex-runtime` bind. RPC stays CodeSpace.
 
@@ -300,7 +303,7 @@ not appear on MCP or in `crates/domain`.
 
 HTTP/WS plus `codex-api`, `codex-config`, OTel, protocol, sandboxing,
 PTY. Too heavy as today’s Runner backend. Not a forever reject. Later
-compare ContainerRunner + low-level crates vs Gateway adapter →
+compare UdsRunner + low-level crates vs Gateway adapter →
 exec-server. Measure compile graph and upgrade cost.
 
 ### Future Environment (not P0)

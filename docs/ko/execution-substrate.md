@@ -60,8 +60,11 @@ CI: `policy-scan` job은 서브모듈 **없이** `scripts/check-no-model-deps.sh
 
 `read-only` / `workspace-write`가 실제 MCP 프로필로 남습니다. 더 풍부한
 파일시스템 glob + 네트워크 축은 `crates/policy`의 `PermissionProfile`에
-있고 그 프로필에서 매핑됩니다. 네트워크 축은 기록만 하며 허용을 올리지
-않습니다. Codex 사용자 설정을 가져오는 것이 아닙니다.
+있고 그 프로필에서 매핑됩니다. `process_exec`가 Exec 축입니다
+(`read-only`는 거부, `workspace-write`는 허용). 경로 glob은 **표현만**
+있고 live enforcement는 기존 coarse `allow(Write|Exec)` + PathSandbox입니다.
+네트워크 축은 기록만 하며 허용을 올리지 않습니다. Codex 사용자 설정을
+가져오는 것이 아닙니다.
 
 ## 네 축 (목표 도메인)
 
@@ -85,7 +88,8 @@ Process / Patch / FS
 - **Workspace**는 MCP의 선택자로 남습니다(`workspace_id` + 상대 경로).
   내부에서 러너는 절대 경로로 해석할 수 있습니다.
 - **PermissionProfile** 형태(경로, glob, 또는 특수 루트에 대한 Read /
-  Write / Deny, 별도 네트워크 축)는 App Server를 따를 수 있습니다.
+  Write / Deny, `process_exec`, 별도 네트워크 축)는 App Server를 따를
+  수 있습니다. glob은 표현만 있고 live enforce 하지 않습니다.
   **부여하는 엔진**은 CodeSpace 정책입니다.
 - **Operation**은 이미 `operation_id` / `operation_key` /
   `operation_status`입니다. Diff/감사 원장은 P1이며 대화 이력이
@@ -111,7 +115,9 @@ cwd, env, PTY 크기, `sandboxPolicy` / `permissionProfile`이 있습니다.
 후속: write, resize, terminate. 스트리밍은 `outputDelta`입니다.
 
 그 **형태**가 오늘 Runner DTO에 있습니다(PTY가 생기면 `process_resize`
-포함). 게이트웨이가 cwd, env, 타임아웃, 출력 한도, `tty: false`, 정책
+포함). 게이트웨이가 `cwd: WorkspaceRoot`, 러너 로컬 env 기본값(`PATH` /
+`HOME` / `LANG`은 러너 프로세스에서 적용, 게이트웨이 `PATH`나 호스트
+절대 cwd를 직렬화하지 않음), 타임아웃, 출력 한도, `tty: false`, 정책
 요약을 채웁니다. 실제 MCP는 그대로입니다.
 
 ```text
@@ -165,9 +171,10 @@ continue / terminate / grace-period일 수 있으며, “소켓이 닫힘 ⇒ �
 자원별로 직렬화합니다(배타 대 공유 읽기). 목표 범위는 Environment,
 Workspace, Path, Process, Operation, Watch이며 Thread가 아닙니다.
 `crates/store`는 이제 그 키를 위한 메모리 자원 직렬화기를 씁니다.
-SQLite 스키마는 그대로입니다. MVP는 여전히 `apply_patch`와 라이브 셸에
-워크스페이스 배타를 씁니다(`WORKSPACE_BUSY`). `read` / `find`는 공유이며
-잠금이 없습니다.
+SQLite 스키마는 그대로입니다. MVP는 `apply_patch`에 요청 소유 배타,
+라이브 셸에 프로세스 소유 배타를 씁니다(`WORKSPACE_BUSY`).
+`ProcessExited`(또는 프로세스 내부 종료)가 `release_process`를 호출합니다.
+`read` / `find`는 잠금이 없습니다. Shared-read는 타입만 유지합니다.
 
 ## `fs/watch`와 검색
 
@@ -215,16 +222,18 @@ Approval → policy + human, Attachment → artifact 리소스.
 
 ## 로드맵 (구현은 나중)
 
-이 기반의 P0 코드는 들어와 있습니다. Runner exec DTO **형태**,
-`crates/policy`의 `PermissionProfile`과 Environment, 자원 직렬화기,
-선택적 `ContainerRunner` + `codespace-codex-runtime`(process-hardening +
-UDS). MCP 스키마는 그대로입니다.
+이 기반의 P0 코드는 들어와 있습니다. Runner exec DTO **형태**
+(`RunnerCwd::WorkspaceRoot`, 러너 로컬 env 기본값),
+`crates/policy`의 `PermissionProfile`(`process_exec`)과 Environment,
+자원 직렬화기(요청 vs 프로세스 소유), 선택적 `UdsRunner` +
+`codespace-codex-runtime`(process-hardening + UDS). MCP 스키마는
+그대로입니다.
 
 **P0** — 착수했거나 다음 서브그래프 WP: `codex-apply-patch`(완료),
 Runner DTO의 exec 런타임 **형태**(완료), `crates/policy`의
 PermissionProfile 도메인(완료), Environment 도메인(운영자 등록, 도구
 인자 아님)(완료), 자원 직렬화기(완료), process-hardening + UDS를 받는
-전송(`ContainerRunner`)(완료, 선택적). 아직 밖: PTY → filesystem →
+전송(`UdsRunner`)(완료, 선택적). 아직 밖: PTY → filesystem →
 linux-sandbox → network.
 
 **P1** — 작업 상태 기계 / diff 원장, 승인 폴백 도구, 내부 watch, 더

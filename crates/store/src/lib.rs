@@ -156,6 +156,13 @@ impl Store {
             .clear_shell(workspace_id);
     }
 
+    pub fn release_process(&self, process_id: &str) {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .release_process(process_id);
+    }
+
     pub fn try_lock(
         &self,
         resource: Resource,
@@ -482,6 +489,34 @@ mod tests {
         );
         store.clear_shell("demo");
         let _guard = store.try_acquire_write("demo").unwrap();
+        assert_eq!(
+            store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+    }
+
+    #[test]
+    fn process_owned_lease_releases_by_process_id() {
+        let store = Store::memory().unwrap();
+        store.mark_shell_busy("demo", "proc-1").unwrap();
+        assert_eq!(
+            store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+        store.release_process("proc-other");
+        assert_eq!(
+            store.try_acquire_write("demo").err().map(|e| e.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+        store.release_process("proc-1");
+        let _guard = store.try_acquire_write("demo").unwrap();
+    }
+
+    #[test]
+    fn request_owned_write_is_not_cleared_by_release_process() {
+        let store = Store::memory().unwrap();
+        let _guard = store.try_acquire_write("demo").unwrap();
+        store.release_process("proc-1");
         assert_eq!(
             store.try_acquire_write("demo").err().map(|e| e.code),
             Some(ErrorCode::WorkspaceBusy)

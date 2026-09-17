@@ -42,7 +42,7 @@ pub struct Cli {
     #[arg(long, env = "CODESPACE_OPERATIONS_DB")]
     pub operations_db: Option<std::path::PathBuf>,
 
-    /// Runner backend. `in-process` is the default host supervisor. `uds` uses ContainerRunner.
+    /// Runner backend. `in-process` is the default host supervisor. `uds` uses UdsRunner.
     #[arg(long, env = "CODESPACE_RUNNER", default_value = "in-process")]
     pub runner: String,
 

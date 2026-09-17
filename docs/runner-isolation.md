@@ -39,12 +39,16 @@ unverified.
 
 Today `codespace-mcp` is one process by default. `crates/runner` hosts
 `InProcessRunner` (`PathSandbox`, one `apply_patch` transaction, host
-supervisor) and the opt-in Unix-socket `ContainerRunner` client. The
+supervisor) and the opt-in Unix-socket `UdsRunner` client. The
 worker is isolated `crates/codex-runtime` (`codespace-codex-runtime`):
-`codex_process_hardening::pre_main_hardening()`, `codex-uds` bind, then
-the same `InProcessRunner` methods. Wire format is **CodeSpace JSON**,
-not App Server. That **transport** is implemented; it is opt-in
-(`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). Next WPs are PTY /
+`codex_process_hardening::pre_main_hardening()` stays the first line of
+`main` (process hardening of the worker/helper, **not** a command
+sandbox; no `ctor`). Then `codex-uds` bind, then the same
+`InProcessRunner` methods. Wire format is **u32 length-prefix +
+CodeSpace JSON** (`protocol: 1`, `request_id` `rrpc-…`, events include
+`ProcessExited`), not App Server. That **transport** is implemented; it
+is opt-in (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`) on the
+**same host**. It does not claim Linux isolation. Next WPs are PTY /
 filesystem / linux-sandbox / network, not a second transport rewrite.
 Prefer `codex-uds` as the socket primitive; the Runner RPC stays a
 CodeSpace contract.

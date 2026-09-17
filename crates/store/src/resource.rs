@@ -17,14 +17,16 @@ pub enum Resource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockMode {
     Exclusive,
+    /// Typed but unused by live `read` / `find` (those stay unlocked).
     SharedRead,
 }
 
 #[derive(Debug, Clone)]
 enum ExclusiveHolder {
-    Write,
-    #[allow(dead_code)]
-    Shell(String),
+    /// Request-owned RAII exclusive (`WriteGuard`).
+    Request,
+    /// Process-owned exclusive (`ProcessId`).
+    Process(String),
 }
 
 #[derive(Default)]
@@ -36,7 +38,7 @@ pub(crate) struct ResourceSerializer {
 impl ResourceSerializer {
     pub(crate) fn try_exclusive_write(&mut self, workspace_id: &str) -> Result<(), ErrorBody> {
         let resource = Resource::Workspace(workspace_id.to_string());
-        if let Some(ExclusiveHolder::Shell(_)) = self.exclusive.get(&resource) {
+        if let Some(ExclusiveHolder::Process(_)) = self.exclusive.get(&resource) {
             return Err(ErrorBody::new(
                 ErrorCode::WorkspaceBusy,
                 "workspace has a busy shell",
@@ -48,13 +50,16 @@ impl ResourceSerializer {
                 "workspace write lock is held",
             ));
         }
-        self.exclusive.insert(resource, ExclusiveHolder::Write);
+        self.exclusive.insert(resource, ExclusiveHolder::Request);
         Ok(())
     }
 
     pub(crate) fn release_write(&mut self, workspace_id: &str) {
         let resource = Resource::Workspace(workspace_id.to_string());
-        if matches!(self.exclusive.get(&resource), Some(ExclusiveHolder::Write)) {
+        if matches!(
+            self.exclusive.get(&resource),
+            Some(ExclusiveHolder::Request)
+        ) {
             self.exclusive.remove(&resource);
         }
     }
@@ -72,7 +77,7 @@ impl ResourceSerializer {
             ));
         }
         self.exclusive
-            .insert(resource, ExclusiveHolder::Shell(process_id.to_string()));
+            .insert(resource, ExclusiveHolder::Process(process_id.to_string()));
         Ok(())
     }
 
@@ -80,10 +85,17 @@ impl ResourceSerializer {
         let resource = Resource::Workspace(workspace_id.to_string());
         if matches!(
             self.exclusive.get(&resource),
-            Some(ExclusiveHolder::Shell(_))
+            Some(ExclusiveHolder::Process(_))
         ) {
             self.exclusive.remove(&resource);
         }
+    }
+
+    pub(crate) fn release_process(&mut self, process_id: &str) {
+        self.exclusive.retain(|_, holder| match holder {
+            ExclusiveHolder::Process(id) => id != process_id,
+            ExclusiveHolder::Request => true,
+        });
     }
 
     pub(crate) fn try_lock(&mut self, resource: Resource, mode: LockMode) -> Result<(), ErrorBody> {
@@ -99,7 +111,7 @@ impl ResourceSerializer {
                 if self.exclusive.contains_key(&resource) || self.shared_count(&resource) > 0 {
                     return Err(busy(&resource));
                 }
-                self.exclusive.insert(resource, ExclusiveHolder::Write);
+                self.exclusive.insert(resource, ExclusiveHolder::Request);
                 Ok(())
             }
         }
@@ -207,5 +219,15 @@ mod tests {
             .try_lock(resource.clone(), LockMode::Exclusive)
             .unwrap();
         assert!(store.try_lock(resource, LockMode::SharedRead).is_err());
+    }
+
+    #[test]
+    fn read_find_do_not_require_shared_lock() {
+        let store = Store::memory().unwrap();
+        let _write = store.try_acquire_write("demo").unwrap();
+        // SharedRead exists as a mode only. Live read/find do not take it.
+        assert!(store
+            .try_lock(Resource::Workspace("demo".into()), LockMode::SharedRead)
+            .is_err());
     }
 }

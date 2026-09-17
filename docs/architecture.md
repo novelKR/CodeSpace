@@ -60,8 +60,8 @@ codespace-mcp  (host gateway)
    ▼
 RuntimeBackend
    ├─ default: InProcessRunner
-   └─ opt-in: ContainerRunner (CODESPACE_RUNNER=uds)
-          │ CodeSpace JSON over Unix socket
+   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds)
+          │ length-prefixed CodeSpace JSON (protocol 1, request_id rrpc-…)
           ▼
      codespace-codex-runtime
           ├─ codex-process-hardening
@@ -77,7 +77,7 @@ RuntimeBackend
                  │              └─ Codex Rust crate in-process
                  └─ exec / stdin / read / terminate
                         └─ host process (tokio::process::Command,
-                           workspace cwd, env from DTO)
+                           cwd = workspace root, env from runner-local defaults)
 
 deploy/compose.yml
    └─ isolation fixture only; not connected to exec_command
@@ -97,7 +97,7 @@ live here. It maps MCP params onto runner DTOs and does **not** pass
 
 `crates/runner` owns the `Runner` trait, execution DTOs,
 `InProcessRunner` (filesystem, one `apply_patch` transaction, host
-process supervisor), `ContainerRunner` (Unix-socket client), and
+process supervisor), `UdsRunner` (Unix-socket client), and
 compose-fixture checks. Default backend is in-process. The worker
 binary is isolated `crates/codex-runtime` / `codespace-codex-runtime`.
 
@@ -145,8 +145,10 @@ Target **domain** (not live MCP fields): Environment (where), Workspace
 `environment_id` to tools. Operator config may register environments.
 See [execution-substrate.md](execution-substrate.md).
 
-Unix-socket **transport** (`ContainerRunner`) exists behind the existing
-`Runner` / `InProcessRunner` types as an opt-in. It must **not** split
+Unix-socket **transport** (`UdsRunner`) exists behind the existing
+`Runner` / `InProcessRunner` types as an opt-in. Host + UDS is the same
+host; it does not claim Linux isolation. `LinuxContainer` stays
+fail-closed (`UNAUTHORIZED`, no `operation_id`). It must **not** split
 patch apply into multiple gateway-driven RPCs:
 
 ```text
@@ -220,10 +222,11 @@ Execution-only substrate: [execution-substrate.md](execution-substrate.md).
 
 ## IDs
 
-HTTP/JSON-RPC request id, `operation_id`, `process_id`, `work_id`, and
-`intent_id` are different identifiers. A lost HTTP response is not an
-execution failure. Clients call `operation_status` instead of replaying
-a mutating tool.
+HTTP/JSON-RPC request id, `operation_id`, `operation_key`, `process_id`,
+`work_id`, `intent_id`, and runner `request_id` (`rrpc-…`) are different
+identifiers. A lost HTTP response is not an execution failure. A lost
+UDS `apply_patch` response is recorded as `unknown`, not `rejected`.
+Clients call `operation_status` instead of replaying a mutating tool.
 
 ```text
 Workspace (workspace_id)
@@ -268,8 +271,10 @@ the parser.
 `apply_patch` never silently falls back to `git apply`. Status values
 are `applied` / `checked` / `rejected` / `failed_rolled_back` /
 `failed_partial` / `unknown`. `checked` is a successful `check_only`
-preview (no writes). `rejected` is an actual refusal. Success copy
-without after-version verification is forbidden.
+preview (no writes). `rejected` is an actual refusal. Transport
+ambiguity (socket drop after dispatch) finishes `unknown` and must not
+be stored as `rejected`. Success copy without after-version verification
+is forbidden.
 
 Rollback must not use `git reset --hard` and must not overwrite a whole
 directory tree as a substitute for per-file restore.
@@ -284,7 +289,7 @@ crates/policy/          registry, PermissionProfile, Environment
 crates/patch/           Codex adapter + codespace-patch helper (own workspace)
 crates/codex-runtime/   isolated worker: hardening + UDS + InProcessRunner
 crates/store/           SQLite operations, works, intents; in-memory resource locks
-crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host supervisor, ContainerRunner, fixture checks
+crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host supervisor, UdsRunner, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
 docs/                   including operations.md (W12), codex-reuse.md,

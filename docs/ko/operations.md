@@ -46,8 +46,11 @@ cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 **프로세스 내부에서** 호스팅합니다. 업스트림 독립 `apply_patch` 바이너리가
 아니고 폐기된 `native/patch-worker`도 아닙니다. `codespace-codex-runtime`은
 `codex-process-hardening`과 `codex-uds`로 비공개 Unix 소켓을 바인드한 뒤
-`InProcessRunner`를 실행합니다. 기본 `exec_command`는 여전히 프로세스
-내부 호스트 spawn입니다.
+`InProcessRunner`를 실행합니다. hardening은 워커/헬퍼 **프로세스**
+강화입니다(`main` 첫 줄 `pre_main_hardening()`, `ctor` 없음). command
+sandbox가 아닙니다. 기본 `exec_command`는 여전히 프로세스 내부 호스트
+spawn입니다. Exec DTO cwd는 `WorkspaceRoot`이며 `PATH` / `HOME` /
+`LANG`은 러너 프로세스에서 적용합니다.
 
 ## 워크스페이스 레지스트리
 
@@ -172,10 +175,13 @@ HTTP 응답은 실행 실패가 아닙니다.
   `operation_id` 또는 클라이언트 `operation_key` **정확히 하나**로
   `operation_status`를 호출하세요. 둘 다 주거나 둘 다 안 주면 오류입니다.
 - 충돌 후 미완료 행은 `unknown`입니다. 서버는 이를 자동 재실행하지
-  **않습니다**. 워크스페이스를 검사한 뒤, 그 변경이 여전히 필요하면
-  **새** `operation_key`를 시작하세요.
+  **않습니다**. UDS에서 `apply_patch` 응답이 유실되면 DB는 `unknown`이며
+  디스크와 모순되는 `rejected`를 쓰지 않습니다. 워크스페이스를 검사한 뒤,
+  그 변경이 여전히 필요하면 **새** `operation_key`를 시작하세요.
 - 살아있는 `exec_command` 프로세스는 MCP 요청보다 오래 살 수 있습니다.
   발급된 `process_id`로 `read_process` / `terminate_process`를 사용하세요.
+  전송이 모호하면 셸 임대를 유지합니다. 워커 `ProcessExited` 뒤에
+  `release_process`가 풀어 무한 `WORKSPACE_BUSY`를 막습니다.
   게이트웨이 재시작 후 옛 OS PID는 CodeSpace 핸들로 재사용되지 않습니다.
 
 ## 이 문서가 검증하지 않는 것

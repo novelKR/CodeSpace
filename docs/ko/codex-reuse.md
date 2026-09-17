@@ -52,7 +52,7 @@ CodeSpace Core          ← only authorization authority
 ```
 
 Codex는 어댑터 뒤의 **구현** 의존성이며 Gateway의 아키텍처 의존성이
-아닙니다. `InProcessRunner`, `ContainerRunner`, 이후 원격 러너, 또는
+아닙니다. `InProcessRunner`, `UdsRunner`, 이후 원격 러너, 또는
 다른 샌드박스 백엔드는 Codex 타입이 어댑터를 떠나지 않으면 바뀔 수
 있습니다.
 
@@ -145,7 +145,7 @@ Runner helper
 - Codex 워크스페이스에서 크레이트를 파일 복사하지 마세요.
 
 ```text
-Gateway → Runner trait → ContainerRunner (opt-in)
+Gateway → Runner trait → UdsRunner (opt-in)
        → codespace-codex-runtime helper → Codex execution crates
 ```
 
@@ -184,7 +184,7 @@ Server를 내부 백엔드로 감싸지 **마세요**.
 
 `process_id`, stdin, terminate, timeout이 모이는 이유는 요청 수명이
 프로세스 수명이 아니기 때문입니다. 프로세스 내부 감독이 **기본**입니다.
-선택적 `ContainerRunner`도 그 감독을 `codespace-codex-runtime` 안에서
+선택적 `UdsRunner`도 그 감독을 `codespace-codex-runtime` 안에서
 돌립니다. `operation_key` / `operation_status`는 잃어버린 **원격 MCP
 변경 RPC**를 복구하며, Codex 스레드를 복구하지 않습니다.
 
@@ -214,7 +214,9 @@ Codex `main`이 아니라 핀의 `Cargo.toml` 파일로 판단합니다.
 패리티 부분집합.
 
 **`codex-process-hardening`** via `codespace-patch`와
-`codespace-codex-runtime` `pre_main_hardening()`.
+`codespace-codex-runtime` `pre_main_hardening()`. 워커/헬퍼 **프로세스**
+강화이지 command sandbox가 아닙니다. `main` 첫 줄로 유지하고, 의존성
+폭이 커지지 않는 한 `ctor`는 넣지 않습니다.
 
 **`codex-uds`** via `codespace-codex-runtime` bind. RPC는 CodeSpace.
 
@@ -300,7 +302,7 @@ Linux에서 Landlock/seccompiler. **핵심에서 금지.** 어댑터에서는
 
 HTTP/WS plus `codex-api`, `codex-config`, OTel, protocol, sandboxing,
 PTY. 오늘의 Runner 백엔드로는 너무 무겁습니다. 영구 거절은 아닙니다.
-나중에 ContainerRunner + 저수준 크레이트 대 Gateway 어댑터 →
+나중에 UdsRunner + 저수준 크레이트 대 Gateway 어댑터 →
 exec-server를 비교하세요. 컴파일 그래프와 업그레이드 비용을 재세요.
 
 ### 이후 Environment (P0 아님)

@@ -1,4 +1,7 @@
 //! Operator-registered execution location. Not an MCP tool field.
+//!
+//! `EnvironmentKind` is not a transport. `Host` may use in-process or an
+//! opt-in UDS worker on the same host. `LinuxContainer` stays fail-closed.
 
 use codespace_domain::{ErrorBody, ErrorCode};
 use serde::{Deserialize, Serialize};
@@ -11,6 +14,15 @@ pub enum EnvironmentKind {
     #[default]
     Host,
     LinuxContainer,
+}
+
+impl std::fmt::Display for EnvironmentKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Host => write!(f, "host"),
+            Self::LinuxContainer => write!(f, "linux-container"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,13 +40,28 @@ impl Environment {
     }
 }
 
-pub fn require_host_execution(kind: EnvironmentKind) -> Result<(), ErrorBody> {
+/// Internal dispatch refusal. MCP never sees this type; map with
+/// [`EnvironmentDispatchError::into_error_body`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentDispatchError {
+    UnsupportedKind { kind: EnvironmentKind },
+}
+
+impl EnvironmentDispatchError {
+    pub fn into_error_body(self) -> ErrorBody {
+        match self {
+            Self::UnsupportedKind { kind } => ErrorBody::new(
+                ErrorCode::Unauthorized,
+                format!("{kind} environment is registered but not an exec path"),
+            ),
+        }
+    }
+}
+
+pub fn require_host_execution(kind: EnvironmentKind) -> Result<(), EnvironmentDispatchError> {
     match kind {
         EnvironmentKind::Host => Ok(()),
-        EnvironmentKind::LinuxContainer => Err(ErrorBody::new(
-            ErrorCode::Unauthorized,
-            "linux-container environment is registered but not an exec path",
-        )),
+        EnvironmentKind::LinuxContainer => Err(EnvironmentDispatchError::UnsupportedKind { kind }),
     }
 }
 
@@ -50,7 +77,9 @@ mod tests {
     #[test]
     fn linux_container_is_closed_failure() {
         let err = require_host_execution(EnvironmentKind::LinuxContainer).unwrap_err();
-        assert_eq!(err.code, ErrorCode::Unauthorized);
-        assert!(err.message.contains("linux-container"));
+        let body = err.into_error_body();
+        assert_eq!(body.code, ErrorCode::Unauthorized);
+        assert!(body.message.contains("linux-container"));
+        assert!(body.operation_id.is_none());
     }
 }

@@ -1,4 +1,8 @@
 //! CodeSpace permission domain. Not a Codex type and not an MCP schema.
+//!
+//! Path glob rules are **domain only**. Live enforcement stays the coarse
+//! workspace profile (`allow(Write|Exec)`) plus PathSandbox. The Codex
+//! parser is not the gateway allow engine.
 
 use codespace_domain::Profile;
 use serde::{Deserialize, Serialize};
@@ -14,6 +18,7 @@ pub enum PathAccess {
     Deny,
 }
 
+/// Expressed path rule. Not consulted by live `apply_patch` authorization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathRule {
     pub pattern: String,
@@ -32,6 +37,8 @@ pub enum NetworkAxis {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionProfile {
     pub paths: Vec<PathRule>,
+    /// `Action::Exec` is this axis only. Write globs do not grant exec.
+    pub process_exec: bool,
     pub network: NetworkAxis,
 }
 
@@ -43,6 +50,7 @@ impl PermissionProfile {
                     pattern: "**".into(),
                     access: PathAccess::Read,
                 }],
+                process_exec: false,
                 network: NetworkAxis::Restricted,
             },
             Profile::WorkspaceWrite => Self {
@@ -50,6 +58,7 @@ impl PermissionProfile {
                     pattern: "**".into(),
                     access: PathAccess::Write,
                 }],
+                process_exec: true,
                 network: NetworkAxis::Restricted,
             },
         }
@@ -62,10 +71,11 @@ impl PermissionProfile {
                 .paths
                 .iter()
                 .any(|rule| !matches!(rule.access, PathAccess::Deny)),
-            Action::Write | Action::Exec => self
+            Action::Write => self
                 .paths
                 .iter()
                 .any(|rule| matches!(rule.access, PathAccess::Write)),
+            Action::Exec => self.process_exec,
         }
     }
 }
@@ -80,6 +90,7 @@ mod tests {
         assert!(profile.allows(Action::Read));
         assert!(!profile.allows(Action::Write));
         assert!(!profile.allows(Action::Exec));
+        assert!(!profile.process_exec);
         assert_eq!(profile.network, NetworkAxis::Restricted);
     }
 
@@ -88,7 +99,16 @@ mod tests {
         let profile = PermissionProfile::from_workspace_profile(Profile::WorkspaceWrite);
         assert!(profile.allows(Action::Write));
         assert!(profile.allows(Action::Exec));
+        assert!(profile.process_exec);
         assert_eq!(profile.network, NetworkAxis::Restricted);
+    }
+
+    #[test]
+    fn process_exec_is_independent_of_write_glob() {
+        let mut profile = PermissionProfile::from_workspace_profile(Profile::WorkspaceWrite);
+        profile.process_exec = false;
+        assert!(profile.allows(Action::Write));
+        assert!(!profile.allows(Action::Exec));
     }
 
     #[test]
@@ -98,5 +118,8 @@ mod tests {
         assert!(!profile.allows(Action::Write));
         assert!(!profile.allows(Action::Exec));
         assert!(profile.allows(Action::Read));
+        profile.process_exec = true;
+        assert!(profile.allows(Action::Exec));
+        assert!(!profile.allows(Action::Write));
     }
 }

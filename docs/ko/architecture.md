@@ -61,8 +61,8 @@ codespace-mcp  (host gateway)
    ▼
 RuntimeBackend
    ├─ default: InProcessRunner
-   └─ opt-in: ContainerRunner (CODESPACE_RUNNER=uds)
-          │ CodeSpace JSON over Unix socket
+   └─ opt-in: UdsRunner (CODESPACE_RUNNER=uds)
+          │ length-prefixed CodeSpace JSON (protocol 1, request_id rrpc-…)
           ▼
      codespace-codex-runtime
           ├─ codex-process-hardening
@@ -78,7 +78,7 @@ RuntimeBackend
                  │              └─ Codex Rust crate in-process
                  └─ exec / stdin / read / terminate
                         └─ host process (tokio::process::Command,
-                           workspace cwd, env from DTO)
+                           cwd = workspace root, env from runner-local defaults)
 
 deploy/compose.yml
    └─ isolation fixture only; not connected to exec_command
@@ -98,7 +98,7 @@ MCP JSON  →  domain params  →  gateway (policy/store)  →  Runner DTO  → 
 
 `crates/runner`는 `Runner` 트레이트, 실행 DTO, `InProcessRunner`
 (파일시스템, `apply_patch` 트랜잭션 하나, 호스트 프로세스 감독),
-`ContainerRunner`(Unix 소켓 클라이언트), compose 픽스처 검사를
+`UdsRunner`(Unix 소켓 클라이언트), compose 픽스처 검사를
 소유합니다. 기본 백엔드는 프로세스 내부입니다. 워커 바이너리는 격리된
 `crates/codex-runtime` / `codespace-codex-runtime`입니다.
 
@@ -147,9 +147,11 @@ PermissionProfile(해도 되는지), Operation(이 RPC). 도구에
 있습니다.
 [execution-substrate.md](execution-substrate.md)를 보세요.
 
-Unix 소켓 **전송**(`ContainerRunner`)은 기존 `Runner` / `InProcessRunner`
-타입 뒤에 선택적으로 있습니다. 패치 적용을 게이트웨이가 구동하는 여러
-RPC로 **쪼개면 안 됩니다**.
+Unix 소켓 **전송**(`UdsRunner`)은 기존 `Runner` / `InProcessRunner`
+타입 뒤에 선택적으로 있습니다. Host + UDS는 같은 호스트이며 Linux
+격리를 주장하지 않습니다. `LinuxContainer`는 닫힌 실패입니다
+(`UNAUTHORIZED`, `operation_id` 없음). 패치 적용을 게이트웨이가
+구동하는 여러 RPC로 **쪼개면 안 됩니다**.
 
 ```text
 Runner.apply_patch(request)
@@ -223,9 +225,11 @@ Codex 제품 대 프리미티브: [codex-reuse.md](codex-reuse.md).
 
 ## ID
 
-HTTP/JSON-RPC 요청 id, `operation_id`, `process_id`, `work_id`,
-`intent_id`는 서로 다른 식별자입니다. 잃어버린 HTTP 응답은 실행 실패가
-아닙니다. 클라이언트는 변경 도구를 재실행하는 대신 `operation_status`를
+HTTP/JSON-RPC 요청 id, `operation_id`, `operation_key`, `process_id`,
+`work_id`, `intent_id`, 러너 `request_id`(`rrpc-…`)는 서로 다른
+식별자입니다. 잃어버린 HTTP 응답은 실행 실패가 아닙니다. 유실된 UDS
+`apply_patch` 응답은 `rejected`가 아니라 `unknown`으로 기록됩니다.
+클라이언트는 변경 도구를 재실행하는 대신 `operation_status`를
 호출합니다.
 
 ```text
@@ -270,8 +274,9 @@ validate request
 `apply_patch`는 `git apply`로 조용히 폴백하지 않습니다. 상태 값은
 `applied` / `checked` / `rejected` / `failed_rolled_back` /
 `failed_partial` / `unknown`입니다. `checked`는 성공한 `check_only`
-미리보기(쓰기 없음)입니다. `rejected`는 실제 거절입니다. after-version
-검증 없는 성공 문구는 금지입니다.
+미리보기(쓰기 없음)입니다. `rejected`는 실제 거절입니다. 전송이 모호하면
+(디스패치 후 소켓 끊김) `unknown`으로 끝내며 `rejected`로 저장하면 안
+됩니다. after-version 검증 없는 성공 문구는 금지입니다.
 
 롤백은 `git reset --hard`를 쓰면 안 되고, 파일별 복원 대신 디렉터리
 트리 전체를 덮어쓰면 안 됩니다.
@@ -286,7 +291,7 @@ crates/policy/          registry, PermissionProfile, Environment
 crates/patch/           Codex adapter + codespace-patch helper (own workspace)
 crates/codex-runtime/   isolated worker: hardening + UDS + InProcessRunner
 crates/store/           SQLite operations, works, intents; in-memory resource locks
-crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host supervisor, ContainerRunner, fixture checks
+crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host supervisor, UdsRunner, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
 docs/                   including operations.md (W12), codex-reuse.md,

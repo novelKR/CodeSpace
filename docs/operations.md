@@ -46,8 +46,11 @@ cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 crate **in-process**. It is not the upstream standalone `apply_patch`
 binary and not the retired `native/patch-worker`. `codespace-codex-runtime`
 binds a private Unix socket with `codex-process-hardening` and
-`codex-uds`, then runs `InProcessRunner`. Default `exec_command` still
-uses in-process host spawn.
+`codex-uds`, then runs `InProcessRunner`. Hardening is **worker/helper
+process** hardening (`pre_main_hardening()` as the first line of
+`main`; no `ctor`), not a command sandbox. Default `exec_command` still
+uses in-process host spawn. Exec DTO cwd is `WorkspaceRoot`; `PATH` /
+`HOME` / `LANG` are applied inside the runner process.
 
 ## Workspace registry
 
@@ -169,12 +172,16 @@ response is not an execution failure.
   `operation_id` or the client `operation_key` instead of blindly
   re-running `apply_patch`. Providing both or neither is an error.
 - After a crash, unfinished rows are `unknown`. The server does **not**
-  auto-replay them. Inspect the workspace, then start a **new**
-  `operation_key` if you still want the change.
+  auto-replay them. A lost UDS `apply_patch` response is stored as
+  `unknown`, never a disk-contradicting `rejected`. Inspect the
+  workspace, then start a **new** `operation_key` if you still want the
+  change.
 - A live `exec_command` process can outlive the MCP request. Use
   `read_process` / `terminate_process` with the issued `process_id`.
-  After gateway restart, old OS PIDs are not reused as CodeSpace
-  handles.
+  Ambiguous transport keeps the process-owned lease. `ProcessExited`
+  from the worker calls `release_process` so `WORKSPACE_BUSY` does not
+  stick forever. After gateway restart, old OS PIDs are not reused as
+  CodeSpace handles.
 
 ## What this document does not verify
 

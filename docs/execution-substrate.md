@@ -59,9 +59,11 @@ The rust job checks the pin SHA (`PIN_ONLY=1`) **before** fmt/clippy.
 
 `read-only` / `workspace-write` stay the live MCP profiles. Richer
 filesystem glob + network axes live in `crates/policy` as
-`PermissionProfile`, mapped from those profiles. The network axis is
-recorded only; it does not grant. This is not an import of Codex user
-config.
+`PermissionProfile`, mapped from those profiles. `process_exec` is the
+Exec axis (`read-only` denies, `workspace-write` allows). Path globs are
+**domain only**; live enforcement stays coarse `allow(Write|Exec)` plus
+PathSandbox. The network axis is recorded only; it does not grant. This
+is not an import of Codex user config.
 
 ## Four axes (target domain)
 
@@ -85,8 +87,9 @@ Process / Patch / FS
 - **Workspace** stays the selector on MCP (`workspace_id` + relative
   path). Internally the runner may resolve to an absolute path.
 - **PermissionProfile** shape (Read / Write / Deny on path, glob, or
-  special roots; separate network axis) may follow App Server. The
-  **engine that grants** is CodeSpace policy.
+  special roots; `process_exec`; separate network axis) may follow App
+  Server. Globs are expressed, not live-enforced. The **engine that
+  grants** is CodeSpace policy.
 - **Operation** is already `operation_id` / `operation_key` /
   `operation_status`. Diff/audit ledger is P1, not conversation
   history.
@@ -111,8 +114,10 @@ cwd, env, PTY size, `sandboxPolicy` / `permissionProfile`. Follow-ups:
 write, resize, terminate. Streaming is `outputDelta`.
 
 That **shape** is on Runner DTOs today (plus `process_resize` when PTY
-exists). Gateway fills cwd, env, timeout, output cap, `tty: false`, and
-a policy summary. Live MCP remains:
+exists). Gateway fills `cwd: WorkspaceRoot`, runner-local env defaults
+(`PATH` / `HOME` / `LANG` applied in the runner process; not the
+gateway `PATH` or a host absolute cwd), timeout, output cap,
+`tty: false`, and a policy summary. Live MCP remains:
 
 ```text
 exec_command / write_stdin / read_process / terminate_process
@@ -167,9 +172,11 @@ Today one workspace write lock plus shell occupancy is enough. App
 Server serializes by resource (exclusive vs shared read). The target
 scopes are Environment, Workspace, Path, Process, Operation, Watch —
 not Thread. `crates/store` now uses an in-memory resource serializer
-for those keys. SQLite schema is unchanged. MVP still takes workspace
-exclusive for `apply_patch` and live shells (`WORKSPACE_BUSY`);
-`read` / `find` stay shared with no lock.
+for those keys. SQLite schema is unchanged. MVP takes request-owned
+exclusive for `apply_patch` and process-owned exclusive for live shells
+(`WORKSPACE_BUSY`); `ProcessExited` (or in-process exit) calls
+`release_process`. `read` / `find` stay unlocked. Shared-read is typed
+only.
 
 ## `fs/watch` and search
 
@@ -219,16 +226,18 @@ resource.
 
 ## Roadmap (implementation later)
 
-P0 code for this substrate is in: Runner exec DTO **shape**,
-`PermissionProfile` and Environment in `crates/policy`, resource
-serializer, opt-in `ContainerRunner` + `codespace-codex-runtime`
-(process-hardening + UDS). MCP schemas stay frozen.
+P0 code for this substrate is in: Runner exec DTO **shape**
+(`RunnerCwd::WorkspaceRoot`, runner-local env defaults),
+`PermissionProfile` (`process_exec`) and Environment in `crates/policy`,
+resource serializer (request vs process owners), opt-in `UdsRunner` +
+`codespace-codex-runtime` (process-hardening + UDS). MCP schemas stay
+frozen.
 
 **P0** — landed or next subgraph WPs: `codex-apply-patch` (done), exec
 runtime **shape** on Runner DTOs (done), PermissionProfile domain in
 `crates/policy` (done), Environment domain (operator-registered; not a
 tool arg) (done), resource serializer (done), transport
-(`ContainerRunner`) with process-hardening + UDS (done, opt-in). Still
+(`UdsRunner`) with process-hardening + UDS (done, opt-in). Still
 out: PTY → filesystem → linux-sandbox → network.
 
 **P1** — operation state machine / diff ledger, approval fallback

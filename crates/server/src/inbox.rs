@@ -192,7 +192,7 @@ async fn stop_work(
         .runner
         .terminate_workspace(&work.workspace_id.0)
         .await
-        .map_err(InboxError)?;
+        .map_err(|err| InboxError(err.into_error_body()))?;
     let reason = body.and_then(|Json(b)| b.reason).unwrap_or_default();
     let intent = handler
         .store

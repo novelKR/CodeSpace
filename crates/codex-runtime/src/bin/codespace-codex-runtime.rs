@@ -1,9 +1,8 @@
 //! Isolated runner worker. Binds a CodeSpace RPC Unix socket with Codex UDS helpers.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use codespace_runner::{serve_runner_connection, InProcessRunner};
+use codespace_runner::{host_worker, serve_runner_connection};
 
 #[tokio::main]
 async fn main() {
@@ -33,9 +32,9 @@ async fn main() {
         .expect("bind runner socket");
     loop {
         let stream = listener.accept().await.expect("accept runner socket");
-        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let (runner, events) = host_worker();
         tokio::spawn(async move {
-            let _ = serve_runner_connection(stream, runner).await;
+            let _ = serve_runner_connection(stream, runner, events).await;
         });
     }
 }
