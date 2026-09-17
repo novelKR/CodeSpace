@@ -142,7 +142,7 @@ impl InProcessRunner {
         ws.require_exec()?;
         if req.argv.is_empty() || req.argv[0].is_empty() {
             return Err(ErrorBody::new(
-                ErrorCode::InvalidPatch,
+                ErrorCode::InvalidCommand,
                 "command must be a non-empty argv (no shell)",
             ));
         }
@@ -199,9 +199,12 @@ impl InProcessRunner {
         for (key, value) in &req.env.overrides {
             child.env(key, value);
         }
-        let mut spawned = child
-            .spawn()
-            .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+        let mut spawned = child.spawn().map_err(|err| {
+            ErrorBody::new(
+                ErrorCode::ProcessSpawnFailed,
+                format!("failed to spawn process: {err}"),
+            )
+        })?;
         let stdin = spawned.stdin.take();
         let stdout = spawned.stdout.take();
         let stderr = spawned.stderr.take();
@@ -303,7 +306,12 @@ impl InProcessRunner {
         };
         let mut session = codespace_pty::spawn(&req.argv[0], &args, &cwd, &env)
             .await
-            .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err))?;
+            .map_err(|err| {
+                ErrorBody::new(
+                    ErrorCode::ProcessSpawnFailed,
+                    format!("failed to spawn process: {err}"),
+                )
+            })?;
         let stdout = session
             .take_stdout()
             .ok_or_else(|| ErrorBody::new(ErrorCode::InvalidPatch, "PTY stdout missing"))?;
@@ -763,6 +771,68 @@ mod tests {
         assert_eq!(
             err.as_execution().map(|body| body.code),
             Some(ErrorCode::Unauthorized)
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_argv_is_invalid_command() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let err = runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec![],
+                    ProcessId("proc-empty".into()),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.as_execution().map(|body| body.code),
+            Some(ErrorCode::InvalidCommand)
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_executable_is_process_spawn_failed() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let err = runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/no/such/codespace-exec".into()],
+                    ProcessId("proc-missing".into()),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.as_execution().map(|body| body.code),
+            Some(ErrorCode::ProcessSpawnFailed)
+        );
+    }
+
+    #[tokio::test]
+    async fn tty_missing_executable_is_process_spawn_failed() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let mut req = RunnerExecRequest::for_host(
+            vec!["/no/such/codespace-exec".into()],
+            ProcessId("proc-tty-missing".into()),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = true;
+        let err = runner.exec(&ws, req).await.unwrap_err();
+        assert_eq!(
+            err.as_execution().map(|body| body.code),
+            Some(ErrorCode::ProcessSpawnFailed)
         );
     }
 

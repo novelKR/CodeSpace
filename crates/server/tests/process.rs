@@ -650,6 +650,11 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         .expect("exec_command");
     let exec_desc = exec.description.as_deref().unwrap_or("");
     assert!(exec_desc.contains("dispatch_status=unknown"), "{exec_desc}");
+    assert!(exec_desc.contains("PROCESS_SPAWN_FAILED"), "{exec_desc}");
+    assert!(
+        exec_desc.contains("distinct from dispatch_status=unknown"),
+        "{exec_desc}"
+    );
     assert!(exec_desc.contains("WORKSPACE_BUSY"), "{exec_desc}");
     assert!(
         exec_desc.contains("uncertain attempt") || exec_desc.contains("backend remains reachable"),

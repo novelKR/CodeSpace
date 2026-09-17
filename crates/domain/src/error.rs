@@ -10,6 +10,8 @@ pub enum ErrorCode {
     WorkspaceNotFound,
     WorkspaceBusy,
     InvalidPatch,
+    InvalidCommand,
+    ProcessSpawnFailed,
     PathEscape,
     SymlinkRejected,
     SpecialFileRejected,
@@ -87,6 +89,10 @@ mod tests {
         assert_eq!(json, "\"UNAUTHORIZED\"");
         let json = serde_json::to_string(&ErrorCode::InvalidPatch).unwrap();
         assert_eq!(json, "\"INVALID_PATCH\"");
+        let json = serde_json::to_string(&ErrorCode::InvalidCommand).unwrap();
+        assert_eq!(json, "\"INVALID_COMMAND\"");
+        let json = serde_json::to_string(&ErrorCode::ProcessSpawnFailed).unwrap();
+        assert_eq!(json, "\"PROCESS_SPAWN_FAILED\"");
         let json = serde_json::to_string(&ErrorCode::IntentAlreadyClaimed).unwrap();
         assert_eq!(json, "\"INTENT_ALREADY_CLAIMED\"");
         let json = serde_json::to_string(&ErrorCode::WorkClosed).unwrap();
