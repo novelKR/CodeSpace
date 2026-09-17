@@ -164,8 +164,8 @@ crates/store/           SQLite operations
 crates/runner/          later process split; MVP called in-process
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{contract,parity,security,recovery,e2e}/
-docs/
-deploy/
+docs/                  including operations.md (W12)
+deploy/                 unprivileged Linux runner example
 ```
 
 ## Out of scope (initial)

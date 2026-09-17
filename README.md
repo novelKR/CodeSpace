@@ -22,11 +22,15 @@ apply/rollback reporting, and process lifetime.
 
 ## Status
 
-W01 contracts live in `docs/`. W02 is a real `codespace-mcp` process
-(stdio + Streamable HTTP). Live tools grow per work-package PR. Codex
-V4A apply is `crates/patch` calling the pinned submodule in-process
-(see [docs/upstream-lock.md](docs/upstream-lock.md)). Do not commit
-features directly to `main`.
+Live MCP tools include `workspace_info`, `read`, `find`, `apply_patch`,
+`operation_status`, `exec_command`, `write_stdin`, `read_process`, and
+`terminate_process`. Codex V4A apply is `crates/patch` calling the
+pinned submodule in-process
+(see [docs/upstream-lock.md](docs/upstream-lock.md)).
+
+Install, HTTP/stdio, logs, and recovery:
+[docs/operations.md](docs/operations.md).
+Do not commit features directly to `main`.
 
 ## Run
 
@@ -40,6 +44,7 @@ Tests: `cargo test --workspace` and
 `cargo test --manifest-path crates/patch/Cargo.toml`. ChatGPT Custom
 Connector steps and what is **not** verified:
 [docs/chatgpt-connector.md](docs/chatgpt-connector.md).
+Operator install: [docs/operations.md](docs/operations.md).
 
 ## License
 
