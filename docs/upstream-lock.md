@@ -73,5 +73,7 @@ CodeSpace preflight, not by assuming `apply_patch --check` exists.
 2. W06: submodule + adapter + parity subset (this pin).
 3. If parity fails, **do not ship**. Change adapter options or pick
    another revision; do not paper over mismatches.
-4. W13: pin-update procedure. Never `git submodule update` to latest
-   `main` as a deploy step.
+4. W13: follow [upstream-update.md](upstream-update.md). Never `git
+   submodule update --remote` to latest Codex `main` as a deploy step.
+   `scripts/check-upstream-pin.sh` must stay red if the SHA or patch
+   tests fail.
