@@ -87,9 +87,11 @@ Client-facing execution semantics stay on that surface. `initialize.instructions
 states global invariants (request lifetime ≠ process lifetime, host is
 not an OS sandbox, unenforced network is not permission). `workspace_info`
 with a `workspace_id` adds an `execution` object (permissions vs backend
-support, `process.available` as effective process reachability, PTY,
+support, `process.available` as permission and backend support (not
+occupancy; `exec_command` may still return `WORKSPACE_BUSY`), PTY,
 mutation lease, isolation, network). `process.available` requires both
-exec permission and backend support; tool existence is `tools_exposed`.
+exec permission and backend support and does not include transient
+occupancy; tool existence is `tools_exposed`.
 `output_combined=true` means `read_process` exposes one combined stream;
 stdout/stderr identity is not preserved. `exec_command` results add
 `dispatch_status` (`confirmed` or `unknown`).

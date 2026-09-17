@@ -74,8 +74,9 @@ Treat apply_patch status=unknown as possibly executed. Do not blindly retry \
 the mutation with a new operation_key.
 
 If exec_command reports dispatch_status=unknown, the spawn may have occurred. \
-Keep the returned process_id and inspect or terminate that handle rather than \
-starting a duplicate process.
+Do not blindly start a duplicate process. The returned process_id identifies \
+the uncertain attempt. Use read_process or terminate_process when the backend \
+remains reachable; do not assume that unknown means the process did not start.
 
 Claim user intents only at major checkpoints and before work_finish.";
 
@@ -118,7 +119,7 @@ impl CodeSpace {
 
     #[tool(
         name = "workspace_info",
-        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. process.available is the effective ability to start a managed process in this workspace; it requires both exec permission and backend support. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
+        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. process.available reflects permission and backend support only. It does not include transient workspace occupancy; exec_command may still return WORKSPACE_BUSY. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
     )]
     async fn workspace_info(
         &self,
@@ -203,7 +204,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not start a duplicate process; inspect or terminate the returned process_id instead."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start."
     )]
     async fn exec_command(
         &self,
@@ -637,6 +638,12 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("dispatch_status=unknown"), "{text}");
+        assert!(text.contains("uncertain attempt"), "{text}");
+        assert!(text.contains("backend remains reachable"), "{text}");
+        assert!(
+            !text.contains("inspect or terminate that handle rather than"),
+            "{text}"
+        );
         assert!(text.contains("major checkpoints"), "{text}");
     }
 

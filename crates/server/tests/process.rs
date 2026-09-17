@@ -651,12 +651,22 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     let exec_desc = exec.description.as_deref().unwrap_or("");
     assert!(exec_desc.contains("dispatch_status=unknown"), "{exec_desc}");
     assert!(exec_desc.contains("WORKSPACE_BUSY"), "{exec_desc}");
+    assert!(
+        exec_desc.contains("uncertain attempt") || exec_desc.contains("backend remains reachable"),
+        "{exec_desc}"
+    );
+    assert!(
+        !exec_desc.contains("inspect or terminate the returned process_id instead"),
+        "{exec_desc}"
+    );
     let info_tool = tools
         .iter()
         .find(|tool| tool.name.as_ref() == TOOL_WORKSPACE_INFO)
         .expect("workspace_info");
     let info_desc = info_tool.description.as_deref().unwrap_or("");
     assert!(info_desc.contains("process.available"), "{info_desc}");
+    assert!(info_desc.contains("occupancy"), "{info_desc}");
+    assert!(info_desc.contains("WORKSPACE_BUSY"), "{info_desc}");
     let patch = tools
         .iter()
         .find(|tool| tool.name.as_ref() == TOOL_APPLY_PATCH)

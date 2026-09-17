@@ -58,8 +58,10 @@ rows as `unknown` and does not auto-apply.
 
 `exec_command` can return a successful result with
 `dispatch_status=unknown` when spawn may have occurred. That is not a
-transport error body. Keep the returned `process_id`; do not start a
-duplicate process.
+transport error body. The returned `process_id` identifies the uncertain
+attempt. Do not start a duplicate process. Use `read_process` or
+`terminate_process` when the backend remains reachable; do not assume
+unknown means the process did not start.
 
 After `begin` mints an `operation_id`, tool errors include that id on
 `ErrorBody.operation_id`. Policy / lock / key-conflict refusals before

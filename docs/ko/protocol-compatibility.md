@@ -87,9 +87,10 @@ MRTR을 요구하기 전에 미래의 `approval_*` 폴백이 옵니다. 대화�
 전역 불변식(요청 수명 ≠ 프로세스 수명, host는 OS sandbox가 아님,
 강제되지 않은 네트워크는 허가가 아님)을 말합니다. `workspace_id`가 있는
 `workspace_info`는 `execution` 객체(권한 대 백엔드 지원,
-`process.available`은 실제 process 도달 가능성, PTY, mutation
+`process.available`은 권한과 백엔드 지원이지 occupancy가 아님, PTY, mutation
 lease, 격리, 네트워크)를 더합니다. `process.available`은 exec 권한과
-백엔드 지원이 모두 필요합니다. 도구 존재는 `tools_exposed`입니다.
+백엔드 지원이 모두 필요하며 transient occupancy는 포함하지 않습니다.
+도구 존재는 `tools_exposed`입니다.
 `output_combined=true`는 `read_process`가 하나의 combined stream만
 노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
 `exec_command` 결과는

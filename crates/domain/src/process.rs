@@ -21,7 +21,9 @@ pub struct ExecCommandParams {
 pub enum ExecDispatchStatus {
     /// Backend confirmed the spawn request result. The process may already have exited.
     Confirmed,
-    /// Spawn may have occurred. Do not start a duplicate process.
+    /// Spawn may have occurred. Do not start a duplicate process. The
+    /// process_id identifies the uncertain attempt; inspect or terminate
+    /// only when the backend remains reachable.
     Unknown,
 }
 

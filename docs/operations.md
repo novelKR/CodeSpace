@@ -75,8 +75,9 @@ is not a product profile. Optional operator `environments` may register
 `linux-container` is not an exec path. Tools and `workspace_info` have
 no `environment_id`. Call `workspace_info` with a `workspace_id` to read
 the effective execution contract (`execution`): policy vs backend support,
-`process.available` (exec permission and backend support together; tool
-existence is `tools_exposed`), fixed 24x80 PTY without resize when a
+`process.available` (permission and backend support only; not occupancy —
+`exec_command` may still return `WORKSPACE_BUSY`; tool existence is
+`tools_exposed`), fixed 24x80 PTY without resize when a
 process is available, mutation lease / `WORKSPACE_BUSY`, workspace-scoped
 file tools vs no command sandbox, and restricted network policy without
 OS enforcement. `output_combined=true` means `read_process` exposes one

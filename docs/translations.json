@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "fe0a683a214c8bc140443e5f2f16edf489b402e53430a7bcf752fc6c09cad5a3",
-      "translation_sha256": "98ae28812627212495705eb010989ee64642fb83510df346853e1c006eb261fc"
+      "source_sha256": "95acea9fac8028820db66054760465bbd2f1ea9c5adaed91d8569d0a5ff9b273",
+      "translation_sha256": "c2a6c77bf38c9d803dfbde321eb67accdf7eea4f163010db4bdbdc853756a31b"
     },
     {
       "id": "chatgpt-connector",
@@ -200,8 +200,8 @@
         "핵심-기준",
         "핵심이-요구하면-안-되는-것"
       ],
-      "source_sha256": "9dfe4468a8593fe02fcb0b07af3c663c81c7d22486fbd707977addaf54dd2b02",
-      "translation_sha256": "60f6790ec8625957f389e2260521645d73a87afcdbbb3738c67de89207baabd3"
+      "source_sha256": "e2caf3ae9cc3af2fed2571dff1efaf0679e00ae6d292dbc3c746232cda9f5eaa",
+      "translation_sha256": "2f8c1f20e7d8e3895ef1228d6f7fbf5caddbfab134af400f437e852f9e384877"
     },
     {
       "id": "behavior-differences",
@@ -290,8 +290,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "901957b0b24e52ef352803ba8c4f8dd75d18daabdcd493524d4f428011a8c707",
-      "translation_sha256": "611f2cd04ec541ef9e245c915acfd6c3c0ae67544e5d16a75cc2019c9c3c6684"
+      "source_sha256": "dab38c9770254d09c4f9f8656d37fe38b3cc3f4b0f0a7dff53756f3236370709",
+      "translation_sha256": "9170c066e477d264eed80e097847c33face0c44862de57c8ba702f6e38cbcb92"
     },
     {
       "id": "codex-reuse",

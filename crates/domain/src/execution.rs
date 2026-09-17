@@ -61,11 +61,15 @@ pub struct ProcessCapabilityInfo {
     pub tty: PtyCapabilityInfo,
 }
 
-/// Effective reachability of a managed process in this workspace.
+/// Static eligibility of a managed process in this workspace.
+///
 /// `available` is `permissions.exec && environment.exec_supported`.
+/// It does not include transient workspace occupancy; `exec_command` may
+/// still return `WORKSPACE_BUSY`. Occupancy rules are in `serialization`.
 /// Tool existence is reported separately by `tools_exposed`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessExecutionInfo {
+    /// Permission and backend support only. Not current occupancy.
     pub available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<ProcessCapabilityInfo>,
@@ -127,7 +131,7 @@ pub struct WorkspaceExecutionInfo {
 
 impl WorkspaceExecutionInfo {
     /// Assemble the advertised contract from already-evaluated axes.
-    /// `process.available` is `permissions.exec && environment.exec_supported`.
+    /// `process.available` is permission and backend support, not occupancy.
     pub fn from_effective(
         environment: EnvironmentExecutionInfo,
         permissions: EffectivePermissionInfo,

@@ -61,7 +61,9 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 
 `exec_command`는 spawn이 일어났을 수 있을 때 성공 결과에
 `dispatch_status=unknown`을 실을 수 있습니다. 그것은 전송 오류 본문이
-아닙니다. 반환된 `process_id`를 유지하고 새 프로세스를 시작하지 마세요.
+아닙니다. 반환된 `process_id`는 그 불확정 시도를 식별합니다. 새
+프로세스를 시작하지 마세요. 백엔드가 도달 가능할 때만 `read_process` /
+`terminate_process`를 쓰세요. unknown이 시작되지 않았다는 뜻은 아닙니다.
 
 `begin`이 `operation_id`를 발급한 뒤, 도구 오류는 그 id를
 `ErrorBody.operation_id`에 포함합니다. `begin` 전의 정책 / 잠금 /
