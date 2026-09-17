@@ -151,11 +151,27 @@ Gateway → Runner trait → (later) ContainerRunner
 ```
 
 Root workspace must not grow a Codex path dependency.
-`scripts/check-no-model-deps.sh` scans
-`crates/{domain,policy,runner,store,server}` only. A future isolated
-runtime workspace is excluded like `crates/patch` and may take an
-**approved** execution subgraph. This WP does not change the scan
-patterns.
+
+Policy scan (`scripts/check-no-model-deps.sh`) is a cheap parallel CI
+job **without** the Codex submodule. Cost is dominated by submodule
+checkout and cargo, not this grep.
+
+| Zone | Paths | Cost | When |
+| --- | --- | --- | --- |
+| core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
+| core sources | those crates’ trees | low | same |
+| server tests | `tests/` | low | `crates/server` or `tests/` changed |
+| adapter | `crates/patch`, later `crates/codex-runtime` | — | never (approved subgraph) |
+| upstream | `third_party/codex` | huge / false positives | never |
+
+Update range is `SCAN_BASE` (PR base / previous `main`). Unknown range
+scans **all** core crates (never skip because the diff failed). Docs-only
+changes skip this job with exit 0; the rust job still runs.
+
+Manifests forbid any `codex-` dependency key. Sources keep the
+agent/model patterns (`api.openai.com`, Responses, `codex-login`,
+`codex-core`, `codex-app-server`, `async-openai`). Comments that mention
+a crate name are not cargo deps.
 
 Do **not** wrap the standalone `apply_patch` binary as a security
 boundary. Do **not** wrap Codex App Server as an internal backend.

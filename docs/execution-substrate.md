@@ -36,9 +36,12 @@ The adapter may. Take/leave table:
 Survey notes that mention Codex `main` `4701aa4b` are **not** a pin
 bump. Re-check graphs after a deliberate W13 update.
 
-CI: `scripts/check-no-model-deps.sh` (root workspace crates only;
-future `crates/codex-runtime` is excluded like `crates/patch` and may
-take an approved subgraph). This WP does not change scan patterns.
+CI: `policy-scan` job runs `scripts/check-no-model-deps.sh` **without**
+submodules, in parallel with `rust`. Core manifests may not declare
+`codex-*` deps. Core sources keep the agent/model grep. `crates/patch`,
+future `crates/codex-runtime`, and `third_party/codex` are out of
+scope. `SCAN_BASE` limits the tree to the update range; unknown range
+scans all core crates. Clippy/tests still always run.
 
 ## Invariant
 

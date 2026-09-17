@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  policy-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - name: Core Codex / model dep scan
+        env:
+          SCAN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: ./scripts/check-no-model-deps.sh
+
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -25,8 +37,6 @@ jobs:
           cargo clippy --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
       - name: Upstream pin
         run: PIN_ONLY=1 ./scripts/check-upstream-pin.sh
-      - name: No model or Responses deps
-        run: ./scripts/check-no-model-deps.sh
       - name: Test
         run: |
           ./scripts/check-upstream-pin.sh
