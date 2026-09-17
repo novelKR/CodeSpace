@@ -42,6 +42,12 @@ enhancement flags. Handlers keep `tools/call` even when those flags are
 true. Work/steer is application state (`work_id` / `intent_id`), not MCP
 Tasks, MRTR, or subscriptions.
 
+Later **approval** or long-running **Tasks** (see
+[execution-substrate.md](execution-substrate.md)) must keep a 2025-11-25
+`tools/call` path. Extra permission is a policy refusal today. A future
+`approval_*` fallback comes before requiring MRTR. Interactive processes
+stay `process_id` handles; Tasks must not replace them.
+
 ## 2026-07-28
 
 When a client negotiates 2026-07-28, the server may advertise enhancement
@@ -56,7 +62,8 @@ prove fallback. They do **not** replace 2025-11-25-only coverage.
 - **2024-11-05 HTTP+SSE.** Not a target. `rmcp` 3.x does not provide that
   transport.
 - Implementing MRTR, Tasks, or subscriptions. Those remain optional
-  progressive enhancement and are **not** required for work/steer.
+  progressive enhancement and are **not** required for work/steer,
+  exec, patch, or a future approval flow.
 - Browser Inbox UI (HTTP `/inbox` JSON is in this release).
 
 ## Tests

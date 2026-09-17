@@ -34,6 +34,8 @@ inside the `codespace-patch` helper
 (see [docs/upstream-lock.md](docs/upstream-lock.md)).
 Codex product runtime stays out; primitive reuse:
 [docs/codex-reuse.md](docs/codex-reuse.md).
+Execution-only (no Responses API):
+[docs/execution-substrate.md](docs/execution-substrate.md).
 Deferred user intent is edited on HTTP `/inbox` (not MCP).
 
 Current vs target process layout:

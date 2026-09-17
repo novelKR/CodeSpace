@@ -10,8 +10,8 @@ pinned Rust engine, and runs managed commands in a registered workspace.
 | Is | Is not |
 | --- | --- |
 | Independent MCP server | Fork of CoS or cokacremote |
-| Execution environment + contract | Codex agent wrapper |
-| File read / patch / managed exec | Internal chat, Goal/Loop, multi-agent |
+| Execution-only environment + contract | Codex agent / App Server wrapper |
+| File read / patch / managed exec | Internal chat, Goal/Loop, multi-agent, Responses API |
 | Gateway policy + (target) OS/container isolation | Kernel sandbox equivalent to Codex CLI |
 
 Borrowed ideas (not code dumps):
@@ -28,7 +28,9 @@ Not taken: Electron, Chrome extension, ChatGPT DOM, agents spawn, Desktop,
 plugin marketplace, TypeScript `apply-patch` port, `git apply --unsafe-paths`,
 wrapping the standalone `apply_patch` binary as the security boundary
 (that path uses sandbox `None` and follows symlinks by default), a
-TypeScript MCP gateway, or the retired `native/patch-worker` tree.
+TypeScript MCP gateway, the retired `native/patch-worker` tree, or any
+outbound model client. Execution-only invariant:
+[execution-substrate.md](execution-substrate.md).
 
 ## Current layout
 
@@ -119,6 +121,11 @@ Runner process boundary
    isolated Linux workspace
 ```
 
+Target **domain** (not live MCP fields): Environment (where), Workspace
+(what), PermissionProfile (may), Operation (this RPC). Do not add
+`environment_id` to tools until that WP. See
+[execution-substrate.md](execution-substrate.md).
+
 The next **implementation** work package is **transport** (Unix socket /
 `ContainerRunner`) behind the existing `Runner` / `InProcessRunner`
 types. It must **not** split patch apply into multiple gateway-driven
@@ -186,6 +193,7 @@ No internal model-calling tool exists. `git_apply_patch` is out of MVP.
 Error codes and transport-vs-execution rules: [error-codes.md](error-codes.md).
 Linux isolation fixture: [runner-isolation.md](runner-isolation.md).
 Codex product vs primitive: [codex-reuse.md](codex-reuse.md).
+Execution-only substrate: [execution-substrate.md](execution-substrate.md).
 
 ## IDs
 
@@ -255,7 +263,8 @@ crates/store/           SQLite operations, works, and intents
 crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host process supervisor, fixture checks
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
-docs/                   including operations.md (W12), codex-reuse.md (W17)
+docs/                   including operations.md (W12), codex-reuse.md,
+                        execution-substrate.md (W17)
 deploy/                 unprivileged Linux isolation fixture
 ```
 

@@ -9,7 +9,9 @@ V4A) via `crates/patch`. That is the working example, not a vow that
 no other primitive may ever be taken. Product runtime (App Server,
 `codex-core`, `codex-exec`, login, models) stays out. Lower execution
 primitives are judged in [codex-reuse.md](codex-reuse.md) before they
-touch the Runner. No extra Codex crate is on the graph today.
+touch the Runner. Execution-only rules:
+[execution-substrate.md](execution-substrate.md). No extra Codex crate
+is on the graph today.
 
 ## Deployment pin (W06)
 

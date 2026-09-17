@@ -8,6 +8,12 @@ W16:
 > primitives** when their crate boundary is as clear as
 > `codex-apply-patch`.
 
+This process is execution-only: no model, no Responses API
+([execution-substrate.md](execution-substrate.md)). App Server
+**protocol** is not an MCP translation target. `command/exec` **shape**
+(standalone argv, handles, later TTY) may land on Runner DTOs;
+`codex-exec` / App Server crates stay forbidden.
+
 Same features (exec handles, path limits, patch apply, steering-shaped
 queues) do not imply the same implementation cut. Codex layers are not
 clean libraries. CodeSpace needs its own authorization, workspace
@@ -188,3 +194,8 @@ landlock/seccomp/PTY by default.” Attach a candidate from the table
 only after this graph test, using the `crates/patch` isolation
 pattern. Pin bump is a separate, deliberate release
 ([upstream-update.md](upstream-update.md)).
+
+Domain expansion (PermissionProfile axes, Environment, scheduler,
+approval tools) is sequenced in
+[execution-substrate.md](execution-substrate.md). None of that changes
+live MCP schemas in this work package.
