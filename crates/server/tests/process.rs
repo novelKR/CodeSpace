@@ -343,7 +343,7 @@ async fn output_is_bounded() {
         sleep(Duration::from_millis(40)).await;
     }
     assert!(
-        chunk.len() <= codespace_server::supervisor::MAX_OUTPUT_BYTES,
+        chunk.len() <= codespace_runner::MAX_OUTPUT_BYTES,
         "output ring must stay bounded, got {}",
         chunk.len()
     );

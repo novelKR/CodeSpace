@@ -7,10 +7,10 @@ pub mod inbox;
 pub mod logging;
 pub mod mcp;
 pub mod patch_helper;
+pub mod patch_verify;
 pub mod protocol;
 pub mod rollback;
 pub mod stdio;
-pub mod supervisor;
 
 pub use config::{HttpConfig, INBOX_PATH, MCP_PATH};
 pub use mcp::CodeSpace;

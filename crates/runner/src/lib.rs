@@ -1,6 +1,7 @@
-//! Runner isolation. Linux containers are the execution OS. macOS hosts may
-//! run the path sandbox for unit tests; that does **not** verify Linux
-//! isolation.
+//! Path sandbox, in-process host process supervisor, and isolation-fixture
+//! checks. Linux containers are the **target** execution OS. macOS hosts
+//! may run the path sandbox for unit tests; that does **not** verify Linux
+//! isolation. `exec_command` is not dispatched into compose.
 
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
@@ -63,8 +64,13 @@ impl PathSandbox {
 }
 
 mod files;
+mod process;
 
 pub use files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT, VERSION_ABSENT};
+pub use process::{
+    InProcessRunner, RetentionPolicy, Runner, ShellRelease, DEFAULT_COMPLETED_TTL,
+    DEFAULT_MAX_COMPLETED, DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT, MAX_OUTPUT_BYTES,
+};
 
 pub fn compose_allows_marker(compose: &str, marker: &str) -> bool {
     compose.contains(marker)

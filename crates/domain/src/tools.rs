@@ -1,5 +1,5 @@
 pub const SERVER_NAME: &str = "codespace";
-pub const SERVER_VERSION: &str = "0.3.0";
+pub const SERVER_VERSION: &str = "0.6.0";
 
 pub const TOOL_WORKSPACE_INFO: &str = "workspace_info";
 pub const TOOL_READ: &str = "read";

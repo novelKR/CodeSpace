@@ -1,5 +1,6 @@
-# Unprivileged Linux runner. Do not mount host home, SSH agent sockets,
-# the engine socket, or gateway secrets into this image.
+# Isolation fixture. Do not mount host home, SSH agent sockets,
+# Docker engine sockets, or gateway secrets into this image.
+# There is no runner control socket today.
 
 FROM debian:bookworm-slim
 
@@ -10,5 +11,5 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin codespace \
 USER 10001:10001
 WORKDIR /workspace
 
-# The gateway binary is not copied here. Commands run against /workspace only.
+# The gateway binary is not copied here. This image only holds /workspace.
 CMD ["sleep", "infinity"]

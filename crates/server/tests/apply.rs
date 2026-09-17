@@ -58,7 +58,7 @@ async fn apply_writes_and_check_only_does_not() {
         .await
         .expect("check_only");
     let preview_body = payload(&preview);
-    assert_ne!(preview_body["status"], "applied");
+    assert_eq!(preview_body["status"], "checked");
     assert!(!root.path().join("ws/created.txt").exists());
     assert_eq!(
         std::fs::read_to_string(root.path().join("ws/keep.txt")).unwrap(),
@@ -101,10 +101,17 @@ async fn apply_writes_and_check_only_does_not() {
         .expect("read");
     let read_body = payload(&read);
     assert_eq!(read_body["content"], "hello\n");
-    assert!(read_body["version"]
-        .as_str()
+    let version = read_body["version"].as_str().unwrap();
+    assert!(version.starts_with("sha256:"));
+    let change = body["changes"]
+        .as_array()
         .unwrap()
-        .starts_with("sha256:"));
+        .iter()
+        .find(|c| c["path"] == "created.txt")
+        .expect("created.txt change");
+    assert_eq!(change["kind"], "add");
+    assert_eq!(change["after_version"], version);
+    assert!(change["before_version"].is_null());
 
     client.cancel().await.expect("cancel");
 }

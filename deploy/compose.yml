@@ -1,8 +1,10 @@
-# Isolation example. The only bind mount is the workspace.
-# Forbidden mounts: host home, engine socket, SSH sockets, gateway env files, SQLite.
+# Isolation fixture only. Not connected to exec_command.
+# Demonstrates unprivileged uid, workspace-only bind mount, and dropped caps.
+# Forbidden mounts: host home, SSH sockets, Docker engine socket, gateway env files, SQLite.
+# There is no runner control socket today; do not add one here later by accident.
 
 services:
-  runner:
+  isolation-fixture:
     build:
       context: ..
       dockerfile: deploy/Dockerfile

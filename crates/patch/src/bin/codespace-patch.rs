@@ -4,8 +4,8 @@
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use codespace_domain::{ErrorBody, ErrorCode, Profile, WorkspaceId};
-use codespace_patch::{apply_in_workspace, preflight, ApplyOutcome};
+use codespace_domain::{ErrorBody, ErrorCode, FileChange, Profile, WorkspaceId};
+use codespace_patch::{apply_in_workspace, ApplyOutcome};
 use codespace_policy::Workspace;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,8 @@ struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     files: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    changes: Option<Vec<FileChange>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<ErrorCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
@@ -33,6 +35,7 @@ fn fail(err: ErrorBody) -> Response {
     Response {
         ok: false,
         files: None,
+        changes: None,
         code: Some(err.code),
         message: Some(err.message),
     }
@@ -58,19 +61,21 @@ async fn main() {
         profile: Profile::WorkspaceWrite,
     };
     let resp = match req.op.as_str() {
-        "preflight" => match preflight(&ws, &req.patch) {
-            Ok(files) => Response {
+        "preflight" => match apply_in_workspace(&ws, &req.patch, true).await {
+            Ok(ApplyOutcome { files, changes }) => Response {
                 ok: true,
-                files: Some(relative(&ws.root, &files)),
+                files: Some(files),
+                changes: Some(changes),
                 code: None,
                 message: None,
             },
             Err(err) => fail(err),
         },
         "apply" => match apply_in_workspace(&ws, &req.patch, req.check_only).await {
-            Ok(ApplyOutcome { files }) => Response {
+            Ok(ApplyOutcome { files, changes }) => Response {
                 ok: true,
                 files: Some(files),
+                changes: Some(changes),
                 code: None,
                 message: None,
             },
@@ -82,15 +87,6 @@ async fn main() {
         )),
     };
     let _ = write_resp(&resp);
-}
-
-fn relative(root: &std::path::Path, files: &[std::path::PathBuf]) -> Vec<String> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    files
-        .iter()
-        .filter_map(|p| p.strip_prefix(&root).ok())
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .collect()
 }
 
 fn write_resp(resp: &Response) -> io::Result<()> {
