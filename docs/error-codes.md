@@ -29,7 +29,7 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
 | `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
 | `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | Patch parsing/validation failure (W06 / W09) |
+| `INVALID_PATCH` | Primarily patch parsing/validation (W06 / W09); leftover internal uses remain |
 | `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
 | `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
 | `PATH_ESCAPE` | `..` or absolute path outside the workspace |
@@ -64,6 +64,9 @@ transport error body. The returned `process_id` identifies the uncertain
 attempt. Do not start a duplicate process. Use `read_process` or
 `terminate_process` when the backend remains reachable; do not assume
 unknown means the process did not start.
+
+`INVALID_PATCH` is no longer used for exec command validation or confirmed
+process-spawn failures.
 
 `INVALID_COMMAND` is a structurally invalid argv. The gateway rejects it
 before minting a `process_id` or taking a mutation lease. The runner

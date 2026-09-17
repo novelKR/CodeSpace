@@ -32,7 +32,7 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 | `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
 | `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
 | `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | Patch parsing/validation failure (W06 / W09) |
+| `INVALID_PATCH` | Primarily patch parsing/validation (W06 / W09); leftover internal uses remain |
 | `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
 | `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
 | `PATH_ESCAPE` | `..` or absolute path outside the workspace |
@@ -66,6 +66,9 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 아닙니다. 반환된 `process_id`는 그 불확정 시도를 식별합니다. 새
 프로세스를 시작하지 마세요. 백엔드가 도달 가능할 때만 `read_process` /
 `terminate_process`를 쓰세요. unknown이 시작되지 않았다는 뜻은 아닙니다.
+
+`INVALID_PATCH`는 더 이상 exec command 검증이나 확인된 process-spawn
+실패에 쓰이지 않습니다.
 
 `INVALID_COMMAND`는 구조적으로 잘못된 argv입니다. 게이트웨이는
 `process_id` 발급과 mutation lease 전에 거절합니다. 러너도 같은 검사를

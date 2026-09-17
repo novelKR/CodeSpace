@@ -290,8 +290,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "15abbb36accc55c0ac86470335c075364c57f223f78cf15396075e59ca7fd9c7",
-      "translation_sha256": "492414b77384407881c649987d70a3892dde0bea59d8b0293eeb3522c03d7ce2"
+      "source_sha256": "82f484be8346e895ffc78752751cb290c4df0e036219c13bdf5a3bd2529aef72",
+      "translation_sha256": "e578d1778f91f2ac7be0b008fbbb23440535aa0840d7a87c25aa5dd1fb5adbe5"
     },
     {
       "id": "codex-reuse",
