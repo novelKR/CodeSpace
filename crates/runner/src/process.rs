@@ -139,7 +139,7 @@ impl InProcessRunner {
         ws: &Workspace,
         req: RunnerExecRequest,
     ) -> Result<RunnerExecResult, ErrorBody> {
-        ws.require_host_execution()?;
+        ws.require_exec()?;
         if req.argv.is_empty() || req.argv[0].is_empty() {
             return Err(ErrorBody::new(
                 ErrorCode::InvalidPatch,

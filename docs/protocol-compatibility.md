@@ -82,3 +82,27 @@ matches the existing payload contract. Forced 2025-11-25 also covers
 `read` / `apply_patch` / `exec_command` / `operation_status` and the
 work/steer checkpoint (`work_open` → `/inbox` queue → `steer_claim_next`
 → `work_finish`). Forced 2026-07-28 uses the same `tools/call` surface.
+
+Client-facing execution semantics stay on that surface. `initialize.instructions`
+states global invariants (request lifetime ≠ process lifetime, host is
+not an OS sandbox, unenforced network is not permission). It does not
+assert a network policy value; `workspace_info.execution.network` reports
+the effective policy. `workspace_info`
+with a `workspace_id` adds an `execution` object (permissions vs backend
+support, `files.*.available` and `process.available` as permission and
+backend support (not occupancy; `exec_command` or `apply_patch` may still
+return `WORKSPACE_BUSY`), PTY, mutation lease, isolation, network).
+`files.read.available` and `files.find.available` require read permission
+and `file_read_supported`. `files.patch.available` requires write
+permission and `file_write_supported`. `process.available` requires both
+exec permission and backend support and does not include transient
+occupancy; tool existence is `tools_exposed`.
+`output_combined=true` means `read_process` exposes one combined stream;
+stdout/stderr identity is not preserved. `exec_command` results add
+`dispatch_status` (`confirmed` or `unknown`).
+Empty argv and confirmed spawn failures still serialize as
+`INVALID_PATCH`. `INVALID_COMMAND` and `PROCESS_SPAWN_FAILED` are a
+follow-up reclassification; this surface does not add them.
+Tool **names** do not
+grow. `environment_id`, `cwd`, `tty_size`, and `process_resize` stay off
+the client schema.

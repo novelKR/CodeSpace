@@ -41,6 +41,7 @@ async fn stdio_lists_and_calls_workspace_info() {
         body["transports"],
         serde_json::json!([TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP])
     );
+    assert!(body.get("execution").is_none() || body["execution"].is_null());
 
     client.cancel().await.expect("cancel client");
 }

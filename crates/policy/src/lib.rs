@@ -11,8 +11,8 @@ use codespace_domain::{ErrorBody, ErrorCode, Profile, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 pub use environment::{
-    require_host_execution, Environment, EnvironmentDispatchError, EnvironmentKind,
-    DEFAULT_ENVIRONMENT_ID,
+    require_exec, require_file_read, require_file_write, Environment, EnvironmentDispatchError,
+    EnvironmentKind, DEFAULT_ENVIRONMENT_ID,
 };
 pub use permission::{NetworkAxis, PathAccess, PathRule, PermissionProfile};
 
@@ -58,9 +58,16 @@ impl Workspace {
         }
     }
 
-    pub fn require_host_execution(&self) -> Result<(), ErrorBody> {
-        require_host_execution(self.environment_kind)
-            .map_err(EnvironmentDispatchError::into_error_body)
+    pub fn require_exec(&self) -> Result<(), ErrorBody> {
+        require_exec(self.environment_kind).map_err(EnvironmentDispatchError::into_error_body)
+    }
+
+    pub fn require_file_read(&self) -> Result<(), ErrorBody> {
+        require_file_read(self.environment_kind).map_err(EnvironmentDispatchError::into_error_body)
+    }
+
+    pub fn require_file_write(&self) -> Result<(), ErrorBody> {
+        require_file_write(self.environment_kind).map_err(EnvironmentDispatchError::into_error_body)
     }
 }
 
@@ -354,21 +361,24 @@ mod tests {
         let registry = Registry::load_json(json).unwrap();
         let ws = registry.get("demo").unwrap();
         assert_eq!(ws.environment_kind, EnvironmentKind::LinuxContainer);
-        let err = require_host_execution(ws.environment_kind).unwrap_err();
+        let err = require_exec(ws.environment_kind).unwrap_err();
         assert!(matches!(
             err,
-            EnvironmentDispatchError::UnsupportedKind {
+            EnvironmentDispatchError::UnsupportedExec {
                 kind: EnvironmentKind::LinuxContainer
             }
         ));
+        assert_eq!(ws.require_exec().unwrap_err().code, ErrorCode::Unauthorized);
         assert_eq!(
-            ws.require_host_execution().unwrap_err().code,
+            ws.require_file_read().unwrap_err().code,
             ErrorCode::Unauthorized
         );
-        assert!(ws
-            .require_host_execution()
-            .unwrap_err()
-            .operation_id
-            .is_none());
+        assert_eq!(
+            ws.require_file_write().unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert!(ws.require_exec().unwrap_err().operation_id.is_none());
+        assert!(ws.require_file_read().unwrap_err().operation_id.is_none());
+        assert!(ws.require_file_write().unwrap_err().operation_id.is_none());
     }
 }

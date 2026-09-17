@@ -73,7 +73,18 @@ Profiles: `read-only` (default intent) or `workspace-write`. `host-admin`
 is not a product profile. Optional operator `environments` may register
 `host` or `linux-container`. Omitted environment is implicit local host.
 `linux-container` is not an exec path. Tools and `workspace_info` have
-no `environment_id`.
+no `environment_id`. Call `workspace_info` with a `workspace_id` to read
+the effective execution contract (`execution`): policy vs backend support,
+`files.*.available` and `process.available` (permission and backend
+support only; not occupancy — `exec_command` or `apply_patch` may still
+return `WORKSPACE_BUSY`; tool existence is `tools_exposed`), fixed 24x80
+PTY without resize when a process is available, mutation lease /
+`WORKSPACE_BUSY`, workspace-scoped file tools vs no command sandbox, and
+restricted network policy without OS enforcement. `output_combined=true` means `read_process` exposes one
+combined stream; stdout/stderr identity is not preserved. `exec_command`
+returns `dispatch_status`
+(`confirmed` or `unknown`). Treat `unknown` patch/exec as possibly
+executed; do not retry the same mutation under a new `operation_key`.
 
 ## Run the gateway
 

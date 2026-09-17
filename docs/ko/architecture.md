@@ -199,7 +199,7 @@ Bearer 미들웨어로 남고, 디스패치는 `/mcp` → rmcp 도구입니다.
 
 | 도구 | 역할 |
 | --- | --- |
-| `workspace_info` | Selector metadata, profile, roots (not a credential) |
+| `workspace_info` | Identity, selector metadata, 그리고 실제 execution 계약 (자격 증명이 아님) |
 | `read` | File contents + version |
 | `find` | Relative-path search |
 | `apply_patch` | Codex V4A only |

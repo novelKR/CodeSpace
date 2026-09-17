@@ -1,6 +1,6 @@
 use codespace_domain::{
-    LIVE_TOOLS, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_READ_PROCESS, TOOL_TERMINATE_PROCESS,
-    TOOL_WRITE_STDIN,
+    LIVE_TOOLS, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_FIND, TOOL_READ, TOOL_READ_PROCESS,
+    TOOL_TERMINATE_PROCESS, TOOL_WORKSPACE_INFO, TOOL_WRITE_STDIN,
 };
 use codespace_server::config::{HttpConfig, MCP_PATH};
 use codespace_server::http::router_with_registry;
@@ -92,6 +92,7 @@ async fn exec_echo_is_readable_and_unknown_id_is_rejected() {
     let body = payload(&started);
     let pid = body["process_id"].as_str().unwrap().to_string();
     assert!(pid.starts_with("proc-"));
+    assert_eq!(body["dispatch_status"], "confirmed");
 
     let mut chunk = String::new();
     for _ in 0..50 {
@@ -143,8 +144,55 @@ async fn exec_echo_is_readable_and_unknown_id_is_rejected() {
 }
 
 #[tokio::test]
-async fn live_shell_blocks_patch_and_second_exec() {
+async fn pipe_exec_combines_stdout_and_stderr_without_order() {
     let (_root, cfg) = write_workspace("workspace-write");
+    let client = spawn_client(&cfg, false, &[]).await;
+    let started = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sh", "-c", "echo OUT-MARKER; echo ERR-MARKER >&2"]
+            })),
+        )
+        .await
+        .expect("exec");
+    let pid = payload(&started)["process_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut chunk = String::new();
+    for _ in 0..50 {
+        let read = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_READ_PROCESS)
+                    .with_arguments(object!({ "process_id": pid, "cursor": 0 })),
+            )
+            .await
+            .expect("read");
+        let out = payload(&read);
+        chunk = out["chunk"].as_str().unwrap_or("").to_string();
+        if chunk.contains("OUT-MARKER") && chunk.contains("ERR-MARKER") {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        chunk.contains("OUT-MARKER") && chunk.contains("ERR-MARKER"),
+        "combined stream must include both stdout and stderr markers, got {chunk:?}"
+    );
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_TERMINATE_PROCESS)
+                .with_arguments(object!({ "process_id": pid })),
+        )
+        .await;
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn live_shell_blocks_patch_and_second_exec() {
+    let (root, cfg) = write_workspace("workspace-write");
+    std::fs::write(root.path().join("ws").join("note.txt"), "hi").unwrap();
     let client = spawn_client(&cfg, true, &[]).await;
 
     let started = client
@@ -156,10 +204,33 @@ async fn live_shell_blocks_patch_and_second_exec() {
         )
         .await
         .expect("sleep");
-    let pid = payload(&started)["process_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let started_body = payload(&started);
+    let pid = started_body["process_id"].as_str().unwrap().to_string();
+    assert_eq!(started_body["dispatch_status"], "confirmed");
+
+    let live_read = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ).with_arguments(object!({
+                "workspace_id": "demo",
+                "path": "note.txt"
+            })),
+        )
+        .await
+        .expect("read while process live");
+    assert_eq!(payload(&live_read)["content"], "hi");
+
+    let live_find = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_FIND)
+                .with_arguments(object!({ "workspace_id": "demo" })),
+        )
+        .await
+        .expect("find while process live");
+    let paths = payload(&live_find)["paths"].as_array().cloned().unwrap();
+    assert!(
+        paths.iter().any(|p| p.as_str() == Some("note.txt")),
+        "find while process live, got {paths:?}"
+    );
 
     let busy_patch = client
         .call_tool(
@@ -577,8 +648,40 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         .iter()
         .find(|tool| tool.name.as_ref() == TOOL_EXEC_COMMAND)
         .expect("exec_command");
+    let exec_desc = exec.description.as_deref().unwrap_or("");
+    assert!(exec_desc.contains("dispatch_status=unknown"), "{exec_desc}");
+    assert!(exec_desc.contains("WORKSPACE_BUSY"), "{exec_desc}");
+    assert!(
+        exec_desc.contains("uncertain attempt") || exec_desc.contains("backend remains reachable"),
+        "{exec_desc}"
+    );
+    assert!(
+        !exec_desc.contains("inspect or terminate the returned process_id instead"),
+        "{exec_desc}"
+    );
+    let info_tool = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == TOOL_WORKSPACE_INFO)
+        .expect("workspace_info");
+    let info_desc = info_tool.description.as_deref().unwrap_or("");
+    assert!(info_desc.contains("process.available"), "{info_desc}");
+    assert!(info_desc.contains("files.*.available"), "{info_desc}");
+    assert!(info_desc.contains("occupancy"), "{info_desc}");
+    assert!(info_desc.contains("WORKSPACE_BUSY"), "{info_desc}");
+    let patch = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == TOOL_APPLY_PATCH)
+        .expect("apply_patch");
+    let patch_desc = patch.description.as_deref().unwrap_or("");
+    assert!(patch_desc.contains("status=unknown"), "{patch_desc}");
     let schema = serde_json::to_value(&exec.input_schema).unwrap();
     let dumped = schema.to_string();
+    let output = serde_json::to_value(exec.output_schema.as_ref()).unwrap();
+    let output_dumped = output.to_string();
+    assert!(
+        output_dumped.contains("dispatch_status"),
+        "exec_command result schema must include dispatch_status: {output_dumped}"
+    );
     assert!(
         dumped.contains("\"tty\""),
         "exec_command input schema must include tty: {dumped}"
@@ -591,6 +694,35 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         !dumped.contains("\"cwd\""),
         "exec_command must not grow cwd: {dumped}"
     );
+    assert!(
+        !dumped.contains("tty_size"),
+        "exec_command must not grow tty_size: {dumped}"
+    );
+
+    let info = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_WORKSPACE_INFO)
+                .with_arguments(object!({ "workspace_id": "demo" })),
+        )
+        .await
+        .expect("workspace_info");
+    let exec = &payload(&info)["execution"];
+    assert_eq!(exec["permissions"]["exec"], true);
+    assert_eq!(exec["environment"]["exec_supported"], true);
+    assert_eq!(exec["environment"]["file_read_supported"], true);
+    assert_eq!(exec["environment"]["file_write_supported"], true);
+    assert_eq!(exec["files"]["read"]["available"], true);
+    assert_eq!(exec["files"]["find"]["available"], true);
+    assert_eq!(exec["files"]["patch"]["available"], true);
+    assert_eq!(exec["process"]["available"], true);
+    assert_eq!(exec["process"]["capabilities"]["tty"]["supported"], true);
+    assert_eq!(
+        exec["process"]["capabilities"]["tty"]["resize_supported"],
+        false
+    );
+    assert_eq!(exec["isolation"]["command_sandbox"], "none");
+    assert_eq!(exec["network"]["policy"], "restricted");
+    assert_eq!(exec["network"]["enforcement"], "none");
     client.cancel().await.expect("cancel");
 }
 

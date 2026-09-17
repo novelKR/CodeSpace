@@ -70,6 +70,7 @@ async fn http_tools_list_matches_stdio_contract() {
     });
     assert_eq!(body["workspace_id"], serde_json::Value::Null);
     assert_eq!(body["internal_model_calls"], false);
+    assert!(body.get("execution").is_none() || body["execution"].is_null());
 
     client.cancel().await.expect("cancel http client");
 }

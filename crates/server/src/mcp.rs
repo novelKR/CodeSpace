@@ -2,14 +2,19 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use codespace_domain::{
-    workspace_info, ApplyPatchParams, ApplyPatchResult, CoordinationHint, ErrorBody, ErrorCode,
-    ExecCommandParams, ExecCommandResult, FindParams, FindResult, OperationStatusParams,
-    OperationStatusResult, PatchStatus, ProcessId, ReadParams, ReadProcessParams,
-    ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams, SteerStatusResult,
-    TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams, WorkOpenParams, WorkOpenResult,
-    WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
+    workspace_info, ApplyPatchParams, ApplyPatchResult, ClientEnvironmentKind, CoordinationHint,
+    EffectivePermissionInfo, EnvironmentExecutionInfo, ErrorBody, ErrorCode, ExecCommandParams,
+    ExecCommandResult, ExecDispatchStatus, FindParams, FindResult, NetworkPolicyState,
+    OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ReadParams,
+    ReadProcessParams, ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams,
+    SteerStatusResult, TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams,
+    WorkOpenParams, WorkOpenResult, WorkspaceExecutionInfo, WorkspaceInfo, WorkspaceInfoParams,
+    WriteStdinParams,
 };
-use codespace_policy::{allow, Action, ClientClaims, Registry};
+use codespace_policy::{
+    allow, Action, ClientClaims, EnvironmentKind, NetworkAxis, PermissionProfile, Registry,
+    Workspace,
+};
 use codespace_runner::{
     Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest, RunnerReadProcess,
     RunnerWriteStdin, RuntimeBackend,
@@ -42,6 +47,38 @@ pub struct CodeSpace {
 fn err_json(err: ErrorBody) -> String {
     serde_json::to_string(&err).unwrap_or(err.message)
 }
+
+const MCP_INSTRUCTIONS: &str = "\
+CodeSpace is an execution-only MCP and never calls a model.
+
+Use workspace-relative paths for file tools. workspace_id and work_id are \
+selectors, not credentials.
+
+exec_command accepts argv; there is no implicit shell. It runs in the \
+workspace cwd and returns a server-minted process_id. Ending an MCP request \
+does not terminate the process.
+
+A live managed process holds the workspace mutation lease. read and find may \
+continue, but apply_patch or another exec_command may return WORKSPACE_BUSY \
+until the process exits or is terminated.
+
+exec_command.tty is optional and defaults to false. tty=true attaches a \
+fixed 24x80 PTY. PTY resize is not currently supported. Use tty=true only \
+when the command requires terminal semantics or an interactive TUI.
+
+Executable workspaces currently use host execution. Host execution is not an \
+OS command sandbox. Network policy is reported by workspace_info. OS network \
+enforcement is currently none; absence of enforcement is not permission.
+
+Treat apply_patch status=unknown as possibly executed. Do not blindly retry \
+the mutation with a new operation_key.
+
+If exec_command reports dispatch_status=unknown, the spawn may have occurred. \
+Do not blindly start a duplicate process. The returned process_id identifies \
+the uncertain attempt. Use read_process or terminate_process when the backend \
+remains reachable; do not assume that unknown means the process did not start.
+
+Claim user intents only at major checkpoints and before work_finish.";
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 struct OkBody {
@@ -82,7 +119,7 @@ impl CodeSpace {
 
     #[tool(
         name = "workspace_info",
-        description = "Return CodeSpace identity. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
+        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. files.*.available and process.available reflect permission and backend support only. They do not include transient workspace occupancy; exec_command or apply_patch may still return WORKSPACE_BUSY. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
     )]
     async fn workspace_info(
         &self,
@@ -139,7 +176,7 @@ impl CodeSpace {
 
     #[tool(
         name = "apply_patch",
-        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply."
+        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply. status=unknown means the mutation may have executed but its result could not be confirmed. Do not retry the same mutation under a new operation_key. operation_key provides replay/idempotency for the same logical mutation."
     )]
     async fn apply_patch(
         &self,
@@ -167,7 +204,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. Returns a server-minted process_id. Does not use a login shell. Request end does not kill the process. Host process today. Optional tty (default false) attaches a PTY at 24x80; omitted or false uses pipes."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start."
     )]
     async fn exec_command(
         &self,
@@ -178,7 +215,7 @@ impl CodeSpace {
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
         allow(ws, Action::Exec, &ClientClaims::default()).map_err(err_json)?;
-        ws.require_host_execution().map_err(err_json)?;
+        ws.require_exec().map_err(err_json)?;
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(ErrorBody::new(
                 ErrorCode::InvalidPatch,
@@ -194,10 +231,12 @@ impl CodeSpace {
         match self.runner.exec(ws, req).await {
             Ok(result) => Ok(Json(ExecCommandResult {
                 process_id: result.process_id,
+                dispatch_status: ExecDispatchStatus::Confirmed,
                 coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
             })),
             Err(RunnerError::TransportAmbiguous { .. }) => Ok(Json(ExecCommandResult {
                 process_id,
+                dispatch_status: ExecDispatchStatus::Unknown,
                 coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
             })),
             Err(err) => {
@@ -352,7 +391,7 @@ impl CodeSpace {
     ) -> Result<ApplyPatchResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
-        ws.require_host_execution()?;
+        ws.require_file_write()?;
         let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
         let fingerprint = Store::fingerprint(&params);
         match self.store.begin(
@@ -439,6 +478,41 @@ fn runner_err_json(err: RunnerError) -> String {
     err_json(err.into_error_body())
 }
 
+fn client_environment_kind(kind: EnvironmentKind) -> ClientEnvironmentKind {
+    match kind {
+        EnvironmentKind::Host => ClientEnvironmentKind::Host,
+        EnvironmentKind::LinuxContainer => ClientEnvironmentKind::LinuxContainer,
+    }
+}
+
+fn client_network_policy(axis: NetworkAxis) -> NetworkPolicyState {
+    match axis {
+        NetworkAxis::Restricted => NetworkPolicyState::Restricted,
+        NetworkAxis::Enabled => NetworkPolicyState::Enabled,
+    }
+}
+
+fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
+    let policy = PermissionProfile::from_workspace_profile(ws.profile);
+    let permissions = EffectivePermissionInfo {
+        read: policy.allows(Action::Read),
+        write: policy.allows(Action::Write),
+        exec: policy.allows(Action::Exec),
+    };
+    let environment = EnvironmentExecutionInfo {
+        kind: client_environment_kind(ws.environment_kind),
+        client_selectable: false,
+        exec_supported: ws.environment_kind.exec_supported(),
+        file_read_supported: ws.environment_kind.file_read_supported(),
+        file_write_supported: ws.environment_kind.file_write_supported(),
+    };
+    WorkspaceExecutionInfo::from_effective(
+        environment,
+        permissions,
+        client_network_policy(policy.network),
+    )
+}
+
 fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {
     let Some(id) = workspace_id.filter(|s| !s.is_empty()) else {
         return Ok(workspace_info(None));
@@ -447,6 +521,7 @@ fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<Workspace
     let mut info = workspace_info(Some(id));
     info.profile = Some(ws.profile);
     info.root = Some(ws.root.display().to_string());
+    info.execution = Some(workspace_execution_info(ws));
     info.note = format!(
         "workspace_id is a selector, not a credential. profile={:?}",
         ws.profile
@@ -469,10 +544,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_NAME,
                 codespace_domain::SERVER_VERSION,
             ))
-            .with_instructions(
-                "CodeSpace execution-tools MCP. No internal model calls. workspace_id and work_id are selectors. process_id is server-minted. Request end does not kill a process. Claim user intents only at major checkpoints and before work_finish."
-                    .to_string(),
-            )
+            .with_instructions(MCP_INSTRUCTIONS.to_string())
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -505,7 +577,10 @@ impl ServerHandler for CodeSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codespace_domain::{OperationKey, WorkspaceId};
+    use codespace_domain::{
+        ClientEnvironmentKind, CommandSandboxState, ExecDispatchStatus, NetworkEnforcementState,
+        NetworkPolicyState, OperationKey, Profile, WorkspaceId,
+    };
     use codespace_policy::{EnvironmentKind, Workspace};
     use codespace_runner::{host_worker, serve_runner_connection, UdsRunner};
     use std::collections::BTreeMap;
@@ -520,6 +595,217 @@ mod tests {
             codespace_domain::Profile::WorkspaceWrite,
         ));
         registry
+    }
+
+    fn assert_advertised_matches_policy(ws: &Workspace, exec: &WorkspaceExecutionInfo) {
+        let policy = PermissionProfile::from_workspace_profile(ws.profile);
+        assert_eq!(exec.permissions.read, policy.allows(Action::Read));
+        assert_eq!(exec.permissions.write, policy.allows(Action::Write));
+        assert_eq!(exec.permissions.exec, policy.allows(Action::Exec));
+        assert_eq!(exec.network.policy, client_network_policy(policy.network));
+        assert_eq!(
+            exec.environment.exec_supported,
+            ws.environment_kind.exec_supported()
+        );
+        assert_eq!(
+            exec.environment.file_read_supported,
+            ws.environment_kind.file_read_supported()
+        );
+        assert_eq!(
+            exec.environment.file_write_supported,
+            ws.environment_kind.file_write_supported()
+        );
+        assert_eq!(
+            exec.files.read.available,
+            exec.permissions.read && exec.environment.file_read_supported
+        );
+        assert_eq!(
+            exec.files.find.available,
+            exec.permissions.read && exec.environment.file_read_supported
+        );
+        assert_eq!(
+            exec.files.patch.available,
+            exec.permissions.write && exec.environment.file_write_supported
+        );
+        assert_eq!(
+            exec.process.available,
+            exec.permissions.exec && exec.environment.exec_supported
+        );
+    }
+
+    fn assert_instructions_cover_execution_contract(text: &str) {
+        assert!(text.contains("never calls a model"), "{text}");
+        assert!(
+            text.contains("Ending an MCP request does not terminate the process"),
+            "{text}"
+        );
+        assert!(text.contains("fixed 24x80 PTY"), "{text}");
+        assert!(
+            text.contains("PTY resize is not currently supported"),
+            "{text}"
+        );
+        assert!(text.contains("WORKSPACE_BUSY"), "{text}");
+        assert!(
+            text.contains("Host execution is not an OS command sandbox"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Network policy is reported by workspace_info"),
+            "{text}"
+        );
+        assert!(
+            text.contains("absence of enforcement is not permission"),
+            "{text}"
+        );
+        assert!(!text.contains("not granted by policy"), "{text}");
+        assert!(
+            text.contains("Treat apply_patch status=unknown as possibly executed"),
+            "{text}"
+        );
+        assert!(text.contains("dispatch_status=unknown"), "{text}");
+        assert!(text.contains("uncertain attempt"), "{text}");
+        assert!(text.contains("backend remains reachable"), "{text}");
+        assert!(
+            !text.contains("inspect or terminate that handle rather than"),
+            "{text}"
+        );
+        assert!(text.contains("major checkpoints"), "{text}");
+    }
+
+    #[test]
+    fn initialize_instructions_cover_execution_contract() {
+        let cfg = CodeSpace::default().get_info();
+        let text = cfg.instructions.expect("instructions");
+        assert_instructions_cover_execution_contract(&text);
+    }
+
+    #[test]
+    fn workspace_info_without_id_omits_execution() {
+        let info = lookup(&Registry::new(), None).unwrap();
+        assert!(info.execution.is_none());
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("execution").is_none());
+    }
+
+    #[test]
+    fn workspace_info_host_write_exposes_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = write_registry(dir.path().to_path_buf());
+        let info = lookup(&registry, Some("demo".into())).unwrap();
+        let exec = info.execution.as_ref().expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), exec);
+        assert_eq!(exec.environment.kind, ClientEnvironmentKind::Host);
+        assert!(!exec.environment.client_selectable);
+        assert!(exec.environment.exec_supported);
+        assert!(exec.environment.file_read_supported);
+        assert!(exec.environment.file_write_supported);
+        assert!(exec.permissions.read && exec.permissions.write && exec.permissions.exec);
+        assert!(
+            exec.files.read.available && exec.files.find.available && exec.files.patch.available
+        );
+        assert!(exec.process.available);
+        let tty = &exec
+            .process
+            .capabilities
+            .as_ref()
+            .expect("capabilities")
+            .tty;
+        assert!(tty.supported);
+        assert!(!tty.resize_supported);
+        assert_eq!(exec.isolation.command_sandbox, CommandSandboxState::None);
+        assert_eq!(exec.network.policy, NetworkPolicyState::Restricted);
+        assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("environment_id").is_none());
+        assert!(!json.to_string().contains("\"environment_id\""));
+    }
+
+    #[test]
+    fn workspace_info_host_read_only_denies_write_and_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        registry.insert(Workspace::new(
+            WorkspaceId("demo".into()),
+            dir.path().to_path_buf(),
+            Profile::ReadOnly,
+        ));
+        let exec = lookup(&registry, Some("demo".into()))
+            .unwrap()
+            .execution
+            .expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
+        assert!(exec.permissions.read);
+        assert!(!exec.permissions.write);
+        assert!(!exec.permissions.exec);
+        assert!(exec.environment.exec_supported);
+        assert!(exec.environment.file_read_supported);
+        assert!(exec.environment.file_write_supported);
+        assert!(exec.files.read.available && exec.files.find.available);
+        assert!(!exec.files.patch.available);
+        assert!(!exec.process.available);
+        assert!(exec.process.capabilities.is_none());
+        let json = serde_json::to_value(&exec).unwrap();
+        assert_eq!(json["process"]["available"], false);
+        assert!(json["process"].get("capabilities").is_none());
+    }
+
+    #[test]
+    fn workspace_info_linux_container_write_is_policy_true_backend_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        let mut ws = Workspace::new(
+            WorkspaceId("demo".into()),
+            dir.path().to_path_buf(),
+            Profile::WorkspaceWrite,
+        );
+        ws.environment_kind = EnvironmentKind::LinuxContainer;
+        registry.insert(ws);
+        let exec = lookup(&registry, Some("demo".into()))
+            .unwrap()
+            .execution
+            .expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
+        assert!(exec.permissions.exec);
+        assert!(exec.permissions.read && exec.permissions.write);
+        assert!(!exec.environment.exec_supported);
+        assert!(!exec.environment.file_read_supported);
+        assert!(!exec.environment.file_write_supported);
+        assert!(!exec.files.read.available);
+        assert!(!exec.files.find.available);
+        assert!(!exec.files.patch.available);
+        assert!(!exec.process.available);
+        assert!(exec.process.capabilities.is_none());
+        let json = serde_json::to_value(&exec).unwrap();
+        assert_eq!(json["process"]["available"], false);
+        assert!(json["process"].get("capabilities").is_none());
+    }
+
+    #[test]
+    fn workspace_info_linux_container_read_only_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        let mut ws = Workspace::new(
+            WorkspaceId("demo".into()),
+            dir.path().to_path_buf(),
+            codespace_domain::Profile::ReadOnly,
+        );
+        ws.environment_kind = EnvironmentKind::LinuxContainer;
+        registry.insert(ws);
+        let exec = lookup(&registry, Some("demo".into()))
+            .unwrap()
+            .execution
+            .expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), &exec);
+        assert!(!exec.permissions.exec);
+        assert!(exec.permissions.read);
+        assert!(!exec.environment.exec_supported);
+        assert!(!exec.environment.file_read_supported);
+        assert!(!exec.environment.file_write_supported);
+        assert!(!exec.files.read.available);
+        assert!(!exec.files.find.available);
+        assert!(!exec.files.patch.available);
+        assert!(!exec.process.available);
+        assert!(exec.process.capabilities.is_none());
     }
 
     async fn drop_after_one_frame(stream: UnixStream) {
@@ -585,6 +871,7 @@ mod tests {
             .await
             .unwrap();
         assert!(started.0.process_id.0.starts_with("proc-"));
+        assert_eq!(started.0.dispatch_status, ExecDispatchStatus::Unknown);
         let busy = cs
             .apply_patch_inner(ApplyPatchParams {
                 workspace_id: WorkspaceId("demo".into()),
@@ -635,6 +922,25 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         let _lease = store.try_acquire_write("demo").expect("lease released");
+    }
+
+    #[tokio::test]
+    async fn exec_host_reports_confirmed_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let cs = CodeSpace::new(write_registry(ws_root));
+        let started = cs
+            .exec_command(Parameters(ExecCommandParams {
+                workspace_id: WorkspaceId("demo".into()),
+                command: vec!["/bin/echo".into(), "ok".into()],
+                work_id: None,
+                tty: false,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(started.0.dispatch_status, ExecDispatchStatus::Confirmed);
+        assert!(started.0.process_id.0.starts_with("proc-"));
     }
 
     #[tokio::test]

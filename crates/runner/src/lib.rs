@@ -348,4 +348,16 @@ mod tests {
         let path = sandbox.resolve("readme.txt").unwrap();
         assert!(path.ends_with("readme.txt"));
     }
+
+    #[test]
+    fn advertised_pty_size_matches_adapter() {
+        assert_eq!(
+            codespace_domain::PTY_INITIAL_ROWS,
+            codespace_pty::DEFAULT_ROWS
+        );
+        assert_eq!(
+            codespace_domain::PTY_INITIAL_COLS,
+            codespace_pty::DEFAULT_COLS
+        );
+    }
 }

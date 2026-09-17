@@ -1,6 +1,7 @@
 //! Domain types for CodeSpace. No `rmcp` dependency.
 
 pub mod error;
+pub mod execution;
 pub mod files;
 pub mod ids;
 pub mod info;
@@ -14,6 +15,12 @@ pub mod work;
 pub use error::{
     classify_http_status, ErrorBody, ErrorCode, FailureClass, TRANSPORT_FAILURE_IS_NOT_OPERATION,
 };
+pub use execution::{
+    ClientEnvironmentKind, CommandSandboxState, EffectivePermissionInfo, EnvironmentExecutionInfo,
+    FileExecutionInfo, FileOperationInfo, IsolationInfo, NetworkEnforcementState, NetworkInfo,
+    NetworkPolicyState, ProcessCapabilityInfo, ProcessExecutionInfo, PtyCapabilityInfo,
+    WorkspaceExecutionInfo, WorkspaceSerializationInfo, PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
+};
 pub use files::{FindParams, FindResult, ReadParams, ReadResult};
 pub use ids::{IntentId, OperationId, OperationKey, ProcessId, WorkId, WorkspaceId};
 pub use info::{workspace_info, WorkspaceInfo, WorkspaceInfoParams};
@@ -23,7 +30,7 @@ pub use patch::{
     OperationStatusResult, PatchStatus,
 };
 pub use process::{
-    ExecCommandParams, ExecCommandResult, ReadProcessParams, ReadProcessResult,
+    ExecCommandParams, ExecCommandResult, ExecDispatchStatus, ReadProcessParams, ReadProcessResult,
     TerminateProcessParams, WriteStdinParams,
 };
 pub use profile::Profile;

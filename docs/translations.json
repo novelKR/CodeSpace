@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "10cec15f2bebf73b99ac9786958a814135f9ba2d26ef51a4e163a1d1d39a7613",
-      "translation_sha256": "d69e2f63de61bb95ed71b3e845dd1b2750ecee114f8a5f69fc61f14896218494"
+      "source_sha256": "02e72a0edc2a1e1d929d2c0f1a78c3484e2d148b09ef3780b5f2f175dd41f53d",
+      "translation_sha256": "e94807a12e88b144571ed93bb34a1996ec34014da7862cdc8d615507c4e5fd5f"
     },
     {
       "id": "chatgpt-connector",
@@ -145,8 +145,8 @@
         "프로토콜-호환성",
         "현재-배치"
       ],
-      "source_sha256": "10a2fe76b16659c5c5b68defe6f2d74b7ea41a2983e48616db9f9564477b6a88",
-      "translation_sha256": "bc4fbddc20492fa75c4102f64774b6b1b453884e90569b7c82046925a38619d9"
+      "source_sha256": "0dc9b04fe30797f0c4da9d413b192bc808096e53ac853123b4b338666199f4a9",
+      "translation_sha256": "19f1554a15da21c192abf4ab17c42bd8ffcbbf1475332e8228a4c4af2edd05a0"
     },
     {
       "id": "execution-substrate",
@@ -177,8 +177,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "8fce03f4d203ae38447c77d7559fea740dcc6b6b3d865c278fd9469d520f5060",
-      "translation_sha256": "0b4cc39f7f3ff80e52b53c17f8956b6887dc2ab07ea28e391dff5731781e7fc0"
+      "source_sha256": "5d4f9376ec278fac0818b11eafa2d4f3f4de972ac36785e7a6b7b3276432933b",
+      "translation_sha256": "1a8a242d9e5ebc1f0e1d0b3b785f0d9732c94c232511872655c7b2bdd9ba2b58"
     },
     {
       "id": "protocol-compatibility",
@@ -200,8 +200,8 @@
         "핵심-기준",
         "핵심이-요구하면-안-되는-것"
       ],
-      "source_sha256": "7c4c6a19b151fee9d547ab14fc47daf8a6c8040c70ebd4db137e5feacc30db75",
-      "translation_sha256": "8d17e44f8e85d5fb8d46cac45fc5318f5b0921c923b7dc14b6d49f191cc01825"
+      "source_sha256": "26e2eaac78752ae4bf511854dcd74d3c9d6e4a5271bec17f9f992ab6f764670f",
+      "translation_sha256": "23a46cb2e6e678d169fbb52fcd2351271afcce1e9852c1736eb76c23526ceed8"
     },
     {
       "id": "behavior-differences",
@@ -290,8 +290,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "e5c6d7e5d6c0fc1d07a6f0e16832b2c62cafed465b2f7cd69eb524f0fdc2a029",
-      "translation_sha256": "966d153e562f2cadd83b105063c39b269bef44b13972466a82f93eb7a4f055c0"
+      "source_sha256": "9496139f5f88329f2168f78b505bde931dd1e56b1a84c3f6aca3cf7ad48f3b53",
+      "translation_sha256": "138d01aa85f7d46ad621d6c039ca9e19b39276c5869aa506559f4afd9a846616"
     },
     {
       "id": "codex-reuse",
