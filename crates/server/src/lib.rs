@@ -1,4 +1,4 @@
-//! CodeSpace MCP gateway. Live tools: workspace_info, read, find, apply_patch, operation_status.
+//! CodeSpace MCP gateway. Live tools include process supervision.
 
 pub mod auth;
 pub mod config;
@@ -9,6 +9,7 @@ pub mod patch_helper;
 pub mod protocol;
 pub mod rollback;
 pub mod stdio;
+pub mod supervisor;
 
 pub use config::{HttpConfig, MCP_PATH};
 pub use mcp::CodeSpace;

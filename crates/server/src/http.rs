@@ -52,9 +52,11 @@ pub fn http_router(
     allowed_hosts.sort();
     allowed_hosts.dedup();
 
-    let registry = registry.clone();
+    // Clone one handler so HTTP sessions share the supervisor. Request and
+    // session end are not process death; process_id stays server-minted.
+    let handler = CodeSpace::with_store(registry, store);
     let service = StreamableHttpService::new(
-        move || Ok(CodeSpace::with_store(registry.clone(), store.clone())),
+        move || Ok(handler.clone()),
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default()
             .with_json_response(true)

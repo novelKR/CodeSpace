@@ -41,7 +41,7 @@ pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
         ],
         workspace_id,
         workspace_id_is_credential: false,
-        note: "workspace_info, read, find, apply_patch, and operation_status are live. apply_patch records operations; the Codex engine lands in W06/W09. Exec is not exposed yet."
+        note: "workspace_info, read, find, apply_patch, operation_status, and process tools are live. process_id is server-minted."
             .to_string(),
         profile: None,
         root: None,

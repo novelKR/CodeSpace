@@ -16,7 +16,7 @@ codespace-policy = { path = "../policy" }
 codespace-runner = { path = "../runner" }
 codespace-store = { path = "../store" }
 rmcp = { workspace = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "io-util", "net", "process", "time"] }
 tokio-util = "0.7"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -29,6 +29,7 @@ schemars = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 tower = "0.5"
 subtle = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 rmcp = { workspace = true }

@@ -14,9 +14,8 @@ do. This process never calls a model.
 
 Required primitives for core execution: `initialize`, `tools/list`,
 `tools/call`. Live tools today are `workspace_info`, `read`, `find`,
-`apply_patch`, and `operation_status`. `exec_*` is not registered yet.
-New tools still use `tools/call` and appear in the same forced-version
-`tools/list` matrix.
+`apply_patch`, `operation_status`, `exec_command`, `write_stdin`,
+`read_process`, and `terminate_process`. They still use `tools/call`.
 
 ## What core must not require
 
@@ -43,7 +42,7 @@ true.
 ## 2026-07-28
 
 When a client negotiates 2026-07-28, the server may advertise enhancement
-flags. Semantics of live tools stay identical to 2025-11-25. This
+flags. Semantics of the live tools stay identical to 2025-11-25. This
 revision is **progressive enhancement only**.
 
 Existing Auto tests that prefer 2026-07-28 and fall back to 2025-11-25
