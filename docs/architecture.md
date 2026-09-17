@@ -1,5 +1,7 @@
 # Architecture
 
+[English](architecture.md) | [한국어](ko/architecture.md)
+
 CodeSpace is a personal **execution-tools MCP server**. An outer client
 (ChatGPT, Cursor, or another MCP host) decides what to do. This process
 never calls a model. It reads files, applies Codex V4A patches through a

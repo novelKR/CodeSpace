@@ -1,5 +1,7 @@
 # Execution substrate
 
+[English](execution-substrate.md) | [한국어](ko/execution-substrate.md)
+
 CodeSpace is an **execution-only MCP**. ChatGPT (or another MCP host)
 plans and writes code. This process never calls a model, never calls
 the OpenAI Responses API, and never runs an agent loop.

@@ -12,4 +12,8 @@ Codex 형식 패치를 적용하며, 등록된 워크스페이스에서 관리�
 - [시작하기](../../README.ko.md) — 도구, 실행 명령, 라이선스
 - [운영](operations.md) — 설치, 실행, 로그, 복구
 - [ChatGPT 커넥터](chatgpt-connector.md) — stdio, HTTP, 미검증 계정 검사
+- [아키텍처](architecture.md) — 현재와 목표 프로세스 배치
+- [실행 기반](execution-substrate.md) — 모델 없는 실행 불변식
+- [프로토콜 호환성](protocol-compatibility.md) — MCP 2025-11-25 기준
+- [동작 차이](behavior-differences.md) — 제품 정책 대 크레이트 기본값
 - [문서 사이트](documentation.md) — 영·한 레지스트리와 Pages
