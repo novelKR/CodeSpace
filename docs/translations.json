@@ -200,8 +200,8 @@
         "핵심-기준",
         "핵심이-요구하면-안-되는-것"
       ],
-      "source_sha256": "e2caf3ae9cc3af2fed2571dff1efaf0679e00ae6d292dbc3c746232cda9f5eaa",
-      "translation_sha256": "2f8c1f20e7d8e3895ef1228d6f7fbf5caddbfab134af400f437e852f9e384877"
+      "source_sha256": "c48c68e78292a9af9995b8f505725b06550680e80328a374bab5fd016436e037",
+      "translation_sha256": "3d7342d7d71d46ed6b5a078dce6e984f0f7e8cde615322ae05b9a258b5e29427"
     },
     {
       "id": "behavior-differences",
@@ -290,8 +290,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "dab38c9770254d09c4f9f8656d37fe38b3cc3f4b0f0a7dff53756f3236370709",
-      "translation_sha256": "9170c066e477d264eed80e097847c33face0c44862de57c8ba702f6e38cbcb92"
+      "source_sha256": "9496139f5f88329f2168f78b505bde931dd1e56b1a84c3f6aca3cf7ad48f3b53",
+      "translation_sha256": "138d01aa85f7d46ad621d6c039ca9e19b39276c5869aa506559f4afd9a846616"
     },
     {
       "id": "codex-reuse",

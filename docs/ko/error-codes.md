@@ -32,7 +32,7 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 | `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
 | `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
 | `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | Codex parse failure (W06 / W09) |
+| `INVALID_PATCH` | Codex parse failure (W06 / W09). Empty `exec_command` argv and confirmed spawn failures currently reuse this code. |
 | `PATH_ESCAPE` | `..` or absolute path outside the workspace |
 | `SYMLINK_REJECTED` | Symlink file or escape |
 | `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
@@ -64,6 +64,11 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 아닙니다. 반환된 `process_id`는 그 불확정 시도를 식별합니다. 새
 프로세스를 시작하지 마세요. 백엔드가 도달 가능할 때만 `read_process` /
 `terminate_process`를 쓰세요. unknown이 시작되지 않았다는 뜻은 아닙니다.
+
+`INVALID_COMMAND`와 `PROCESS_SPAWN_FAILED`는 아직 제품 코드가 아닙니다.
+빈 argv와 확인된 spawn 실패는 여전히 `INVALID_PATCH`로 직렬화됩니다.
+그 재분류는 후속 PR이며, 이 execution-contract 표면은 새 코드를
+추가하지 않습니다.
 
 `begin`이 `operation_id`를 발급한 뒤, 도구 오류는 그 id를
 `ErrorBody.operation_id`에 포함합니다. `begin` 전의 정책 / 잠금 /

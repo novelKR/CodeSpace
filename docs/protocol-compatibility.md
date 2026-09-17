@@ -95,6 +95,9 @@ occupancy; tool existence is `tools_exposed`.
 `output_combined=true` means `read_process` exposes one combined stream;
 stdout/stderr identity is not preserved. `exec_command` results add
 `dispatch_status` (`confirmed` or `unknown`).
+Empty argv and confirmed spawn failures still serialize as
+`INVALID_PATCH`. `INVALID_COMMAND` and `PROCESS_SPAWN_FAILED` are a
+follow-up reclassification; this surface does not add them.
 Tool **names** do not
 grow. `environment_id`, `cwd`, `tty_size`, and `process_resize` stay off
 the client schema.

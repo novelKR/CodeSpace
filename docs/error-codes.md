@@ -29,7 +29,7 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
 | `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
 | `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | Codex parse failure (W06 / W09) |
+| `INVALID_PATCH` | Codex parse failure (W06 / W09). Empty `exec_command` argv and confirmed spawn failures currently reuse this code. |
 | `PATH_ESCAPE` | `..` or absolute path outside the workspace |
 | `SYMLINK_REJECTED` | Symlink file or escape |
 | `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
@@ -62,6 +62,11 @@ transport error body. The returned `process_id` identifies the uncertain
 attempt. Do not start a duplicate process. Use `read_process` or
 `terminate_process` when the backend remains reachable; do not assume
 unknown means the process did not start.
+
+`INVALID_COMMAND` and `PROCESS_SPAWN_FAILED` are not product codes yet.
+Empty argv and confirmed spawn failures still serialize as
+`INVALID_PATCH`. Reclassifying those cases is a follow-up PR; this
+execution-contract surface does not add the new codes.
 
 After `begin` mints an `operation_id`, tool errors include that id on
 `ErrorBody.operation_id`. Policy / lock / key-conflict refusals before
