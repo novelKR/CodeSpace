@@ -72,6 +72,8 @@ impl PathSandbox {
 }
 
 fn reject_symlink_ancestors(root: &Path, dest: &Path) -> Result<(), ErrorBody> {
+    // Registration root is the trust anchor; canonicalize the root only.
+    // User-controlled descendants below it must not be followed.
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut current = dest;
     loop {

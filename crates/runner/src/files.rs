@@ -76,6 +76,9 @@ impl PathSandbox {
         glob: Option<&str>,
         limit: usize,
     ) -> Result<FindResult, ErrorBody> {
+        // Operator-registered `workspace.root` is the trust anchor. If the
+        // registration path is itself a symlink, canonicalize resolves that
+        // root only. Descendants under it are never followed.
         let root = self
             .root()
             .canonicalize()
@@ -110,7 +113,13 @@ impl PathSandbox {
 
 pub(crate) fn fs_err(err: FsError) -> ErrorBody {
     match err {
-        FsError::NotFound => ErrorBody::new(ErrorCode::PathEscape, err.message()),
+        // `PATH_ESCAPE` is the workspace-escape code (`../`, absolute).
+        // `NotFound`, `NotDirectory`, and generic `Io` collapse into it for
+        // wire compatibility with the frozen MCP catalog. That is not the
+        // final filesystem taxonomy.
+        FsError::NotFound | FsError::NotDirectory => {
+            ErrorBody::new(ErrorCode::PathEscape, err.message())
+        }
         FsError::SymlinkRejected => ErrorBody::new(ErrorCode::SymlinkRejected, err.message()),
         FsError::NotRegularFile => ErrorBody::new(ErrorCode::SpecialFileRejected, err.message()),
         FsError::Io(msg) => ErrorBody::new(ErrorCode::PathEscape, msg),
@@ -209,5 +218,14 @@ mod tests {
         assert_eq!(err.code, ErrorCode::SymlinkRejected);
         let found = s.find(None).await.unwrap();
         assert!(!found.paths.iter().any(|p| p.contains("secret")));
+    }
+
+    #[tokio::test]
+    async fn read_through_regular_file_is_path_escape_not_symlink() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("foo"), "not-a-dir").unwrap();
+        let s = sandbox(dir.path());
+        let err = s.read_file("foo/bar.txt").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::PathEscape);
     }
 }

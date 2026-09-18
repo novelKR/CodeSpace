@@ -130,6 +130,15 @@ entries), then applies CodeSpace glob and the user limit. `truncated`
 is true if the walk was cut or the filtered list exceeds the limit.
 Hidden directories are not pruned (`prune_hidden_directories: false`).
 
+Operator-registered `workspace.root` is the trust anchor. `find` and
+ancestor checks may `canonicalize` that root. Descendants under it are
+never followed.
+
+For wire compatibility, some adapter failures (`NotFound`,
+`NotDirectory`, generic `Io`) currently collapse into `PATH_ESCAPE`.
+That is not the final filesystem error taxonomy. `PATH_ESCAPE` still
+means workspace escape (`../`, absolute).
+
 ## `command/exec`: shape vs crates
 
 App Server `command/exec` at the **pin**

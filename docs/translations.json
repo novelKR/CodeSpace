@@ -179,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "d8094cec6058954b9eaca1756d55cc0184d5ae252623879227a4e66eaedfa23f",
-      "translation_sha256": "4a09032a8ab338ae5d6dd093b90705c50e5438385995202b1a5acc34562ed0e7"
+      "source_sha256": "c65e1da64acca44cabdf47678880f9aef7a2ca8657a87ebf35dccc4d7437ac12",
+      "translation_sha256": "3cc671cac85353305470c6a8c9c95fcfa095247c9c13ce90b8ed4bca96e940f7"
     },
     {
       "id": "protocol-compatibility",

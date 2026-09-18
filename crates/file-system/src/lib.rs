@@ -45,6 +45,7 @@ pub enum FsError {
     NotFound,
     SymlinkRejected,
     NotRegularFile,
+    NotDirectory,
     Io(String),
 }
 
@@ -54,6 +55,7 @@ impl FsError {
             Self::NotFound => "file not found".into(),
             Self::SymlinkRejected => "symlink files are rejected".into(),
             Self::NotRegularFile => "not a regular file".into(),
+            Self::NotDirectory => "not a directory".into(),
             Self::Io(msg) => msg.clone(),
         }
     }
@@ -72,12 +74,15 @@ pub(crate) fn map_io(err: io::Error) -> FsError {
     if lower.contains("not a regular file") {
         return FsError::NotRegularFile;
     }
-    if err.kind() == io::ErrorKind::NotADirectory
-        || lower.contains("path contains a symbolic link")
+    // ENOTDIR is not a symlink proof. `foo/bar` when `foo` is a regular
+    // file also yields it. Do not collapse that into SymlinkRejected.
+    if err.kind() == io::ErrorKind::NotADirectory || lower.contains("not a directory") {
+        return FsError::NotDirectory;
+    }
+    if lower.contains("path contains a symbolic link")
         || lower.contains("symbolic link")
         || lower.contains("symlink")
         || lower.contains("too many levels")
-        || lower.contains("not a directory")
     {
         return FsError::SymlinkRejected;
     }
@@ -251,8 +256,21 @@ mod tests {
             .await
             .expect_err("directory symlink must not be followed");
         assert!(
-            matches!(err, FsError::SymlinkRejected),
-            "expected SymlinkRejected, got {err:?}"
+            matches!(err, FsError::NotDirectory | FsError::SymlinkRejected),
+            "expected NotDirectory or SymlinkRejected, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_through_regular_file_is_not_directory() {
+        let (_dir, root) = canon_temp();
+        std::fs::write(root.join("foo"), "not-a-dir").unwrap();
+        let err = read(&root.join("foo").join("bar.txt"))
+            .await
+            .expect_err("a file is not a directory");
+        assert!(
+            matches!(err, FsError::NotDirectory),
+            "expected NotDirectory, got {err:?}"
         );
     }
 
@@ -278,8 +296,8 @@ mod tests {
             .await
             .expect_err("mkdir must not follow a directory symlink");
         assert!(
-            matches!(err, FsError::SymlinkRejected),
-            "expected SymlinkRejected, got {err:?}"
+            matches!(err, FsError::NotDirectory | FsError::SymlinkRejected),
+            "expected NotDirectory or SymlinkRejected, got {err:?}"
         );
     }
 

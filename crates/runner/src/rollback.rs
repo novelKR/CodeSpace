@@ -120,4 +120,42 @@ mod tests {
             "old"
         );
     }
+
+    #[tokio::test]
+    async fn restore_refuses_leaf_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("target.txt");
+        std::fs::write(&outside_file, "secret").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "old").unwrap();
+        let s = sandbox(dir.path());
+        let snaps = snapshot(&s, &["a.txt".into()]).await.unwrap();
+        std::fs::write(dir.path().join("a.txt"), "new").unwrap();
+        std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+        symlink(&outside_file, dir.path().join("a.txt")).unwrap();
+        assert!(!restore(&s, &snaps).await);
+        assert_eq!(std::fs::read_to_string(&outside_file).unwrap(), "secret");
+    }
+
+    #[tokio::test]
+    async fn restore_refuses_parent_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("a.txt"), "secret").unwrap();
+        std::fs::create_dir(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("nested/a.txt"), "old").unwrap();
+        let s = sandbox(dir.path());
+        let snaps = snapshot(&s, &["nested/a.txt".into()]).await.unwrap();
+        std::fs::remove_dir_all(dir.path().join("nested")).unwrap();
+        symlink(outside.path(), dir.path().join("nested")).unwrap();
+        assert!(!restore(&s, &snaps).await);
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("a.txt")).unwrap(),
+            "secret"
+        );
+    }
 }

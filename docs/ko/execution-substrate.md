@@ -129,6 +129,15 @@ lstat과 open 사이에 프로세스가 디렉터리를 심링크로 바꿀 수 
 결과가 limit를 넘으면 `truncated`가 true입니다. 숨김 디렉터리는
 가지치기하지 않습니다(`prune_hidden_directories: false`).
 
+운영자가 등록한 `workspace.root`가 trust anchor입니다. `find`와 조상
+검사는 그 루트만 `canonicalize`할 수 있습니다. 그 아래 descendant는
+따르지 않습니다.
+
+wire 호환을 위해 어댑터 실패 일부(`NotFound`, `NotDirectory`, 일반
+`Io`)는 지금 `PATH_ESCAPE`로 접습니다. 파일시스템 오류의 최종
+taxonomy가 아닙니다. `PATH_ESCAPE`는 여전히 워크스페이스 탈출(`../`,
+절대 경로)을 뜻합니다.
+
 ## `command/exec`: 형태 대 크레이트
 
 핀의 App Server `command/exec`
