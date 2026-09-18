@@ -179,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "c65e1da64acca44cabdf47678880f9aef7a2ca8657a87ebf35dccc4d7437ac12",
-      "translation_sha256": "3cc671cac85353305470c6a8c9c95fcfa095247c9c13ce90b8ed4bca96e940f7"
+      "source_sha256": "3d06938828108472e341e9f95916895313b9d89929e397d02cb1938dbfd1d7b2",
+      "translation_sha256": "026498c8f408c7ba9a4f7fe0542e3de7c70c9446b39ab039d051547e1148d04a"
     },
     {
       "id": "protocol-compatibility",
@@ -254,8 +254,8 @@
         "프로세스-정직성",
         "프로필-mvp"
       ],
-      "source_sha256": "600ed40245c11849ceee33f84bb1052848af966dfa71c4dde6ad8f39d083d8ad",
-      "translation_sha256": "21b24b556f236dc98cc9736797b7395d3b30860dbed9a35c7867044b794a47b3"
+      "source_sha256": "62ec79114259d72b9e74fcdcbcc6fa6ed044271f052106dbbb9aeed645bfe2d3",
+      "translation_sha256": "9f34f3b5f25c4bf0f8980574df1f9ae7ab558b8d917a4d6e1ac84ce60eae436c"
     },
     {
       "id": "runner-isolation",

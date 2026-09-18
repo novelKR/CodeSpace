@@ -65,8 +65,26 @@ fn uri(path: &Path) -> Result<PathUri, FsError> {
     PathUri::from_host_native_path(path).map_err(|err| FsError::Io(err.to_string()))
 }
 
-pub(crate) fn map_io(err: io::Error) -> FsError {
-    if err.kind() == io::ErrorKind::NotFound {
+fn is_errno(err: &io::Error, code: i32) -> bool {
+    err.raw_os_error() == Some(code)
+}
+
+fn looks_like_not_directory(err: &io::Error, lower: &str) -> bool {
+    err.kind() == io::ErrorKind::NotADirectory
+        || is_errno(err, libc::ENOTDIR)
+        || lower.contains("not a directory")
+}
+
+fn looks_like_symlink_denied(err: &io::Error, lower: &str) -> bool {
+    is_errno(err, libc::ELOOP)
+        || lower.contains("path contains a symbolic link")
+        || lower.contains("symbolic link")
+        || lower.contains("symlink")
+        || lower.contains("too many levels")
+}
+
+pub(crate) fn map_io(path: &Path, err: io::Error) -> FsError {
+    if err.kind() == io::ErrorKind::NotFound || is_errno(&err, libc::ENOENT) {
         return FsError::NotFound;
     }
     let msg = err.to_string();
@@ -74,17 +92,17 @@ pub(crate) fn map_io(err: io::Error) -> FsError {
     if lower.contains("not a regular file") {
         return FsError::NotRegularFile;
     }
-    // ENOTDIR is not a symlink proof. `foo/bar` when `foo` is a regular
-    // file also yields it. Do not collapse that into SymlinkRejected.
-    if err.kind() == io::ErrorKind::NotADirectory || lower.contains("not a directory") {
+    let enotdir = looks_like_not_directory(&err, &lower);
+    let symlink_denied = looks_like_symlink_denied(&err, &lower);
+    if enotdir || symlink_denied {
+        #[cfg(unix)]
+        if let Some(classified) = unix::classify_after_failed_io(path) {
+            return classified;
+        }
+        if symlink_denied {
+            return FsError::SymlinkRejected;
+        }
         return FsError::NotDirectory;
-    }
-    if lower.contains("path contains a symbolic link")
-        || lower.contains("symbolic link")
-        || lower.contains("symlink")
-        || lower.contains("too many levels")
-    {
-        return FsError::SymlinkRejected;
     }
     FsError::Io(msg)
 }
@@ -105,29 +123,29 @@ const NO_FOLLOW_MKDIR: CreateDirectoryOptions = CreateDirectoryOptions {
 
 /// Read bytes without following symlinks. `sandbox` is always `None`.
 pub async fn read(path: &Path) -> Result<Vec<u8>, FsError> {
-    let path = uri(path)?;
+    let uri = uri(path)?;
     LOCAL_FS
-        .read_file(&path, NO_FOLLOW_READ, None)
+        .read_file(&uri, NO_FOLLOW_READ, None)
         .await
-        .map_err(map_io)
+        .map_err(|err| map_io(path, err))
 }
 
 /// Write bytes without following symlinks. `sandbox` is always `None`.
 pub async fn write(path: &Path, bytes: &[u8]) -> Result<(), FsError> {
-    let path = uri(path)?;
+    let uri = uri(path)?;
     LOCAL_FS
-        .write_file(&path, bytes.to_vec(), NO_FOLLOW_WRITE, None)
+        .write_file(&uri, bytes.to_vec(), NO_FOLLOW_WRITE, None)
         .await
-        .map_err(map_io)
+        .map_err(|err| map_io(path, err))
 }
 
 /// Metadata without following symlinks.
 pub async fn metadata(path: &Path) -> Result<FileMeta, FsError> {
-    let path = uri(path)?;
+    let uri = uri(path)?;
     let meta = LOCAL_FS
-        .get_metadata(&path, NO_FOLLOW_META, None)
+        .get_metadata(&uri, NO_FOLLOW_META, None)
         .await
-        .map_err(map_io)?;
+        .map_err(|err| map_io(path, err))?;
     Ok(FileMeta {
         is_file: meta.is_file,
         is_dir: meta.is_directory,
@@ -137,19 +155,19 @@ pub async fn metadata(path: &Path) -> Result<FileMeta, FsError> {
 
 /// Create directories without following symlinks. `sandbox` is always `None`.
 pub async fn create_dir_all(path: &Path) -> Result<(), FsError> {
-    let path = uri(path)?;
+    let uri = uri(path)?;
     LOCAL_FS
-        .create_directory(&path, NO_FOLLOW_MKDIR, None)
+        .create_directory(&uri, NO_FOLLOW_MKDIR, None)
         .await
-        .map_err(map_io)
+        .map_err(|err| map_io(path, err))
 }
 
 /// Remove a file without following symlinks.
 pub async fn remove_file(path: &Path) -> Result<(), FsError> {
-    let path = uri(path)?;
+    let uri = uri(path)?;
     LOCAL_FS
         .remove(
-            &path,
+            &uri,
             RemoveOptions {
                 recursive: false,
                 force: false,
@@ -158,7 +176,7 @@ pub async fn remove_file(path: &Path) -> Result<(), FsError> {
             None,
         )
         .await
-        .map_err(map_io)
+        .map_err(|err| map_io(path, err))
 }
 
 /// Unix mode bits without following symlinks, including intermediate dirs.
@@ -204,7 +222,7 @@ pub async fn walk_files_limited(
             None,
         )
         .await
-        .map_err(map_io)?;
+        .map_err(|err| map_io(root, err))?;
     let mut files = Vec::new();
     for entry in outcome.entries {
         if entry.kind != WalkEntryKind::File {
@@ -256,8 +274,8 @@ mod tests {
             .await
             .expect_err("directory symlink must not be followed");
         assert!(
-            matches!(err, FsError::NotDirectory | FsError::SymlinkRejected),
-            "expected NotDirectory or SymlinkRejected, got {err:?}"
+            matches!(err, FsError::SymlinkRejected),
+            "expected SymlinkRejected, got {err:?}"
         );
     }
 
@@ -296,8 +314,8 @@ mod tests {
             .await
             .expect_err("mkdir must not follow a directory symlink");
         assert!(
-            matches!(err, FsError::NotDirectory | FsError::SymlinkRejected),
-            "expected NotDirectory or SymlinkRejected, got {err:?}"
+            matches!(err, FsError::SymlinkRejected),
+            "expected SymlinkRejected, got {err:?}"
         );
     }
 

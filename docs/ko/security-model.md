@@ -73,9 +73,14 @@ Codex 세션 설정과 `permissionProfile`은 허용 경로가 아닙니다. 게
 - `PathSandbox`는 논리 경로를 인가합니다. 이후 open을 안전하게 만들지
   **않습니다**. 살아 있는 `read` / `find`는 디렉터리를 심링크로 바꾸는
   프로세스와 경쟁할 수 있습니다(TOCTOU).
-- 실제 I/O 안전은 `codespace-fs`의 no-follow 연산입니다(rollback
-  mkdir/chmod/write/remove 포함). `LOCAL_FS`의 `sandbox: None`은 그
-  no-follow 고정을 끄지 않습니다.
+- Runner 소유 파일 연산과 rollback은 `codespace-fs`를 씁니다. Codex
+  `LOCAL_FS` 위의 얇은 어댑터이며 `follow_symlinks: false`입니다.
+- `apply_patch` mutation은 `crates/patch` →
+  `apply_patch_with_options` + `LOCAL_FS` `follow_symlinks: false`
+  (`sandbox: None`)입니다. 헬퍼 프리플라이트와 사후 hash는 아직
+  `std::fs`를 쓸 수 있으며, 그 경로는 no-follow 경계가 아닙니다.
+- 공통 primitive는 `codespace-fs` 자체가 아니라 Codex `LOCAL_FS`
+  no-follow입니다. `sandbox: None`은 그 고정을 끄지 않습니다.
 
 [behavior-differences.md](behavior-differences.md)를 보세요.
 

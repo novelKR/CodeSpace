@@ -77,10 +77,33 @@ fn parent(path: &Path) -> io::Result<(OwnedFd, OsString)> {
     Ok((directory, leaf))
 }
 
+/// Classify a failed no-follow I/O. lstat each component before opening
+/// it as a directory. This is error classification, not authorization.
+pub(crate) fn classify_after_failed_io(path: &Path) -> Option<FsError> {
+    let names = components(path).ok()?;
+    let mut directory = root().ok()?;
+    for (index, name) in names.iter().enumerate() {
+        let metadata = statat(&directory, name.as_os_str(), AtFlags::SYMLINK_NOFOLLOW).ok()?;
+        let kind = FileType::from_raw_mode(metadata.st_mode);
+        if kind.is_symlink() {
+            return Some(FsError::SymlinkRejected);
+        }
+        let is_last = index + 1 == names.len();
+        if !kind.is_dir() {
+            return Some(FsError::NotDirectory);
+        }
+        if is_last {
+            break;
+        }
+        directory = open_directory(&directory, name).ok()?;
+    }
+    None
+}
+
 pub(crate) fn unix_mode_sync(path: &Path) -> Result<u32, FsError> {
-    let (directory, leaf) = parent(path).map_err(map_io)?;
+    let (directory, leaf) = parent(path).map_err(|err| map_io(path, err))?;
     let metadata = statat(&directory, leaf.as_os_str(), AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|err| map_io(io::Error::from(err)))?;
+        .map_err(|err| map_io(path, io::Error::from(err)))?;
     if FileType::from_raw_mode(metadata.st_mode).is_symlink() {
         return Err(FsError::SymlinkRejected);
     }
@@ -88,9 +111,9 @@ pub(crate) fn unix_mode_sync(path: &Path) -> Result<u32, FsError> {
 }
 
 pub(crate) fn set_unix_mode_sync(path: &Path, mode: u32) -> Result<(), FsError> {
-    let (directory, leaf) = parent(path).map_err(map_io)?;
+    let (directory, leaf) = parent(path).map_err(|err| map_io(path, err))?;
     let metadata = statat(&directory, leaf.as_os_str(), AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|err| map_io(io::Error::from(err)))?;
+        .map_err(|err| map_io(path, io::Error::from(err)))?;
     if FileType::from_raw_mode(metadata.st_mode).is_symlink() {
         return Err(FsError::SymlinkRejected);
     }
@@ -100,5 +123,5 @@ pub(crate) fn set_unix_mode_sync(path: &Path, mode: u32) -> Result<(), FsError> 
         Mode::from_raw_mode(mode as rustix::fs::RawMode),
         AtFlags::SYMLINK_NOFOLLOW,
     )
-    .map_err(|err| map_io(io::Error::from(err)))
+    .map_err(|err| map_io(path, io::Error::from(err)))
 }

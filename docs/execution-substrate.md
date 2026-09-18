@@ -112,9 +112,13 @@ Runner / patch helper
 ancestor symlinks and special files). Its pre-check `symlink_metadata`
 is **not** the I/O safety boundary.
 
-`codespace-fs` is the I/O safety boundary: every open, read, write,
-remove, mkdir, chmod, and walk pins no-follow (`follow_symlinks:
-false`, walk `follow_directory_symlinks: false`) through `LOCAL_FS`.
+The shared I/O primitive is Codex `LOCAL_FS` with
+`follow_symlinks: false`. `codespace-fs` is the Runner adapter for
+read, find, version, mkdir, chmod, remove, and rollback. `apply_patch`
+mutation goes `crates/patch` → `apply_patch_with_options` on the same
+`LOCAL_FS` pin (`sandbox: None`). Helper preflight and post-hash may
+still use `std::fs`.
+
 `sandbox: None` means OS command sandbox is not reused as a file-tool
 authorizer. It does **not** mean unbounded I/O. File-tool workspace
 scope, command sandbox, and network enforcement stay separate axes.
@@ -122,13 +126,15 @@ scope, command sandbox, and network enforcement stay separate axes.
 Live `exec_command` may run while `read` / `find` are allowed
 (`read_while_process_live`, `find_while_process_live`). A process can
 replace a directory with a symlink between PathSandbox's lstat and the
-open. Safety at that moment is the adapter's no-follow I/O, not the
+open. Safety at that moment is no-follow `LOCAL_FS` I/O, not the
 earlier lstat.
 
 `find` walks with upstream caps (depth 64, 10,000 directories, 50,000
 entries), then applies CodeSpace glob and the user limit. `truncated`
 is true if the walk was cut or the filtered list exceeds the limit.
 Hidden directories are not pruned (`prune_hidden_directories: false`).
+Stopping the walk at the user limit when there is no glob is a P1
+optimization; P0 keeps the bounded full walk.
 
 Operator-registered `workspace.root` is the trust anchor. `find` and
 ancestor checks may `canonicalize` that root. Descendants under it are
