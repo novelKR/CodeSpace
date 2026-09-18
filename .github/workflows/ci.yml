@@ -18,7 +18,8 @@ jobs:
           SCAN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: ./scripts/check-no-model-deps.sh
 
-  rust:
+  rust-format:
+    name: Rust / Format + upstream pin
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +27,100 @@ jobs:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+      - name: Upstream pin
+        run: PIN_ONLY=1 ./scripts/check-upstream-pin.sh
+      - name: Format
+        run: |
+          cargo fmt --check
+          cargo fmt --check --manifest-path crates/patch/Cargo.toml
+          cargo fmt --check --manifest-path crates/codex-runtime/Cargo.toml
+          cargo fmt --check --manifest-path crates/pty/Cargo.toml
+          cargo fmt --check --manifest-path crates/file-system/Cargo.toml
+          cargo fmt --check --manifest-path crates/linux-sandbox/Cargo.toml
+
+  rust-clippy:
+    name: Rust / Clippy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: root
+            command: cargo clippy --locked --all-targets -- -D warnings
+          - name: adapters
+            command: |
+              cargo clippy --locked --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
+              cargo clippy --locked --manifest-path crates/pty/Cargo.toml --all-targets -- -D warnings
+              cargo clippy --locked --manifest-path crates/file-system/Cargo.toml --all-targets -- -D warnings
+          - name: codex-adapters
+            command: |
+              cargo clippy --locked --manifest-path crates/codex-runtime/Cargo.toml --all-targets -- -D warnings
+              cargo clippy --locked --manifest-path crates/linux-sandbox/Cargo.toml --all-targets -- -D warnings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Clippy
+        run: ${{ matrix.command }}
+
+  rust-unit:
+    name: Rust / Unit (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: patch
+            command: cargo test --locked --manifest-path crates/patch/Cargo.toml
+          - name: codex-runtime
+            command: cargo test --locked --manifest-path crates/codex-runtime/Cargo.toml
+          - name: pty
+            command: cargo test --locked --manifest-path crates/pty/Cargo.toml
+          - name: file-system
+            command: cargo test --locked --manifest-path crates/file-system/Cargo.toml
+          - name: linux-sandbox
+            command: cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --lib
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Unit tests
+        run: ${{ matrix.command }}
+
+  rust-linux-isolation:
+    name: Rust / Linux isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Enable unprivileged user namespaces for bubblewrap
@@ -47,42 +141,70 @@ jobs:
             echo "Disabling kernel.apparmor_restrict_unprivileged_userns for bubblewrap."
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Upstream pin
-        run: PIN_ONLY=1 ./scripts/check-upstream-pin.sh
-      - name: Format
+      - name: Build Linux sandbox helper
+        run: cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox
+      - name: Linux isolation tests
+        env:
+          CODESPACE_REQUIRE_LINUX_SANDBOX: "1"
+        run: cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --test isolation
+
+  rust-integration:
+    name: Rust / Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Enable unprivileged user namespaces for bubblewrap
         run: |
-          cargo fmt --check
-          cargo fmt --check --manifest-path crates/patch/Cargo.toml
-          cargo fmt --check --manifest-path crates/codex-runtime/Cargo.toml
-          cargo fmt --check --manifest-path crates/pty/Cargo.toml
-          cargo fmt --check --manifest-path crates/file-system/Cargo.toml
-          cargo fmt --check --manifest-path crates/linux-sandbox/Cargo.toml
-      - name: Clippy
+          set -euo pipefail
+
+          current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
+          current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Build helpers
         run: |
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo clippy --locked --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --locked --manifest-path crates/codex-runtime/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --locked --manifest-path crates/pty/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --locked --manifest-path crates/file-system/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --locked --manifest-path crates/linux-sandbox/Cargo.toml --all-targets -- -D warnings
-      - name: Test
-        run: |
-          cargo test --locked --manifest-path crates/patch/Cargo.toml
           cargo build --locked --manifest-path crates/patch/Cargo.toml --bin codespace-patch
-          cargo test --locked --manifest-path crates/codex-runtime/Cargo.toml
           cargo build --locked --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime
-          cargo test --locked --manifest-path crates/pty/Cargo.toml
-          cargo test --locked --manifest-path crates/file-system/Cargo.toml
-          cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --lib
           cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox
-          # Linux isolation tests must not skip a failed helper probe. Scope the
-          # requirement to integration tests so unit tests can verify the default.
-          CODESPACE_REQUIRE_LINUX_SANDBOX=1 cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --test isolation
-          # Worker apply_patch still shells out to the patch helper. Export
-          # CODESPACE_PATCH_BIN before workspace and UDS tests. RuntimeProcess
-          # tests spawn the worker when CODESPACE_RUNTIME_BIN is set.
-          # Linux command sandbox probe/spawn uses CODESPACE_LINUX_SANDBOX_BIN.
-          export CODESPACE_PATCH_BIN="${PWD}/crates/patch/target/debug/codespace-patch"
-          export CODESPACE_RUNTIME_BIN="${PWD}/crates/codex-runtime/target/debug/codespace-codex-runtime"
-          export CODESPACE_LINUX_SANDBOX_BIN="${PWD}/crates/linux-sandbox/target/debug/codespace-linux-sandbox"
-          cargo test --locked --workspace
+      - name: Workspace integration tests
+        env:
+          CODESPACE_PATCH_BIN: ${{ github.workspace }}/crates/patch/target/debug/codespace-patch
+          CODESPACE_RUNTIME_BIN: ${{ github.workspace }}/crates/codex-runtime/target/debug/codespace-codex-runtime
+          CODESPACE_LINUX_SANDBOX_BIN: ${{ github.workspace }}/crates/linux-sandbox/target/debug/codespace-linux-sandbox
+        run: cargo test --locked --workspace
+
+  rust:
+    name: rust
+    if: ${{ always() }}
+    needs:
+      - rust-format
+      - rust-clippy
+      - rust-unit
+      - rust-linux-isolation
+      - rust-integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all Rust checks
+        run: |
+          test "${{ needs.rust-format.result }}" = "success"
+          test "${{ needs.rust-clippy.result }}" = "success"
+          test "${{ needs.rust-unit.result }}" = "success"
+          test "${{ needs.rust-linux-isolation.result }}" = "success"
+          test "${{ needs.rust-integration.result }}" = "success"
