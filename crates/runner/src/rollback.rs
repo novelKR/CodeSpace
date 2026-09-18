@@ -2,8 +2,9 @@
 //! bits. Does not call `git reset --hard` and does not rewrite directories.
 //! Mutations go through `codespace-fs` no-follow I/O.
 
+use crate::files::fs_error_body;
 use crate::PathSandbox;
-use codespace_domain::{ErrorBody, ErrorCode};
+use codespace_domain::ErrorBody;
 use codespace_fs::FsError;
 
 #[derive(Debug, Clone)]
@@ -23,12 +24,14 @@ pub async fn snapshot(
         let path = sandbox.resolve(relative)?;
         let (existed, content, mode) = match codespace_fs::metadata(&path).await {
             Ok(meta) if meta.is_file && !meta.is_symlink => {
-                let bytes = codespace_fs::read(&path).await.map_err(fs_io)?;
-                let mode = codespace_fs::unix_mode(&path).await.map_err(fs_io)?;
+                let bytes = codespace_fs::read(&path).await.map_err(fs_error_body)?;
+                let mode = codespace_fs::unix_mode(&path)
+                    .await
+                    .map_err(fs_error_body)?;
                 (true, Some(bytes), Some(mode))
             }
             Ok(_) | Err(FsError::NotFound) => (false, None, None),
-            Err(err) => return Err(fs_io(err)),
+            Err(err) => return Err(fs_error_body(err)),
         };
         out.push(FileSnapshot {
             relative: relative.clone(),
@@ -55,29 +58,31 @@ async fn restore_one(sandbox: &PathSandbox, snap: &FileSnapshot) -> Result<(), E
     let path = sandbox.resolve(&snap.relative)?;
     if snap.existed {
         if let Some(parent) = path.parent() {
-            codespace_fs::create_dir_all(parent).await.map_err(fs_io)?;
+            codespace_fs::create_dir_all(parent)
+                .await
+                .map_err(fs_error_body)?;
         }
         let content = snap.content.as_deref().unwrap_or(&[]);
-        codespace_fs::write(&path, content).await.map_err(fs_io)?;
+        codespace_fs::write(&path, content)
+            .await
+            .map_err(fs_error_body)?;
         if let Some(mode) = snap.mode {
             codespace_fs::set_unix_mode(&path, mode)
                 .await
-                .map_err(fs_io)?;
+                .map_err(fs_error_body)?;
         }
     } else {
         match codespace_fs::metadata(&path).await {
             Ok(meta) if meta.is_file && !meta.is_symlink => {
-                codespace_fs::remove_file(&path).await.map_err(fs_io)?;
+                codespace_fs::remove_file(&path)
+                    .await
+                    .map_err(fs_error_body)?;
             }
             Ok(_) | Err(FsError::NotFound) => {}
-            Err(err) => return Err(fs_io(err)),
+            Err(err) => return Err(fs_error_body(err)),
         }
     }
     Ok(())
-}
-
-fn fs_io(err: FsError) -> ErrorBody {
-    ErrorBody::new(ErrorCode::InvalidPatch, err.message())
 }
 
 #[cfg(test)]

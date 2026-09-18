@@ -20,9 +20,9 @@ impl PathSandbox {
         match codespace_fs::metadata(&path).await {
             Ok(_) => {}
             Err(FsError::NotFound) => return Ok(VERSION_ABSENT.to_string()),
-            Err(err) => return Err(fs_err(err)),
+            Err(err) => return Err(fs_error_body(err)),
         }
-        let bytes = codespace_fs::read(&path).await.map_err(fs_err)?;
+        let bytes = codespace_fs::read(&path).await.map_err(fs_error_body)?;
         Ok(Self::version_of(&bytes))
     }
 
@@ -36,7 +36,7 @@ impl PathSandbox {
         limit: usize,
     ) -> Result<ReadResult, ErrorBody> {
         let path = self.resolve(relative)?;
-        let meta = codespace_fs::metadata(&path).await.map_err(fs_err)?;
+        let meta = codespace_fs::metadata(&path).await.map_err(fs_error_body)?;
         if meta.is_symlink {
             return Err(ErrorBody::new(
                 ErrorCode::SymlinkRejected,
@@ -49,7 +49,7 @@ impl PathSandbox {
                 "not a regular file",
             ));
         }
-        let bytes = codespace_fs::read(&path).await.map_err(fs_err)?;
+        let bytes = codespace_fs::read(&path).await.map_err(fs_error_body)?;
         let truncated = bytes.len() > limit;
         if truncated && limit == 0 {
             return Err(ErrorBody::new(
@@ -82,8 +82,10 @@ impl PathSandbox {
         let root = self
             .root()
             .canonicalize()
-            .map_err(|err| ErrorBody::new(ErrorCode::PathEscape, err.to_string()))?;
-        let walked = codespace_fs::walk_files(&root).await.map_err(fs_err)?;
+            .map_err(|err| fs_error_body(FsError::Io(err.to_string())))?;
+        let walked = codespace_fs::walk_files(&root)
+            .await
+            .map_err(fs_error_body)?;
         let mut paths = Vec::new();
         for abs in walked.files {
             let rel = abs
@@ -111,18 +113,13 @@ impl PathSandbox {
     }
 }
 
-pub(crate) fn fs_err(err: FsError) -> ErrorBody {
+pub(crate) fn fs_error_body(err: FsError) -> ErrorBody {
     match err {
-        // `PATH_ESCAPE` is the workspace-escape code (`../`, absolute).
-        // `NotFound`, `NotDirectory`, and generic `Io` collapse into it for
-        // wire compatibility with the frozen MCP catalog. That is not the
-        // final filesystem taxonomy.
-        FsError::NotFound | FsError::NotDirectory => {
-            ErrorBody::new(ErrorCode::PathEscape, err.message())
-        }
+        FsError::NotFound => ErrorBody::new(ErrorCode::FileNotFound, err.message()),
+        FsError::NotDirectory => ErrorBody::new(ErrorCode::PathNotDirectory, err.message()),
         FsError::SymlinkRejected => ErrorBody::new(ErrorCode::SymlinkRejected, err.message()),
         FsError::NotRegularFile => ErrorBody::new(ErrorCode::SpecialFileRejected, err.message()),
-        FsError::Io(msg) => ErrorBody::new(ErrorCode::PathEscape, msg),
+        FsError::Io(msg) => ErrorBody::new(ErrorCode::FileOperationFailed, msg),
     }
 }
 
@@ -221,11 +218,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_through_regular_file_is_path_escape_not_symlink() {
+    async fn fs_error_body_matches_fs_error() {
+        assert_eq!(
+            fs_error_body(FsError::NotFound).code,
+            ErrorCode::FileNotFound
+        );
+        assert_eq!(
+            fs_error_body(FsError::NotDirectory).code,
+            ErrorCode::PathNotDirectory
+        );
+        assert_eq!(
+            fs_error_body(FsError::SymlinkRejected).code,
+            ErrorCode::SymlinkRejected
+        );
+        assert_eq!(
+            fs_error_body(FsError::NotRegularFile).code,
+            ErrorCode::SpecialFileRejected
+        );
+        assert_eq!(
+            fs_error_body(FsError::Io("disk full".into())).code,
+            ErrorCode::FileOperationFailed
+        );
+    }
+
+    #[tokio::test]
+    async fn read_missing_file_is_file_not_found() {
+        let dir = tempdir().unwrap();
+        let s = sandbox(dir.path());
+        let err = s.read_file("missing.txt").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::FileNotFound);
+    }
+
+    #[tokio::test]
+    async fn read_through_regular_file_is_path_not_directory() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("foo"), "not-a-dir").unwrap();
         let s = sandbox(dir.path());
         let err = s.read_file("foo/bar.txt").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::PathNotDirectory);
+    }
+
+    #[tokio::test]
+    async fn read_dotdot_is_path_escape() {
+        let dir = tempdir().unwrap();
+        let s = sandbox(dir.path());
+        let err = s.read_file("../outside").await.unwrap_err();
         assert_eq!(err.code, ErrorCode::PathEscape);
+    }
+
+    #[tokio::test]
+    async fn read_symlink_is_symlink_rejected() {
+        let dir = tempdir().unwrap();
+        symlink("/etc/passwd", dir.path().join("link")).unwrap();
+        let s = sandbox(dir.path());
+        let err = s.read_file("link").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::SymlinkRejected);
+    }
+
+    #[tokio::test]
+    async fn read_fifo_is_special_file_rejected() {
+        let dir = tempdir().unwrap();
+        let fifo = dir.path().join("pipe.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success(), "mkfifo should exist");
+        let s = sandbox(dir.path());
+        let err = s.read_file("pipe.fifo").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::SpecialFileRejected);
+    }
+
+    #[tokio::test]
+    async fn find_on_deleted_root_is_file_operation_failed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let s = sandbox(&root);
+        drop(dir);
+        let err = s.find(None).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::FileOperationFailed);
     }
 }

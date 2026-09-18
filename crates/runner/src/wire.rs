@@ -19,7 +19,7 @@ use crate::{
     ShellRelease,
 };
 
-pub const WIRE_PROTOCOL: u32 = 2;
+pub const WIRE_PROTOCOL: u32 = 3;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
 
@@ -368,6 +368,11 @@ mod tests {
     #[test]
     fn request_id_prefix_is_rrpc() {
         assert!(format!("rrpc-{}", 1).starts_with("rrpc-"));
+    }
+
+    #[test]
+    fn wire_protocol_is_v3() {
+        assert_eq!(WIRE_PROTOCOL, 3);
     }
 
     #[tokio::test]

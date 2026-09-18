@@ -304,3 +304,72 @@ async fn uds_tty_exec_sees_a_tty() {
         "UDS worker should spawn a PTY when tty is true, got {chunk:?}"
     );
 }
+
+fn execution_code(err: &RunnerError) -> ErrorCode {
+    match err {
+        RunnerError::Execution(body) => body.code,
+        other => panic!("expected Execution error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn uds_read_filesystem_errors_keep_product_codes() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("foo"), "not-a-dir").unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", dir.path().join("link")).unwrap();
+    let fifo = dir.path().join("pipe.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success(), "mkfifo should exist");
+    let ws = workspace(dir.path());
+
+    assert_eq!(
+        execution_code(&runner.read(&ws, "missing.txt").await.unwrap_err()),
+        ErrorCode::FileNotFound
+    );
+    assert_eq!(
+        execution_code(&runner.read(&ws, "foo/bar.txt").await.unwrap_err()),
+        ErrorCode::PathNotDirectory
+    );
+    assert_eq!(
+        execution_code(&runner.read(&ws, "../outside").await.unwrap_err()),
+        ErrorCode::PathEscape
+    );
+    assert_eq!(
+        execution_code(&runner.read(&ws, "link").await.unwrap_err()),
+        ErrorCode::SymlinkRejected
+    );
+    assert_eq!(
+        execution_code(&runner.read(&ws, "pipe.fifo").await.unwrap_err()),
+        ErrorCode::SpecialFileRejected
+    );
+}
+
+#[tokio::test]
+async fn uds_find_on_deleted_root_is_file_operation_failed() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    let dir = tempdir().unwrap();
+    let ws = workspace(dir.path());
+    drop(dir);
+    assert_eq!(
+        execution_code(&runner.find(&ws, None).await.unwrap_err()),
+        ErrorCode::FileOperationFailed
+    );
+}

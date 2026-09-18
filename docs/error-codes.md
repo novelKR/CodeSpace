@@ -29,11 +29,14 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
 | `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
 | `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | Primarily patch parsing/validation (W06 / W09); leftover internal uses remain |
+| `INVALID_PATCH` | Patch parsing/validation (W06 / W09); after-hash / delete-still-present / omitted `after_version`. Rollback filesystem I/O is not this code |
 | `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
 | `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
-| `PATH_ESCAPE` | `..` or absolute path outside the workspace |
-| `SYMLINK_REJECTED` | Symlink file or escape |
+| `PATH_ESCAPE` | Workspace/path containment violation: a `../` or absolute request, or a `find` walk result outside `workspace.root` |
+| `FILE_NOT_FOUND` | Target path does not exist |
+| `PATH_NOT_DIRECTORY` | A path component that must be a directory is a regular file (`ENOTDIR`) |
+| `FILE_OPERATION_FAILED` | Containment held, but the filesystem operation itself failed (`find` root canonicalize included) |
+| `SYMLINK_REJECTED` | Symlink file or ancestor |
 | `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
 | `ADD_FILE_EXISTS` | Add File destination already exists |
 | `MOVE_DESTINATION_EXISTS` | Move destination already exists |
@@ -65,8 +68,17 @@ attempt. Do not start a duplicate process. Use `read_process` or
 `terminate_process` when the backend remains reachable; do not assume
 unknown means the process did not start.
 
-`INVALID_PATCH` is no longer used for exec command validation or confirmed
-process-spawn failures.
+`INVALID_PATCH` is no longer used for exec command validation, confirmed
+process-spawn failures, or rollback filesystem I/O.
+
+`codespace-fs` `FsError` maps 1:1 onto product codes:
+`NotFound` → `FILE_NOT_FOUND`, `NotDirectory` → `PATH_NOT_DIRECTORY`,
+generic `Io` → `FILE_OPERATION_FAILED`, `SymlinkRejected` →
+`SYMLINK_REJECTED`, `NotRegularFile` → `SPECIAL_FILE_REJECTED`.
+`PATH_ESCAPE` is a workspace/path containment violation: a client
+request that would leave scope (`../`, absolute), or a walk result that
+fails `strip_prefix(workspace.root)`. `FILE_OPERATION_FAILED` means
+containment held and the operation itself failed.
 
 `INVALID_COMMAND` is a structurally invalid argv. The gateway rejects it
 before minting a `process_id` or taking a mutation lease. The runner

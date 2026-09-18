@@ -103,7 +103,7 @@ stdout/stderr identity is not preserved. `exec_command` results add
 `INVALID_COMMAND` (rejected before process dispatch). Confirmed spawn
 failure is `PROCESS_SPAWN_FAILED`: the backend confirmed that no managed
 process was established. That is distinct from `dispatch_status=unknown`.
-Runner UDS wire is `WIRE_PROTOCOL` 2. `ErrorBody` product codes travel on
+Runner UDS wire is `WIRE_PROTOCOL` 3. `ErrorBody` product codes travel on
 that JSON, so a changed error vocabulary is a protocol bump. Handshake
 mismatch is before-dispatch. Gateway and worker are the same CodeSpace
 build; skew is detected, not tolerated.

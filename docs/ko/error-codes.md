@@ -32,11 +32,14 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 | `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
 | `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
 | `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | Primarily patch parsing/validation (W06 / W09); leftover internal uses remain |
+| `INVALID_PATCH` | 패치 파싱/검증(W06 / W09); after-hash / delete-still-present / 생략된 `after_version`. rollback 파일시스템 I/O는 이 코드가 아님 |
 | `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
 | `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
-| `PATH_ESCAPE` | `..` or absolute path outside the workspace |
-| `SYMLINK_REJECTED` | Symlink file or escape |
+| `PATH_ESCAPE` | workspace/path containment 위반: `../`·절대경로 요청, 또는 `find` walk 결과가 `workspace.root` 밖 |
+| `FILE_NOT_FOUND` | 대상 경로가 없음 |
+| `PATH_NOT_DIRECTORY` | 디렉터리여야 하는 경로 구성 요소가 일반 파일임(`ENOTDIR`) |
+| `FILE_OPERATION_FAILED` | containment는 유지됐지만 filesystem operation 자체가 실패(`find` 루트 canonicalize 포함) |
+| `SYMLINK_REJECTED` | 심링크 파일 또는 조상 |
 | `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
 | `ADD_FILE_EXISTS` | Add File destination already exists |
 | `MOVE_DESTINATION_EXISTS` | Move destination already exists |
@@ -67,8 +70,17 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 프로세스를 시작하지 마세요. 백엔드가 도달 가능할 때만 `read_process` /
 `terminate_process`를 쓰세요. unknown이 시작되지 않았다는 뜻은 아닙니다.
 
-`INVALID_PATCH`는 더 이상 exec command 검증이나 확인된 process-spawn
-실패에 쓰이지 않습니다.
+`INVALID_PATCH`는 더 이상 exec command 검증, 확인된 process-spawn
+실패, rollback 파일시스템 I/O에 쓰이지 않습니다.
+
+`codespace-fs` `FsError`는 제품 코드와 1:1입니다.
+`NotFound` → `FILE_NOT_FOUND`, `NotDirectory` → `PATH_NOT_DIRECTORY`,
+일반 `Io` → `FILE_OPERATION_FAILED`, `SymlinkRejected` →
+`SYMLINK_REJECTED`, `NotRegularFile` → `SPECIAL_FILE_REJECTED`.
+`PATH_ESCAPE`는 workspace/path containment 위반입니다. 범위를 벗어나려는
+요청(`../`, 절대 경로)이거나, walk 결과가 `strip_prefix(workspace.root)`에
+실패한 경우입니다. `FILE_OPERATION_FAILED`는 containment는 유지된 채
+operation 자체가 실패한 것입니다.
 
 `INVALID_COMMAND`는 구조적으로 잘못된 argv입니다. 게이트웨이는
 `process_id` 발급과 mutation lease 전에 거절합니다. 러너도 같은 검사를

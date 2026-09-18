@@ -139,10 +139,15 @@ lstat과 open 사이에 프로세스가 디렉터리를 심링크로 바꿀 수 
 검사는 그 루트만 `canonicalize`할 수 있습니다. 그 아래 descendant는
 따르지 않습니다.
 
-wire 호환을 위해 어댑터 실패 일부(`NotFound`, `NotDirectory`, 일반
-`Io`)는 지금 `PATH_ESCAPE`로 접습니다. 파일시스템 오류의 최종
-taxonomy가 아닙니다. `PATH_ESCAPE`는 여전히 워크스페이스 탈출(`../`,
-절대 경로)을 뜻합니다.
+`codespace-fs` `FsError`는 제품 코드와 1:1입니다. `NotFound`는
+`FILE_NOT_FOUND`, `NotDirectory`는 `PATH_NOT_DIRECTORY`, 일반 `Io`는
+`FILE_OPERATION_FAILED`, `SymlinkRejected`는 `SYMLINK_REJECTED`,
+`NotRegularFile`는 `SPECIAL_FILE_REJECTED`입니다. `PATH_ESCAPE`는
+workspace/path containment 위반입니다. `../`·절대경로 요청이거나, walk
+결과가 워크스페이스 루트에 `strip_prefix`되지 않아 범위 밖이 관찰된
+경우입니다. `find` 루트 canonicalize 실패는 `FILE_OPERATION_FAILED`입니다
+(containment는 유지, operation 실패). rollback 파일시스템 실패도 같은
+매핑이며 `INVALID_PATCH`가 아닙니다.
 
 ## `command/exec`: 형태 대 크레이트
 
