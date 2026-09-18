@@ -691,10 +691,11 @@ mod tests {
         if !codespace_linux_sandbox::require_linux_sandbox() {
             return;
         }
-        assert!(
-            cfg!(target_os = "linux"),
-            "CODESPACE_REQUIRE_LINUX_SANDBOX=1 is Linux CI only"
-        );
+
+        #[cfg(not(target_os = "linux"))]
+        panic!("CODESPACE_REQUIRE_LINUX_SANDBOX=1 is Linux CI only");
+
+        #[cfg(target_os = "linux")]
         assert!(
             crate::linux_sandbox_available(),
             "CODESPACE_REQUIRE_LINUX_SANDBOX=1 but linux sandbox helper probe failed"

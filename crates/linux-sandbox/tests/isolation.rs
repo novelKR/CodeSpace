@@ -63,10 +63,10 @@ fn run_status(root: &Path, command: &[String]) -> std::process::ExitStatus {
 fn linux_ready() -> bool {
     let ready = cfg!(target_os = "linux") && probe_helper(&helper_bin());
     if require_linux_sandbox() {
-        assert!(
-            cfg!(target_os = "linux"),
-            "{REQUIRE_ENV}=1 is Linux CI only"
-        );
+        #[cfg(not(target_os = "linux"))]
+        panic!("{REQUIRE_ENV}=1 is Linux CI only");
+
+        #[cfg(target_os = "linux")]
         assert!(
             ready,
             "{REQUIRE_ENV}=1 but linux sandbox helper probe failed"
