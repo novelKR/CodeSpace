@@ -179,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "3d06938828108472e341e9f95916895313b9d89929e397d02cb1938dbfd1d7b2",
-      "translation_sha256": "026498c8f408c7ba9a4f7fe0542e3de7c70c9446b39ab039d051547e1148d04a"
+      "source_sha256": "6c9f542a4bc21a921915b2075b648a44709ffa936a4ba442f040ace672bc2aeb",
+      "translation_sha256": "906ae5a1be350c812d5571c3b5d1e68185338fbe7c8dcc62dc8e3d1067aec62f"
     },
     {
       "id": "protocol-compatibility",
@@ -202,8 +202,8 @@
         "핵심-기준",
         "핵심이-요구하면-안-되는-것"
       ],
-      "source_sha256": "25cfdebec3310ede8b82f0b9bfc8990b30ad17df778bb69a79b514994155952d",
-      "translation_sha256": "e71d813acc066d1cf31ede011459ab85d1110f294735eb24059699fd50fb803a"
+      "source_sha256": "c4d909004edcc56813e4576bf6e3d2f876786fcf1a3ef84dc72ae81259f1e199",
+      "translation_sha256": "81e285cfbc852bbdd5fb58cbbbebd27eaf8aaa326e69d668378b2d2372146079"
     },
     {
       "id": "behavior-differences",
@@ -274,8 +274,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "e0b51312a25955a7764ffa0656af396eea25d0d711497fe4896ad11e8662aaaf",
-      "translation_sha256": "7d40e85e253d9ed62684d1434e846467530282787d701085d820b447fac99e03"
+      "source_sha256": "0b2fb95715fead2bc3f7fcbb7c1a5658b9f38c24c4786680561a0118228b20a9",
+      "translation_sha256": "3548bf93890cdce23cf70aabf8854a1f147f2ac1046c4d7c470c97901a84c724"
     },
     {
       "id": "error-codes",
@@ -292,8 +292,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "82f484be8346e895ffc78752751cb290c4df0e036219c13bdf5a3bd2529aef72",
-      "translation_sha256": "e578d1778f91f2ac7be0b008fbbb23440535aa0840d7a87c25aa5dd1fb5adbe5"
+      "source_sha256": "9ce736a71607443f4144a61777948e01948603a761162f6ef4edded3b7f64288",
+      "translation_sha256": "a060019f92425e1639eb3228f6fa02da48620732fefde40a11778a60f7fe606a"
     },
     {
       "id": "codex-reuse",

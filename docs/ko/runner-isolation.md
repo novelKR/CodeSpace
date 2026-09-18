@@ -53,7 +53,7 @@ seccomp/AppArmor와 Docker Desktop 대 Linux 엔진 차이도 검증되지 않�
 유지합니다(워커/헬퍼 **프로세스** 강화이지 command sandbox가 아닙니다.
 `ctor` 없음). 그다음 `$dir/runner.sock`에 bind만 합니다(부모 chmod
 없음). 프로세스당 `InProcessRunner`는 **하나**입니다. 와이어는 **u32
-length-prefix + CodeSpace JSON**입니다 (`protocol: 2`, Hello 핸드셰이크,
+length-prefix + CodeSpace JSON**입니다 (`protocol: 3`, Hello 핸드셰이크,
 `request_id` `rrpc-…`, 이벤트에 `ProcessExited`). App Server가 아닙니다.
 P0 UDS는 1:1입니다. 게이트웨이가 워커 자식을 소유합니다(`kill_on_drop`).
 연결 끊김이나 게이트웨이 종료는 워커와 호스트 자식을 죽입니다.

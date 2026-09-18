@@ -140,10 +140,15 @@ Operator-registered `workspace.root` is the trust anchor. `find` and
 ancestor checks may `canonicalize` that root. Descendants under it are
 never followed.
 
-For wire compatibility, some adapter failures (`NotFound`,
-`NotDirectory`, generic `Io`) currently collapse into `PATH_ESCAPE`.
-That is not the final filesystem error taxonomy. `PATH_ESCAPE` still
-means workspace escape (`../`, absolute).
+`codespace-fs` `FsError` maps 1:1 onto product codes. `NotFound` is
+`FILE_NOT_FOUND`, `NotDirectory` is `PATH_NOT_DIRECTORY`, generic `Io`
+is `FILE_OPERATION_FAILED`, `SymlinkRejected` is `SYMLINK_REJECTED`,
+and `NotRegularFile` is `SPECIAL_FILE_REJECTED`. `PATH_ESCAPE` is only
+a logical workspace/path-scope escape (`../`, absolute). `find` root
+canonicalize failure is `FILE_OPERATION_FAILED`; a walk result that
+cannot `strip_prefix` the workspace root is still `PATH_ESCAPE`.
+Rollback filesystem failures use the same mapping; they are not
+`INVALID_PATCH`.
 
 ## `command/exec`: shape vs crates
 

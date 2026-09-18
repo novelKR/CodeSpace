@@ -54,7 +54,7 @@ worker is isolated `crates/codex-runtime` (`codespace-codex-runtime`):
 `main` (process hardening of the worker/helper, **not** a command
 sandbox; no `ctor`). Then bind `$dir/runner.sock` (no parent chmod),
 then **one** `InProcessRunner` for the process. Wire format is **u32
-length-prefix + CodeSpace JSON** (`protocol: 2`, Hello handshake,
+length-prefix + CodeSpace JSON** (`protocol: 3`, Hello handshake,
 `request_id` `rrpc-…`, events include `ProcessExited`), not App Server.
 P0 UDS is 1:1: the gateway owns the worker child (`kill_on_drop`);
 disconnect or gateway shutdown kills the worker and host children;

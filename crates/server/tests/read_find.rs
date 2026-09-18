@@ -82,6 +82,28 @@ async fn read_and_find_use_versions_and_relative_paths() {
     assert_eq!(paths, vec!["hello.txt".to_string()]);
     assert!(paths.iter().all(|p| !p.starts_with('/')));
 
+    let missing = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ)
+                .with_arguments(object!({ "workspace_id": "demo", "path": "missing.txt" })),
+        )
+        .await;
+    let missing_text = format!("{missing:?}");
+    assert!(missing_text.contains("FILE_NOT_FOUND"), "{missing_text}");
+
+    std::fs::write(ws.join("foo"), "not-a-dir").unwrap();
+    let not_dir = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ)
+                .with_arguments(object!({ "workspace_id": "demo", "path": "foo/bar.txt" })),
+        )
+        .await;
+    let not_dir_text = format!("{not_dir:?}");
+    assert!(
+        not_dir_text.contains("PATH_NOT_DIRECTORY"),
+        "{not_dir_text}"
+    );
+
     let escape = client
         .call_tool(
             CallToolRequestParams::new(TOOL_READ)
@@ -104,6 +126,24 @@ async fn read_and_find_use_versions_and_relative_paths() {
     assert!(
         link_text.contains("SYMLINK_REJECTED") || link_text.contains("symlink"),
         "{link_text}"
+    );
+
+    let fifo = ws.join("pipe.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success(), "mkfifo should exist");
+    let special = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ)
+                .with_arguments(object!({ "workspace_id": "demo", "path": "pipe.fifo" })),
+        )
+        .await;
+    let special_text = format!("{special:?}");
+    assert!(
+        special_text.contains("SPECIAL_FILE_REJECTED") || special_text.contains("regular file"),
+        "{special_text}"
     );
 
     let outside = tempfile::tempdir().unwrap();

@@ -13,6 +13,9 @@ pub enum ErrorCode {
     InvalidCommand,
     ProcessSpawnFailed,
     PathEscape,
+    FileNotFound,
+    PathNotDirectory,
+    FileOperationFailed,
     SymlinkRejected,
     SpecialFileRejected,
     AddFileExists,
@@ -93,6 +96,14 @@ mod tests {
         assert_eq!(json, "\"INVALID_COMMAND\"");
         let json = serde_json::to_string(&ErrorCode::ProcessSpawnFailed).unwrap();
         assert_eq!(json, "\"PROCESS_SPAWN_FAILED\"");
+        let json = serde_json::to_string(&ErrorCode::FileNotFound).unwrap();
+        assert_eq!(json, "\"FILE_NOT_FOUND\"");
+        let json = serde_json::to_string(&ErrorCode::PathNotDirectory).unwrap();
+        assert_eq!(json, "\"PATH_NOT_DIRECTORY\"");
+        let json = serde_json::to_string(&ErrorCode::FileOperationFailed).unwrap();
+        assert_eq!(json, "\"FILE_OPERATION_FAILED\"");
+        let json = serde_json::to_string(&ErrorCode::PathEscape).unwrap();
+        assert_eq!(json, "\"PATH_ESCAPE\"");
         let json = serde_json::to_string(&ErrorCode::IntentAlreadyClaimed).unwrap();
         assert_eq!(json, "\"INTENT_ALREADY_CLAIMED\"");
         let json = serde_json::to_string(&ErrorCode::WorkClosed).unwrap();

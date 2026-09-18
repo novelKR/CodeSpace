@@ -132,7 +132,10 @@ async fn hello_on_live_socket() {
     let reply = read_frame(&mut stream).await.unwrap().unwrap();
     let parsed: WireEnvelope = serde_json::from_slice(&reply).unwrap();
     match parsed.result {
-        Some(RunnerOpResult::Hello { protocol }) => assert_eq!(protocol, WIRE_PROTOCOL),
+        Some(RunnerOpResult::Hello { protocol }) => {
+            assert_eq!(protocol, WIRE_PROTOCOL);
+            assert_eq!(protocol, 3);
+        }
         other => panic!("unexpected hello {other:?}"),
     }
 }
