@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Component, Path};
 
 use rustix::fd::OwnedFd;
-use rustix::fs::{chmodat, open, openat, statat, AtFlags, FileType, Mode, OFlags};
+use rustix::fs::{fchmod, open, openat, statat, AtFlags, FileType, Mode, OFlags};
 
 use crate::{map_io, FsError};
 
@@ -117,11 +117,18 @@ pub(crate) fn set_unix_mode_sync(path: &Path, mode: u32) -> Result<(), FsError> 
     if FileType::from_raw_mode(metadata.st_mode).is_symlink() {
         return Err(FsError::SymlinkRejected);
     }
-    chmodat(
+    // rustix's Linux backend rejects chmodat(..., SYMLINK_NOFOLLOW) with
+    // OPNOTSUPP even for regular files. Open the leaf with O_NOFOLLOW and
+    // fchmod the fd. O_RDONLY means this primitive is for rollback-capable
+    // regular files (content was already readable), not owner-only 000
+    // files that chmod(2) could still change.
+    let file = openat(
         &directory,
         leaf.as_os_str(),
-        Mode::from_raw_mode(mode as rustix::fs::RawMode),
-        AtFlags::SYMLINK_NOFOLLOW,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
     )
-    .map_err(|err| map_io(path, io::Error::from(err)))
+    .map_err(|err| map_io(path, io::Error::from(err)))?;
+    fchmod(&file, Mode::from_raw_mode(mode as rustix::fs::RawMode))
+        .map_err(|err| map_io(path, io::Error::from(err)))
 }

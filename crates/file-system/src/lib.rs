@@ -189,6 +189,9 @@ pub async fn unix_mode(path: &Path) -> Result<u32, FsError> {
 }
 
 /// chmod without following symlinks, including intermediate dirs.
+/// Opens the leaf with `O_RDONLY|O_NOFOLLOW` then `fchmod`s the fd, so
+/// the file must be rollback-capable (readable). Owner-only `000` files
+/// that `chmod(2)` could still change are out of scope.
 #[cfg(unix)]
 pub async fn set_unix_mode(path: &Path, mode: u32) -> Result<(), FsError> {
     let path = path.to_path_buf();
@@ -320,26 +323,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unix_mode_rejects_symlink_and_set_mode_is_nofollow() {
+    async fn set_unix_mode_changes_regular_file_mode() {
         let (_dir, root) = canon_temp();
         let file = root.join("a.txt");
         std::fs::write(&file, "hi").unwrap();
-        let mode = unix_mode(&file).await.unwrap();
         set_unix_mode(&file, 0o600).await.unwrap();
         assert_eq!(unix_mode(&file).await.unwrap() & 0o777, 0o600);
-        let _ = mode;
+    }
 
-        symlink("/etc/passwd", root.join("link")).unwrap();
+    #[tokio::test]
+    async fn unix_mode_rejects_leaf_symlink() {
+        let (_dir, root) = canon_temp();
+        let target = root.join("target.txt");
+        std::fs::write(&target, "secret").unwrap();
+        symlink(&target, root.join("link")).unwrap();
         let err = unix_mode(&root.join("link")).await.unwrap_err();
         assert!(
             matches!(err, FsError::SymlinkRejected),
             "expected SymlinkRejected, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn set_unix_mode_rejects_leaf_symlink_without_touching_target() {
+        let (_dir, root) = canon_temp();
+        let target = root.join("target.txt");
+        std::fs::write(&target, "secret").unwrap();
+        set_unix_mode(&target, 0o644).await.unwrap();
+        let before = unix_mode(&target).await.unwrap();
+        symlink(&target, root.join("link")).unwrap();
         let err = set_unix_mode(&root.join("link"), 0o600).await.unwrap_err();
         assert!(
             matches!(err, FsError::SymlinkRejected),
             "expected SymlinkRejected, got {err:?}"
         );
+        assert_eq!(unix_mode(&target).await.unwrap(), before);
+        assert_eq!(unix_mode(&target).await.unwrap() & 0o777, 0o644);
     }
 
     #[tokio::test]
