@@ -105,8 +105,14 @@ pub fn probe_helper(helper: &Path) -> bool {
         writable_workspace: true,
         network: SandboxNetwork::Restricted,
     };
-    let Ok(launch) = prepare_from_helper(helper, &spec, &[true_command()], &workspace) else {
-        return false;
+    let launch = match prepare_from_helper(helper, &spec, &[true_command()], &workspace) {
+        Ok(launch) => launch,
+        Err(err) => {
+            if require_linux_sandbox() {
+                eprintln!("linux sandbox probe prepare failed: {err}");
+            }
+            return false;
+        }
     };
     let mut child = Command::new(&launch.program);
     child
@@ -116,11 +122,35 @@ pub fn probe_helper(helper: &Path) -> bool {
         .envs(sandbox_exec_env(&workspace))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let Ok(child) = child.spawn() else {
-        return false;
+        .stderr(if require_linux_sandbox() {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        });
+    let child = match child.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            if require_linux_sandbox() {
+                eprintln!("linux sandbox probe spawn failed: {err}");
+            }
+            return false;
+        }
     };
-    matches!(wait_with_timeout(child, PROBE_TIMEOUT), Some(status) if status.success())
+    match wait_with_timeout(child, PROBE_TIMEOUT) {
+        Some(status) if status.success() => true,
+        Some(status) => {
+            if require_linux_sandbox() {
+                eprintln!("linux sandbox probe exited with {status}");
+            }
+            false
+        }
+        None => {
+            if require_linux_sandbox() {
+                eprintln!("linux sandbox probe timed out after {PROBE_TIMEOUT:?}");
+            }
+            false
+        }
+    }
 }
 
 /// Build helper argv for `command` at `command_cwd`. Uses [`helper_path`].
@@ -148,7 +178,7 @@ pub fn prepare_from_helper(
     if command.is_empty() || command[0].is_empty() {
         return Err("command must be a non-empty argv (no shell)".into());
     }
-    let profile = permission_profile(spec)?;
+    let profile = permission_profile(spec, helper)?;
     let cwd = absolute_dir(command_cwd)?;
     let policy_cwd = absolute_dir(&spec.workspace_root)?;
     let args = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -187,13 +217,20 @@ pub fn sandbox_exec_env(home: &Path) -> BTreeMap<String, String> {
     env
 }
 
-fn permission_profile(spec: &SandboxExecSpec) -> Result<PermissionProfile, String> {
+fn permission_profile(spec: &SandboxExecSpec, helper: &Path) -> Result<PermissionProfile, String> {
     let mut entries = vec![FileSystemSandboxEntry::new(
         FileSystemPath::Special {
             value: FileSystemSpecialPath::Minimal,
         },
         FileSystemAccessMode::Read,
     )];
+    // The Codex Linux helper re-execs its own current executable inside
+    // bubblewrap before applying seccomp. `Minimal` does not expose arbitrary
+    // host paths, so make only this infrastructure binary readable there.
+    entries.push(FileSystemSandboxEntry::new(
+        path_uri(helper)?.into(),
+        FileSystemAccessMode::Read,
+    ));
     let workspace = path_uri(&spec.workspace_root)?;
     let access = if spec.writable_workspace {
         FileSystemAccessMode::Write
@@ -395,6 +432,23 @@ mod tests {
         assert!(
             !dumped.contains("\"subpath\":\".git\""),
             "must not add Codex .git RO carveout: {dumped}"
+        );
+    }
+
+    #[test]
+    fn permission_profile_reads_helper_for_inner_reexec() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = permission_profile(&spec(dir.path(), true), &dummy_helper()).unwrap();
+        let (file_system, _) = profile.to_runtime_permissions();
+        let expected = FileSystemPath::Path {
+            path: path_uri(&dummy_helper()).unwrap(),
+        };
+        assert!(
+            file_system.entries.iter().any(|entry| {
+                entry.access == FileSystemAccessMode::Read && entry.path == expected
+            }),
+            "helper must stay readable for the inner sandbox re-exec: {:?}",
+            file_system.entries
         );
     }
 
