@@ -49,6 +49,8 @@ CodeSpace Core          ← only authorization authority
           │    process-hardening + UDS worker; opt-in
           │  crates/pty (codespace-pty)
           │    interactive spawn; runner API에 Codex 타입 없음
+          │  crates/file-system (codespace-fs)
+          │    no-follow I/O + 제한된 walk; 인가자는 PathSandbox
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -95,7 +97,8 @@ CodeSpace core
 
 
 isolated adapter (crates/patch today;
-crates/codex-runtime today; crates/pty today)
+crates/codex-runtime today; crates/pty today;
+crates/file-system today)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
@@ -141,7 +144,8 @@ Runner helper
   (`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`).
 - **격리된** Cargo 워크스페이스에서의 경로 의존성이며 저장소 루트가
   아닙니다. 오늘: `crates/patch`, `crates/codex-runtime`
-  (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`).
+  (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`),
+  `crates/file-system` (`codespace-fs`).
 - NOTICE + Apache-2.0 귀속.
 - 제품 정책은 서브그래프 앞과 뒤에 남습니다.
 - Codex 워크스페이스에서 크레이트를 파일 복사하지 마세요.
@@ -162,7 +166,7 @@ checkout과 cargo가 지배합니다.
 | core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty` | tiny | adapter in the update range; allowlist only |
+| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system` | tiny | adapter in the update range; allowlist only |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 갱신 범위는 `SCAN_BASE`(PR base / 이전 `main`)입니다. 범위를 모르면
@@ -175,7 +179,8 @@ checkout과 cargo가 지배합니다.
 `codex-apply-patch`, apply-patch 워크스페이스 그래프로서
 `codex-exec-server`, `codex-utils-path-uri`, `codex-process-hardening`;
 `crates/codex-runtime`: `codex-process-hardening`, `codex-uds`;
-`crates/pty`: `codex-utils-pty`). 소스는 에이전트/모델
+`crates/pty`: `codex-utils-pty`; `crates/file-system`:
+`codex-file-system`, `codex-exec-server`, `codex-utils-path-uri`). 소스는 에이전트/모델
 패턴을 유지합니다(`api.openai.com`, Responses, `codex-login`,
 `codex-core`, `codex-app-server`, `async-openai`). 크레이트 이름을
 언급하는 주석은 cargo 의존성이 아닙니다.
@@ -198,8 +203,9 @@ login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전�
 ## 단계적 가져오기 (그 WP가 생길 때)
 
 문서화된 순서입니다. **이 WP에서 코드로 가져옴:** process-hardening, UDS,
-PTY(`crates/pty` → `codex-utils-pty`). **아직 안 가져옴:** filesystem,
-linux-sandbox, network.
+PTY(`crates/pty` → `codex-utils-pty`), filesystem(`crates/file-system`
+→ `LOCAL_FS` / `ExecutorFileSystem`). **아직 안 가져옴:** linux-sandbox,
+network.
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -227,8 +233,13 @@ Codex `main`이 아니라 핀의 `Cargo.toml` 파일로 판단합니다.
 **`codex-utils-pty`** via `crates/pty` (`codespace-pty`).
 Unix: `portable-pty`, `tokio`, `libc`. 기본 크기 24x80. 연결해도 PTY
 MCP 도구가 추가되지는 **않습니다**. `exec_command`에 선택적 `tty`(기본
-false)가 있습니다. 게이트웨이가 여전히 `process_id`를 발급합니다.
-Resize는 Runner/MCP 표면에 올리지 않습니다(P1).
+false). 게이트웨이가 여전히 `process_id`를 발급합니다. Resize는
+Runner/MCP 표면에 두지 않습니다(P1).
+
+**`codex-file-system`** via `crates/file-system` (`codespace-fs`).
+제한된 walk, `LOCAL_FS`를 통한 no-follow I/O(`sandbox: None`).
+공개 타입은 CodeSpace(`Path` / bytes / walk 결과)만. 인가자는
+`PathSandbox`. MCP `read` / `find`는 워크스페이스 상대로 남습니다.
 
 ### 재사용 선호 (그 WP가 올 때)
 
@@ -250,18 +261,6 @@ Unix: Tokio `fs` / `net` / `rt`. 선택적 Runner Unix 소켓 워커의 소켓
 `find(query, workspace_id)`로 남고, 엔진은 어댑터 뒤로 옮길 수 있습니다.
 
 ### 조건부 / 적극 평가
-
-**`codex-file-system`**
-([`codex-rs/file-system/Cargo.toml`](../../third_party/codex/codex-rs/file-system/Cargo.toml))
-
-제한된 탐색, 심링크 제어, executor FS 타입. `codex-protocol`에
-의존합니다. `PathSandbox`를 지우지 **마세요**. 목표:
-
-```text
-CodeSpace path scope / authorization
-        ↓
-Codex ExecutorFileSystem  (adapter)
-```
 
 **`codex-shell-command`**
 
@@ -345,12 +344,12 @@ rollout, history. 제품 exec 흐름이지 `spawn`이 아닙니다.
 - 컨테이너 수명주기와 워크스페이스 바인드 마운트 **정책**.
 - 격리된 어댑터 워크스페이스(`crates/patch`,
   `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
-  `codespace-pty`).
+  `codespace-pty`, `crates/file-system` / `codespace-fs`).
 
 ## 다음 구현 WP
 
 다음 **코드** 작업 패키지는 기존 `Runner` 트레이트 뒤의 남은 실행
-서브그래프(filesystem, linux-sandbox, network)입니다.
+서브그래프(linux-sandbox, network)입니다.
 `apply_patch`를 게이트웨이가 구동하는 여러 RPC로 쪼개면 안 됩니다.
 
 기본으로 자체 PTY / Landlock / seccomp 스택을 두지 마세요.

@@ -145,8 +145,8 @@
         "프로토콜-호환성",
         "현재-배치"
       ],
-      "source_sha256": "0dc9b04fe30797f0c4da9d413b192bc808096e53ac853123b4b338666199f4a9",
-      "translation_sha256": "19f1554a15da21c192abf4ab17c42bd8ffcbbf1475332e8228a4c4af2edd05a0"
+      "source_sha256": "1e2cc610d5339aeaee3e15c8885ffa0e5ed4f6fce5cefc6080368e99f7940cdc",
+      "translation_sha256": "7f4705198510476da9c44c51ca5d4595fb532a3d2a9799deef5dda14781ad196"
     },
     {
       "id": "execution-substrate",
@@ -177,8 +177,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "5d4f9376ec278fac0818b11eafa2d4f3f4de972ac36785e7a6b7b3276432933b",
-      "translation_sha256": "1a8a242d9e5ebc1f0e1d0b3b785f0d9732c94c232511872655c7b2bdd9ba2b58"
+      "source_sha256": "2e530169b25c817329be80024a15ba83465e0b27b5a3d00f85c0bccddd729ec5",
+      "translation_sha256": "f305af3b8814a8aff14d635f67c25ebe44479de8930e6e607a536eac82492db1"
     },
     {
       "id": "protocol-compatibility",
@@ -272,8 +272,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "72f70843875b258ad45e1aabad259ea34ccb716890efc69f883af1cc6aa3f761",
-      "translation_sha256": "8b5ceaa2d5e1435d609ab1a765559f4df26d4aa73097a231001075ffcb3ab889"
+      "source_sha256": "e0228b0c1592125c2bf3436f6e963f552959abce4bd8337867a5a40226ddd3cc",
+      "translation_sha256": "55cd3973d23545d88cb8d4a184944a99772a0d7c23b6836023f9faad5ab4a075"
     },
     {
       "id": "error-codes",
@@ -340,8 +340,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "5f71321d25552783bfa62ad74293048db2b0c99487ce427280184daff4a5930b",
-      "translation_sha256": "15122a20ebe8f2867734c154b8812ebb74521b1263550988c9d16194f7be087d"
+      "source_sha256": "2e33efb4be3f6bdc0d72b4172c1ffa2b03943aca7eef3ef74d3dee2a5d2d8052",
+      "translation_sha256": "5759df02e14fe7514b83fe27bf8cc6e0da4655069bb02b7b0debc906056067d7"
     },
     {
       "id": "upstream-lock",
@@ -362,8 +362,8 @@
         "재사용하는-것과-거절하는-것",
         "파일-복사-벤더가-금지인-이유"
       ],
-      "source_sha256": "931d0e87f859e9ba1de6174a342fa5034b511a785cdd5796d58d39b628590c2a",
-      "translation_sha256": "c81180a72b4c96021b9c6ae43b3ef6cc20e609549da4a2175930fb3126c5e472"
+      "source_sha256": "97bc1e8932861350d8556f2e4830a67d8529127773634914eec46743368aeafe",
+      "translation_sha256": "fda2318e052d44f3276e6a7b3bb208e485c1963669ac800f1b9551607c6c9085"
     },
     {
       "id": "upstream-update",

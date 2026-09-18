@@ -106,5 +106,20 @@ async fn read_and_find_use_versions_and_relative_paths() {
         "{link_text}"
     );
 
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), "leak").unwrap();
+    std::os::unix::fs::symlink(outside.path(), ws.join("via")).unwrap();
+    let via = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ)
+                .with_arguments(object!({ "workspace_id": "demo", "path": "via/secret.txt" })),
+        )
+        .await;
+    let via_text = format!("{via:?}");
+    assert!(
+        via_text.contains("SYMLINK_REJECTED") || via_text.contains("symlink"),
+        "{via_text}"
+    );
+
     client.cancel().await.expect("cancel");
 }

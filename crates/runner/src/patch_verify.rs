@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::{PathSandbox, VERSION_ABSENT};
 use codespace_domain::{ErrorBody, ErrorCode, FileChange, FileChangeKind};
 
-pub fn verify_disk_matches_claimed(
+pub async fn verify_disk_matches_claimed(
     sandbox: &PathSandbox,
     claimed: &[FileChange],
     before: &BTreeMap<String, String>,
@@ -18,7 +18,7 @@ pub fn verify_disk_matches_claimed(
     }
     let mut out = Vec::with_capacity(claimed.len());
     for change in claimed {
-        let actual = sandbox.version(&change.path)?;
+        let actual = sandbox.version(&change.path).await?;
         match change.kind {
             FileChangeKind::Delete => {
                 if actual != VERSION_ABSENT {
@@ -68,14 +68,14 @@ pub fn verify_disk_matches_claimed(
     Ok(out)
 }
 
-pub fn overlay_before(
+pub async fn overlay_before(
     sandbox: &PathSandbox,
     changes: &[FileChange],
 ) -> Result<(Vec<FileChange>, BTreeMap<String, String>), ErrorBody> {
     let mut before = BTreeMap::new();
     let mut out = Vec::with_capacity(changes.len());
     for change in changes {
-        let version = sandbox.version(&change.path)?;
+        let version = sandbox.version(&change.path).await?;
         before.insert(change.path.clone(), version.clone());
         out.push(FileChange {
             path: change.path.clone(),
@@ -102,12 +102,12 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn mismatching_claimed_hash_is_invalid() {
+    #[tokio::test]
+    async fn mismatching_claimed_hash_is_invalid() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
         let s = sandbox(dir.path());
-        let actual = s.version("a.txt").unwrap();
+        let actual = s.version("a.txt").await.unwrap();
         let err = verify_disk_matches_claimed(
             &s,
             &[FileChange {
@@ -118,17 +118,18 @@ mod tests {
             }],
             &BTreeMap::new(),
         )
+        .await
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidPatch);
         assert!(err.message.contains(&actual));
     }
 
-    #[test]
-    fn matching_hash_is_applied() {
+    #[tokio::test]
+    async fn matching_hash_is_applied() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
         let s = sandbox(dir.path());
-        let actual = s.version("a.txt").unwrap();
+        let actual = s.version("a.txt").await.unwrap();
         let changes = verify_disk_matches_claimed(
             &s,
             &[FileChange {
@@ -139,6 +140,7 @@ mod tests {
             }],
             &BTreeMap::new(),
         )
+        .await
         .unwrap();
         assert_eq!(changes[0].after_version.as_deref(), Some(actual.as_str()));
     }

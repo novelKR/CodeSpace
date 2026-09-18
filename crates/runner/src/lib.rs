@@ -28,6 +28,9 @@ pub const FORBIDDEN_MOUNT_MARKERS: &[&str] = &[
 pub const RUNNER_UID: u32 = 10001;
 pub const WORKSPACE_MOUNT: &str = "/workspace";
 
+/// Workspace path authorizer. `resolve` keeps `resolve_path` plus leaf
+/// symlink/special-file rejection. File bytes, metadata, and bounded
+/// walks go through `codespace-fs` (no-follow I/O).
 #[derive(Debug, Clone)]
 pub struct PathSandbox {
     workspace: Workspace,
@@ -40,6 +43,7 @@ impl PathSandbox {
 
     pub fn resolve(&self, relative: &str) -> Result<PathBuf, ErrorBody> {
         let path = resolve_path(&self.workspace, relative)?;
+        reject_symlink_ancestors(self.root(), &path)?;
         if let Ok(meta) = fs::symlink_metadata(&path) {
             if meta.file_type().is_symlink() {
                 return Err(ErrorBody::new(
@@ -64,6 +68,29 @@ impl PathSandbox {
     pub fn root(&self) -> &Path {
         &self.workspace.root
     }
+}
+
+fn reject_symlink_ancestors(root: &Path, dest: &Path) -> Result<(), ErrorBody> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut current = dest;
+    loop {
+        if current == root {
+            break;
+        }
+        if let Ok(meta) = fs::symlink_metadata(current) {
+            if meta.file_type().is_symlink() {
+                return Err(ErrorBody::new(
+                    ErrorCode::SymlinkRejected,
+                    "symlink files are rejected",
+                ));
+            }
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+    Ok(())
 }
 
 mod api;
@@ -151,15 +178,15 @@ pub trait Runner: Send + Sync {
 
 impl Runner for InProcessRunner {
     async fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, RunnerError> {
-        self.read_file(ws, path).map_err(RunnerError::from)
+        self.read_file(ws, path).await.map_err(RunnerError::from)
     }
 
     async fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, RunnerError> {
-        self.find_files(ws, glob).map_err(RunnerError::from)
+        self.find_files(ws, glob).await.map_err(RunnerError::from)
     }
 
     async fn version(&self, ws: &Workspace, path: &str) -> Result<String, RunnerError> {
-        self.file_version(ws, path).map_err(RunnerError::from)
+        self.file_version(ws, path).await.map_err(RunnerError::from)
     }
 
     async fn apply_patch(
@@ -331,6 +358,23 @@ mod tests {
             Profile::ReadOnly,
         ));
         let err = sandbox.resolve("link").unwrap_err();
+        assert_eq!(err.code, ErrorCode::SymlinkRejected);
+    }
+
+    #[test]
+    fn path_sandbox_rejects_directory_symlink_ancestors() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("ws")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "leak").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("ws").join("via")).unwrap();
+        let sandbox = PathSandbox::new(Workspace::new(
+            WorkspaceId("demo".into()),
+            root.join("ws"),
+            Profile::ReadOnly,
+        ));
+        let err = sandbox.resolve("via/secret.txt").unwrap_err();
         assert_eq!(err.code, ErrorCode::SymlinkRejected);
     }
 

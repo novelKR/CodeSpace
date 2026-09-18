@@ -34,7 +34,9 @@ Unix 소켓을 씁니다. 게이트웨이가 unique 0700 leaf를 만듭니다
 ## macOS / Docker 없음
 
 `codespace-runner::PathSandbox`는 단위 시험과 `read` / `find` / versions에
-같은 상대 경로 + 심링크 + 특수 파일 규칙을 적용합니다. Docker를 쓰지
+같은 상대 경로 + 심링크 + 특수 파일 규칙을 적용합니다. 파일 바이트와
+제한된 walk는 격리된 `crates/file-system`(`codespace-fs`, no-follow
+`LOCAL_FS`)을 탑니다. Docker를 쓰지
 않으면 **Linux 컨테이너 격리는 검증되지 않습니다**. 호스트
 seccomp/AppArmor와 Docker Desktop 대 Linux 엔진 차이도 검증되지 않습니다.
 
@@ -55,7 +57,7 @@ P0 UDS는 1:1입니다. 게이트웨이가 워커 자식을 소유합니다(`kil
 `process_id`는 살아남지 않으며 재연결은 없습니다. 러너 `Replay`는 같은
 연결에서만 동작합니다. 그 **전송**은 구현되어 있으며 선택적입니다
 (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). **같은 호스트**이며
-Linux 격리를 주장하지 않습니다. 다음 WP는 filesystem /
+Linux 격리를 주장하지 않습니다. 다음 WP는
 linux-sandbox / network이며 두 번째 전송 재작성이 아닙니다. 소켓
 프리미티브로 `codex-uds`를 선호하세요. Runner RPC는 CodeSpace 계약으로
 남습니다.
@@ -65,7 +67,8 @@ Linux 격리는 여전히 목표 OS입니다. Landlock, seccomp, PTY 헬퍼, UDS
 실행 서브그래프를 선호하세요
 ([codex-reuse.md](codex-reuse.md)). 단계:
 process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
-network. `codex-linux-sandbox`는 컨테이너 옆에 둘 수 있습니다. 그
+network (filesystem은 `crates/file-system`으로 가져옴).
+`codex-linux-sandbox`는 컨테이너 옆에 둘 수 있습니다. 그
 `codex-core` **dev-dep**는 제품 그래프에서 빼 두세요. `codex-exec`는
 거절된 채로 남습니다. `codex-exec-server`는 참고 / 이후 백엔드이며
 영구 거절은 아닙니다. 게이트웨이 정책이 유일한 허용 경로입니다. compose

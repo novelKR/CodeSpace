@@ -41,7 +41,8 @@ bump. Re-check graphs after a deliberate W13 update.
 CI: `policy-scan` job runs `scripts/check-no-model-deps.sh` **without**
 submodules, in parallel with `rust`. Core manifests may not declare
 `codex-*` deps. Core sources keep the agent/model grep. Isolated
-adapter manifests (`crates/patch`, `crates/codex-runtime`, `crates/pty`) use an
+adapter manifests (`crates/patch`, `crates/codex-runtime`, `crates/pty`,
+`crates/file-system`) use an
 **allowlist**; `third_party/codex` sources are never scanned.
 `SCAN_BASE` limits the tree to the update range; unknown range scans
 all core crates and adapter manifests. Clippy/tests still always run.
@@ -143,9 +144,10 @@ Do **not** take `codex-exec` (product exec flow) or embed App Server.
 ([codex-reuse.md](codex-reuse.md)). Do **not** default sandbox policy
 from “the Codex user’s config.” Gateway maps an already-allowed
 request onto runner DTOs. Prefer `codex-process-hardening`,
-`codex-utils-pty`, and `codex-uds` (transport primitive; RPC stays
-CodeSpace). Actively evaluate `codex-file-system` under PathSandbox
-scope, then `codex-linux-sandbox` (dev-dep includes `codex-core`;
+`codex-utils-pty`, `codex-uds` (transport primitive; RPC stays
+CodeSpace), and `codex-file-system` under PathSandbox scope
+(`crates/file-system` → `LOCAL_FS`, no-follow I/O and bounded walk).
+Then `codex-linux-sandbox` (dev-dep includes `codex-core`;
 keep that out of the product graph) plus `codex-network-proxy` when a
 network axis exists. A container does not replace that subgraph.
 
@@ -249,7 +251,8 @@ P0 code for this substrate is in: Runner exec DTO **shape**
 `PermissionProfile` (`process_exec`) and Environment in `crates/policy`,
 resource serializer (request vs process owners), opt-in `UdsRunner` +
 `codespace-codex-runtime` (process-hardening + UDS), isolated
-`crates/pty` → `codex-utils-pty`. Live MCP tool **names** stay frozen;
+`crates/pty` → `codex-utils-pty`, isolated `crates/file-system` →
+`LOCAL_FS`. Live MCP tool **names** stay frozen;
 `exec_command` has optional `tty` (default false).
 
 **P0** — landed or next subgraph WPs: `codex-apply-patch` (done), exec
@@ -257,7 +260,8 @@ runtime **shape** on Runner DTOs (done), PermissionProfile domain in
 `crates/policy` (done), Environment domain (operator-registered; not a
 tool arg) (done), resource serializer (done), transport
 (`UdsRunner`) with process-hardening + UDS (done, opt-in), PTY I/O
-backend (done). Still out: filesystem → linux-sandbox → network.
+backend (done), filesystem mechanics under PathSandbox (done). Still
+out: linux-sandbox → network.
 
 **P1** — operation state machine / diff ledger, approval fallback
 tools, internal watch, richer process handles (resize, caps),
@@ -270,5 +274,5 @@ MCP contract, deterministic hooks, skills as resources or prompts.
 
 The next **code** WPs are remaining execution subgraph crates behind
 the existing trait, without splitting `apply_patch` into gateway RPCs.
-Start at filesystem. Sandbox / network are not a default homegrown OS
+Start at linux-sandbox. Sandbox / network are not a default homegrown OS
 stack ([codex-reuse.md](codex-reuse.md)).

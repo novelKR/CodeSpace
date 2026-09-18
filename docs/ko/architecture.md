@@ -69,7 +69,7 @@ RuntimeBackend
           ├─ codex-process-hardening (main 첫 줄, command sandbox 아님)
           ├─ 연결 끊김 / 게이트웨이 종료 → 워커 종료 (호스트 자식도 죽음)
           └─ InProcessRunner 하나
-                 ├─ read / find / version (PathSandbox)
+                 ├─ read / find / version (PathSandbox → codespace-fs)
                  ├─ apply_patch (one transaction)
                  │      expected versions → preflight → snapshot
                  │      → helper apply → verify → rollback
@@ -297,6 +297,7 @@ crates/patch/           Codex adapter + codespace-patch helper (own workspace)
 crates/codex-runtime/   isolated worker: hardening + UDS + InProcessRunner
 crates/store/           SQLite operations, works, intents; in-memory resource locks
 crates/runner/          Runner trait + execution DTOs, PathSandbox, patch transaction, host supervisor, UdsRunner, fixture checks
+crates/file-system/     isolated Codex FS adapter (codespace-fs): no-follow I/O + bounded walk
 third_party/codex/      git submodule, pinned revision (W06)
 tests/{security,recovery,e2e}/
 docs/                   including operations.md (W12), codex-reuse.md,
