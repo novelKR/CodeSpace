@@ -12,6 +12,7 @@ codespace-domain = { path = "../domain" }
 codespace-policy = { path = "../policy" }
 codespace-pty = { path = "../pty" }
 codespace-fs = { path = "../file-system" }
+codespace-linux-sandbox = { path = "../linux-sandbox" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

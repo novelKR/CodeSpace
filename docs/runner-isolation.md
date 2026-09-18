@@ -3,8 +3,11 @@
 [English](runner-isolation.md) | [한국어](ko/runner-isolation.md)
 
 **Target** execution isolation OS is a Linux container. **Current**
-`exec_command` is a host process (`tokio::process::Command`, workspace
-cwd, `env_clear`). Gateway unit tests may run on macOS. That is not a
+`exec_command` is a host process. When the Linux helper probe succeeds,
+pipe and PTY spawn wrap the same `codespace-linux-sandbox` argv
+(bubblewrap + `no_new_privs`/seccomp). When the probe fails (macOS, no
+bwrap), spawn is unsandboxed and `workspace_info` advertises `none`.
+Gateway unit tests may run on macOS. That is not a
 claim that Linux isolation was verified on the development laptop.
 
 ## What the compose fixture does
@@ -61,8 +64,8 @@ disconnect or gateway shutdown kills the worker and host children;
 `process_id` does not survive; there is no reconnect. Runner `Replay`
 is same-connection only. That **transport** is implemented; it
 is opt-in (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`) on the
-**same host**. It does not claim Linux isolation. Next WPs are
-linux-sandbox / network, not a second transport rewrite.
+**same host**. Linux command sandbox is a wrap of that same
+`InProcessRunner` spawn, not a second transport rewrite.
 Prefer `codex-uds` as the socket primitive; the Runner RPC stays a
 CodeSpace contract.
 
@@ -71,9 +74,10 @@ UDS, filesystem mechanics, and network isolation are **not** a default
 homegrown stack. Prefer upstream execution subgraphs
 ([codex-reuse.md](codex-reuse.md)), staged
 process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
-network (filesystem is taken via `crates/file-system`).
-`codex-linux-sandbox` can sit beside a container; keep its
-`codex-core` **dev-dep** out of the product graph. `codex-exec` stays
+network (filesystem is taken via `crates/file-system`; linux-sandbox
+via `crates/linux-sandbox`). `codex-linux-sandbox` can sit beside a
+container; keep its `codex-core` **dev-dep** out of the product graph.
+The next WP is network (`Enabled` + proxy). `codex-exec` stays
 rejected. `codex-exec-server` is a reference / future backend, not a
 forever reject. Gateway policy remains the only allow path. Do not
 mount a host Docker socket or a future control socket on the compose

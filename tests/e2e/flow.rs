@@ -81,11 +81,19 @@ async fn info_read_patch_exec_flow() {
         info_body["execution"]["process"]["capabilities"]["tty"]["resize_supported"],
         false
     );
-    assert_eq!(
-        info_body["execution"]["isolation"]["command_sandbox"],
-        "none"
-    );
-    assert_eq!(info_body["execution"]["network"]["enforcement"], "none");
+    if codespace_runner::linux_sandbox_available() {
+        assert_eq!(
+            info_body["execution"]["isolation"]["command_sandbox"],
+            "linux-sandbox"
+        );
+        assert_eq!(info_body["execution"]["network"]["enforcement"], "enforced");
+    } else {
+        assert_eq!(
+            info_body["execution"]["isolation"]["command_sandbox"],
+            "none"
+        );
+        assert_eq!(info_body["execution"]["network"]["enforcement"], "none");
+    }
 
     let read = client
         .call_tool(

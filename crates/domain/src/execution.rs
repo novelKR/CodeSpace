@@ -217,6 +217,17 @@ impl WorkspaceExecutionInfo {
             },
         }
     }
+
+    /// Overlay after a successful Linux helper probe. Restricted network
+    /// advertises OS enforcement; Enabled stays unenforced in this WP.
+    pub fn with_linux_command_sandbox(mut self, network_restricted: bool) -> Self {
+        self.isolation.command_sandbox = CommandSandboxState::LinuxSandbox;
+        if network_restricted {
+            self.network.enforcement = NetworkEnforcementState::Enforced;
+            self.network.client_may_escalate = false;
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +322,29 @@ mod tests {
         assert_eq!(json["network"]["enforcement"], "none");
         assert_eq!(json["process"]["available"], true);
         assert_eq!(json["process"]["capabilities"]["tty"]["supported"], true);
+    }
+
+    #[test]
+    fn linux_sandbox_overlay_enforces_restricted_network() {
+        let exec = compose(
+            ClientEnvironmentKind::Host,
+            true,
+            EffectivePermissionInfo {
+                read: true,
+                write: true,
+                exec: true,
+            },
+        )
+        .with_linux_command_sandbox(true);
+        assert_eq!(
+            exec.isolation.command_sandbox,
+            CommandSandboxState::LinuxSandbox
+        );
+        assert_eq!(exec.network.enforcement, NetworkEnforcementState::Enforced);
+        assert!(!exec.network.client_may_escalate);
+        let json = serde_json::to_value(&exec).unwrap();
+        assert_eq!(json["isolation"]["command_sandbox"], "linux-sandbox");
+        assert_eq!(json["network"]["enforcement"], "enforced");
     }
 
     #[test]

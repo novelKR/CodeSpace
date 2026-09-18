@@ -1,10 +1,12 @@
 //! `Runner` trait, host `InProcessRunner`, and opt-in Unix-socket
 //! `UdsRunner`. Path sandbox, one patch transaction, host process
 //! supervisor, and isolation-fixture checks. Linux containers are the
-//! **target** execution OS. macOS hosts may run the path sandbox for unit
-//! tests; that does **not** verify Linux isolation. `exec_command` is not
-//! dispatched into compose. Default backend remains in-process. Host +
-//! `UdsRunner` is the same host over UDS, not a Linux isolation claim.
+//! **target** execution OS. When the Linux helper probe succeeds, command
+//! spawn is wrapped by `codespace-linux-sandbox`. macOS hosts may run the
+//! path sandbox for unit tests; that does **not** verify Linux isolation.
+//! `exec_command` is not dispatched into compose. Default backend remains
+//! in-process. Host + `UdsRunner` is the same host over UDS, not a Linux
+//! isolation claim.
 
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
@@ -119,6 +121,13 @@ pub use process::{
     InProcessRunner, RetentionPolicy, ShellRelease, DEFAULT_COMPLETED_TTL, DEFAULT_MAX_COMPLETED,
     DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT,
 };
+
+/// True when this process probed a working Linux sandbox helper.
+/// Advertisement and spawn must agree on this value.
+pub fn linux_sandbox_available() -> bool {
+    codespace_linux_sandbox::probe()
+}
+
 pub use socket::{
     allocate_private_runner_dir, is_forbidden_runner_dir, reclaim_leftover_socket,
     runner_socket_path, RUNNER_SOCKET_NAME,

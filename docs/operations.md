@@ -27,16 +27,19 @@ to Codex `main`. Product runtime stays out of the gateway; see
 [codex-reuse.md](codex-reuse.md) and
 [execution-substrate.md](execution-substrate.md).
 
-Build the gateway and patch helper into the **same** directory so the
-gateway can find the helper next to itself (or set `CODESPACE_PATCH_BIN`).
+Build the gateway, patch helper, and Linux sandbox helper into the
+**same** directory so the gateway can find them next to itself (or set
+`CODESPACE_PATCH_BIN` / `CODESPACE_LINUX_SANDBOX_BIN`).
 The UDS worker is optional (`CODESPACE_RUNTIME_BIN`).
 
 ```bash
 cargo build -p codespace-server --bin codespace-mcp --release
 cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
+cargo build --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox --release
 mkdir -p dist
 cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
+cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
 # Optional Unix-socket worker (not the default exec path):
 cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
 cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
@@ -49,7 +52,12 @@ binds a private Unix socket with `codex-process-hardening` and
 `codex-uds`, then runs `InProcessRunner`. Hardening is **worker/helper
 process** hardening (`pre_main_hardening()` as the first line of
 `main`; no `ctor`), not a command sandbox. Default `exec_command` still
-uses in-process host spawn. `exec_command.tty` defaults to false (pipes).
+uses in-process host spawn. On Linux, when
+`CODESPACE_LINUX_SANDBOX_BIN` (or `codespace-linux-sandbox` next to the
+gateway) probes successfully, that spawn is wrapped by the helper.
+`workspace_info.execution.isolation.command_sandbox` is `linux-sandbox`
+only then; otherwise `none`. Restricted network is OS-enforced in that
+case (`network.enforcement=enforced`). `exec_command.tty` defaults to false (pipes).
 `tty: true` attaches a PTY at 24x80. Exec DTO cwd is `WorkspaceRoot`; `PATH` /
 `HOME` / `LANG` are applied inside the runner process (`TERM=xterm` for PTY).
 
@@ -79,8 +87,9 @@ the effective execution contract (`execution`): policy vs backend support,
 support only; not occupancy — `exec_command` or `apply_patch` may still
 return `WORKSPACE_BUSY`; tool existence is `tools_exposed`), fixed 24x80
 PTY without resize when a process is available, mutation lease /
-`WORKSPACE_BUSY`, workspace-scoped file tools vs no command sandbox, and
-restricted network policy without OS enforcement. `output_combined=true` means `read_process` exposes one
+`WORKSPACE_BUSY`, workspace-scoped file tools vs Linux command sandbox
+when advertised, and restricted network policy with OS enforcement when
+the helper probe succeeds. `output_combined=true` means `read_process` exposes one
 combined stream; stdout/stderr identity is not preserved. `exec_command`
 returns `dispatch_status`
 (`confirmed` or `unknown`). Treat `unknown` patch/exec as possibly

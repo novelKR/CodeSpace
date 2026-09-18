@@ -16,8 +16,8 @@ use codespace_policy::{
     Workspace,
 };
 use codespace_runner::{
-    Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest, RunnerReadProcess,
-    RunnerWriteStdin, RuntimeBackend,
+    linux_sandbox_available, Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest,
+    RunnerReadProcess, RunnerWriteStdin, RuntimeBackend,
 };
 use codespace_store::{Begin, Store};
 use rmcp::{
@@ -66,9 +66,12 @@ exec_command.tty is optional and defaults to false. tty=true attaches a \
 fixed 24x80 PTY. PTY resize is not currently supported. Use tty=true only \
 when the command requires terminal semantics or an interactive TUI.
 
-Executable workspaces currently use host execution. Host execution is not an \
-OS command sandbox. Network policy is reported by workspace_info. OS network \
-enforcement is currently none; absence of enforcement is not permission.
+Executable workspaces currently use host execution. When \
+workspace_info.execution.isolation.command_sandbox is linux-sandbox, \
+exec_command is wrapped by the Linux helper. When it is none, host \
+execution is not an OS command sandbox. Network policy is reported by \
+workspace_info. OS network enforcement follows \
+execution.network.enforcement; absence of enforcement is not permission.
 
 Treat apply_patch status=unknown as possibly executed. Do not blindly retry \
 the mutation with a new operation_key.
@@ -227,6 +230,7 @@ impl CodeSpace {
             .mark_shell_busy(&params.workspace_id.0, &process_id.0)
             .map_err(err_json)?;
         let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
+        req.policy.network = PermissionProfile::from_workspace_profile(ws.profile).network;
         req.tty = params.tty;
         match self.runner.exec(ws, req).await {
             Ok(result) => Ok(Json(ExecCommandResult {
@@ -506,11 +510,23 @@ fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
         file_read_supported: ws.environment_kind.file_read_supported(),
         file_write_supported: ws.environment_kind.file_write_supported(),
     };
-    WorkspaceExecutionInfo::from_effective(
+    let info = WorkspaceExecutionInfo::from_effective(
         environment,
         permissions,
         client_network_policy(policy.network),
-    )
+    );
+    advertise_linux_sandbox(info, policy.network)
+}
+
+fn advertise_linux_sandbox(
+    info: WorkspaceExecutionInfo,
+    network: NetworkAxis,
+) -> WorkspaceExecutionInfo {
+    if linux_sandbox_available() {
+        info.with_linux_command_sandbox(matches!(network, NetworkAxis::Restricted))
+    } else {
+        info
+    }
 }
 
 fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<WorkspaceInfo, ErrorBody> {
@@ -631,6 +647,18 @@ mod tests {
             exec.process.available,
             exec.permissions.exec && exec.environment.exec_supported
         );
+        if linux_sandbox_available() {
+            assert_eq!(
+                exec.isolation.command_sandbox,
+                CommandSandboxState::LinuxSandbox
+            );
+            if exec.network.policy == NetworkPolicyState::Restricted {
+                assert_eq!(exec.network.enforcement, NetworkEnforcementState::Enforced);
+            }
+        } else {
+            assert_eq!(exec.isolation.command_sandbox, CommandSandboxState::None);
+            assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
+        }
     }
 
     fn assert_instructions_cover_execution_contract(text: &str) {
@@ -712,9 +740,7 @@ mod tests {
             .tty;
         assert!(tty.supported);
         assert!(!tty.resize_supported);
-        assert_eq!(exec.isolation.command_sandbox, CommandSandboxState::None);
         assert_eq!(exec.network.policy, NetworkPolicyState::Restricted);
-        assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
         let json = serde_json::to_value(&info).unwrap();
         assert!(json.get("environment_id").is_none());
         assert!(!json.to_string().contains("\"environment_id\""));
