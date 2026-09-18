@@ -51,6 +51,8 @@ CodeSpace Core          ← only authorization authority
           │    process-hardening + UDS worker; opt-in
           │  crates/pty (codespace-pty)
           │    interactive spawn; no Codex types on the runner API
+          │  crates/file-system (codespace-fs)
+          │    no-follow I/O + bounded walk; PathSandbox authorizes, adapter I/O is the safety boundary
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -97,7 +99,8 @@ CodeSpace core
 
 
 isolated adapter (crates/patch today;
-crates/codex-runtime today; crates/pty today)
+crates/codex-runtime today; crates/pty today;
+crates/file-system today)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
@@ -142,7 +145,8 @@ runtime adapter:
 - Pin stays [upstream-lock.md](upstream-lock.md) (`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`).
 - Path dependency from an **isolated** Cargo workspace, not the repo
   root. Today: `crates/patch`, `crates/codex-runtime`
-  (`codespace-codex-runtime`), and `crates/pty` (`codespace-pty`).
+  (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`), and
+  `crates/file-system` (`codespace-fs`).
 - NOTICE + Apache-2.0 attribution.
 - Product policy stays in front of and behind the subgraph.
 - Do not file-copy a crate out of the Codex workspace.
@@ -163,7 +167,7 @@ checkout and cargo, not this grep.
 | core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty` | tiny | adapter in the update range; allowlist only |
+| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system` | tiny | adapter in the update range; allowlist only |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 Update range is `SCAN_BASE` (PR base / previous `main`). Unknown range
@@ -176,7 +180,8 @@ allow only the approved subgraph (`crates/patch` today:
 `codex-apply-patch`, `codex-exec-server` as apply-patch workspace
 graph, `codex-utils-path-uri`, `codex-process-hardening`;
 `crates/codex-runtime`: `codex-process-hardening`, `codex-uds`;
-`crates/pty`: `codex-utils-pty`). Sources keep the agent/model patterns
+`crates/pty`: `codex-utils-pty`; `crates/file-system`:
+`codex-file-system`, `codex-exec-server`, `codex-utils-path-uri`). Sources keep the agent/model patterns
 (`api.openai.com`, Responses, `codex-login`, `codex-core`,
 `codex-app-server`, `async-openai`). Comments that mention a crate
 name are not cargo deps.
@@ -198,9 +203,10 @@ rejected.
 
 ## Staged take (when those WPs exist)
 
-Documented order. **Taken in code this WP:** process-hardening, UDS, and
-PTY (`crates/pty` → `codex-utils-pty`). **Not taken:** filesystem,
-linux-sandbox, network.
+Documented order. **Taken in code this WP:** process-hardening, UDS, PTY
+(`crates/pty` → `codex-utils-pty`), and filesystem (`crates/file-system`
+→ `LOCAL_FS` / `ExecutorFileSystem`). **Not taken:** linux-sandbox,
+network.
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -232,6 +238,15 @@ does **not** add a PTY MCP tool. `exec_command` has optional `tty`
 (default false). Gateway still mints `process_id`. Resize stays off the
 Runner/MCP surface (P1).
 
+**`codex-file-system`** via `crates/file-system` (`codespace-fs`).
+Bounded walk, no-follow I/O through `LOCAL_FS` (`sandbox: None`).
+Public types stay CodeSpace (`Path` / bytes / walk result / `FsError`).
+`PathSandbox` remains the **authorizer** (logical workspace selection).
+It is not the I/O safety boundary; live processes may race a pre-check.
+`codespace-fs` owns race-resistant no-follow open/read/write/remove/walk
+and typed errors (`SymlinkRejected`, `NotRegularFile`). MCP `read` /
+`find` stay workspace-relative.
+
 ### Prefer reuse (when that WP)
 
 **`codex-uds`** (already in `codespace-codex-runtime`)
@@ -252,18 +267,6 @@ MCP still exposes workspace-relative paths only.
 `find(query, workspace_id)`; the engine can move behind the adapter.
 
 ### Conditional / active evaluation
-
-**`codex-file-system`**
-([`codex-rs/file-system/Cargo.toml`](../third_party/codex/codex-rs/file-system/Cargo.toml))
-
-Bounded walk, symlink control, executor FS types. Depends on
-`codex-protocol`. Do **not** delete `PathSandbox`. Target:
-
-```text
-CodeSpace path scope / authorization
-        ↓
-Codex ExecutorFileSystem  (adapter)
-```
 
 **`codex-shell-command`**
 
@@ -346,12 +349,12 @@ second authorizer.
 - Container lifecycle and workspace bind-mount **policy**.
 - Isolated adapter workspaces (`crates/patch`,
   `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
-  `codespace-pty`).
+  `codespace-pty`, `crates/file-system` / `codespace-fs`).
 
 ## Next implementation WP
 
 The next **code** work packages are remaining execution subgraph crates
-(filesystem, linux-sandbox, network) behind the existing `Runner`
+(linux-sandbox, network) behind the existing `Runner`
 trait. Do not split `apply_patch` into multiple gateway-driven RPCs.
 
 Do not default to a homegrown PTY / Landlock / seccomp stack. Take the

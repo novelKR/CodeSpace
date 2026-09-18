@@ -1,7 +1,5 @@
-use std::fs;
-use std::path::Path;
-
 use codespace_domain::{ErrorBody, ErrorCode, FindResult, ReadResult};
+use codespace_fs::{self, FsError};
 use sha2::{Digest, Sha256};
 
 use crate::PathSandbox;
@@ -17,29 +15,41 @@ impl PathSandbox {
         format!("sha256:{}", hex::encode(hasher.finalize()))
     }
 
-    pub fn version(&self, relative: &str) -> Result<String, ErrorBody> {
+    pub async fn version(&self, relative: &str) -> Result<String, ErrorBody> {
         let path = self.resolve(relative)?;
-        if !path.exists() {
-            return Ok(VERSION_ABSENT.to_string());
+        match codespace_fs::metadata(&path).await {
+            Ok(_) => {}
+            Err(FsError::NotFound) => return Ok(VERSION_ABSENT.to_string()),
+            Err(err) => return Err(fs_err(err)),
         }
-        let bytes = fs::read(&path).map_err(io_err)?;
+        let bytes = codespace_fs::read(&path).await.map_err(fs_err)?;
         Ok(Self::version_of(&bytes))
     }
 
-    pub fn read_file(&self, relative: &str) -> Result<ReadResult, ErrorBody> {
-        self.read_file_limited(relative, DEFAULT_READ_LIMIT)
+    pub async fn read_file(&self, relative: &str) -> Result<ReadResult, ErrorBody> {
+        self.read_file_limited(relative, DEFAULT_READ_LIMIT).await
     }
 
-    pub fn read_file_limited(&self, relative: &str, limit: usize) -> Result<ReadResult, ErrorBody> {
+    pub async fn read_file_limited(
+        &self,
+        relative: &str,
+        limit: usize,
+    ) -> Result<ReadResult, ErrorBody> {
         let path = self.resolve(relative)?;
-        let meta = fs::symlink_metadata(&path).map_err(io_err)?;
-        if !meta.file_type().is_file() {
+        let meta = codespace_fs::metadata(&path).await.map_err(fs_err)?;
+        if meta.is_symlink {
+            return Err(ErrorBody::new(
+                ErrorCode::SymlinkRejected,
+                "symlink files are rejected",
+            ));
+        }
+        if !meta.is_file {
             return Err(ErrorBody::new(
                 ErrorCode::SpecialFileRejected,
                 "not a regular file",
             ));
         }
-        let bytes = fs::read(&path).map_err(io_err)?;
+        let bytes = codespace_fs::read(&path).await.map_err(fs_err)?;
         let truncated = bytes.len() > limit;
         if truncated && limit == 0 {
             return Err(ErrorBody::new(
@@ -57,22 +67,42 @@ impl PathSandbox {
         })
     }
 
-    pub fn find(&self, glob: Option<&str>) -> Result<FindResult, ErrorBody> {
-        self.find_limited(glob, DEFAULT_FIND_LIMIT)
+    pub async fn find(&self, glob: Option<&str>) -> Result<FindResult, ErrorBody> {
+        self.find_limited(glob, DEFAULT_FIND_LIMIT).await
     }
 
-    pub fn find_limited(&self, glob: Option<&str>, limit: usize) -> Result<FindResult, ErrorBody> {
+    pub async fn find_limited(
+        &self,
+        glob: Option<&str>,
+        limit: usize,
+    ) -> Result<FindResult, ErrorBody> {
+        // Operator-registered `workspace.root` is the trust anchor. If the
+        // registration path is itself a symlink, canonicalize resolves that
+        // root only. Descendants under it are never followed.
+        let root = self
+            .root()
+            .canonicalize()
+            .map_err(|err| ErrorBody::new(ErrorCode::PathEscape, err.to_string()))?;
+        let walked = codespace_fs::walk_files(&root).await.map_err(fs_err)?;
         let mut paths = Vec::new();
-        let mut truncated = false;
-        visit(
-            self.root(),
-            self.root(),
-            glob,
-            limit,
-            &mut paths,
-            &mut truncated,
-        )?;
+        for abs in walked.files {
+            let rel = abs
+                .strip_prefix(&root)
+                .map_err(|_| ErrorBody::new(ErrorCode::PathEscape, "find left workspace"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if let Some(pat) = glob.filter(|p| !p.is_empty()) {
+                if !glob_match(pat, &rel) {
+                    continue;
+                }
+            }
+            paths.push(rel);
+        }
         paths.sort();
+        let truncated = walked.truncated || paths.len() > limit;
+        if paths.len() > limit {
+            paths.truncate(limit);
+        }
         Ok(FindResult {
             paths,
             truncated,
@@ -81,46 +111,19 @@ impl PathSandbox {
     }
 }
 
-fn visit(
-    root: &Path,
-    dir: &Path,
-    glob: Option<&str>,
-    limit: usize,
-    out: &mut Vec<String>,
-    truncated: &mut bool,
-) -> Result<(), ErrorBody> {
-    let entries = fs::read_dir(dir).map_err(io_err)?;
-    for entry in entries {
-        if out.len() >= limit {
-            *truncated = true;
-            return Ok(());
+pub(crate) fn fs_err(err: FsError) -> ErrorBody {
+    match err {
+        // `PATH_ESCAPE` is the workspace-escape code (`../`, absolute).
+        // `NotFound`, `NotDirectory`, and generic `Io` collapse into it for
+        // wire compatibility with the frozen MCP catalog. That is not the
+        // final filesystem taxonomy.
+        FsError::NotFound | FsError::NotDirectory => {
+            ErrorBody::new(ErrorCode::PathEscape, err.message())
         }
-        let entry = entry.map_err(io_err)?;
-        let path = entry.path();
-        let ft = entry.file_type().map_err(io_err)?;
-        if ft.is_symlink() {
-            continue;
-        }
-        if ft.is_dir() {
-            visit(root, &path, glob, limit, out, truncated)?;
-            continue;
-        }
-        if !ft.is_file() {
-            continue;
-        }
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|_| ErrorBody::new(ErrorCode::PathEscape, "find left workspace"))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        if let Some(pat) = glob.filter(|p| !p.is_empty()) {
-            if !glob_match(pat, &rel) {
-                continue;
-            }
-        }
-        out.push(rel);
+        FsError::SymlinkRejected => ErrorBody::new(ErrorCode::SymlinkRejected, err.message()),
+        FsError::NotRegularFile => ErrorBody::new(ErrorCode::SpecialFileRejected, err.message()),
+        FsError::Io(msg) => ErrorBody::new(ErrorCode::PathEscape, msg),
     }
-    Ok(())
 }
 
 fn glob_match(pat: &str, path: &str) -> bool {
@@ -141,16 +144,13 @@ fn normalize_rel(relative: &str) -> String {
     relative.replace('\\', "/")
 }
 
-fn io_err(err: std::io::Error) -> ErrorBody {
-    ErrorBody::new(ErrorCode::PathEscape, err.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::PathSandbox;
-    use codespace_domain::{Profile, WorkspaceId};
+    use codespace_domain::{ErrorCode, Profile, WorkspaceId};
     use codespace_policy::Workspace;
+    use std::os::unix::fs::symlink;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -162,47 +162,70 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn read_version_round_trip() {
+    #[tokio::test]
+    async fn read_version_round_trip() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
         let s = sandbox(dir.path());
-        let first = s.read_file("a.txt").unwrap();
-        let second = s.read_file("a.txt").unwrap();
+        let first = s.read_file("a.txt").await.unwrap();
+        let second = s.read_file("a.txt").await.unwrap();
         assert_eq!(first.content, "hello");
         assert_eq!(first.version, second.version);
         assert!(first.version.starts_with("sha256:"));
         assert!(!first.truncated);
         assert_eq!(first.path, "a.txt");
-        assert_eq!(s.version("missing").unwrap(), VERSION_ABSENT);
+        assert_eq!(s.version("missing").await.unwrap(), VERSION_ABSENT);
     }
 
-    #[test]
-    fn oversized_read_sets_truncated() {
+    #[tokio::test]
+    async fn oversized_read_sets_truncated() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("big.txt"), "abcdef").unwrap();
         let s = sandbox(dir.path());
-        let result = s.read_file_limited("big.txt", 3).unwrap();
+        let result = s.read_file_limited("big.txt", 3).await.unwrap();
         assert_eq!(result.content, "abc");
         assert!(result.truncated);
         assert_eq!(result.version, PathSandbox::version_of(b"abcdef"));
     }
 
-    #[test]
-    fn find_returns_relative_paths_and_skips_symlinks() {
+    #[tokio::test]
+    async fn find_returns_relative_paths_and_skips_symlinks() {
         let dir = tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub").join("b.txt"), "b").unwrap();
         std::fs::write(dir.path().join("a.rs"), "a").unwrap();
-        std::os::unix::fs::symlink("/etc/passwd", dir.path().join("link")).unwrap();
+        symlink("/etc/passwd", dir.path().join("link")).unwrap();
         let s = sandbox(dir.path());
-        let all = s.find(None).unwrap();
+        let all = s.find(None).await.unwrap();
         assert_eq!(all.paths, vec!["a.rs".to_string(), "sub/b.txt".to_string()]);
         assert!(all.paths.iter().all(|p| !p.starts_with('/')));
-        let rs = s.find(Some("*.rs")).unwrap();
+        let rs = s.find(Some("*.rs")).await.unwrap();
         assert_eq!(rs.paths, vec!["a.rs".to_string()]);
-        let limited = s.find_limited(None, 1).unwrap();
+        let limited = s.find_limited(None, 1).await.unwrap();
         assert!(limited.truncated);
         assert_eq!(limited.paths.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_rejects_path_through_directory_symlink() {
+        let dir = tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "leak").unwrap();
+        std::fs::create_dir(dir.path().join("ok")).unwrap();
+        symlink(outside.path(), dir.path().join("via")).unwrap();
+        let s = sandbox(dir.path());
+        let err = s.read_file("via/secret.txt").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::SymlinkRejected);
+        let found = s.find(None).await.unwrap();
+        assert!(!found.paths.iter().any(|p| p.contains("secret")));
+    }
+
+    #[tokio::test]
+    async fn read_through_regular_file_is_path_escape_not_symlink() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("foo"), "not-a-dir").unwrap();
+        let s = sandbox(dir.path());
+        let err = s.read_file("foo/bar.txt").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::PathEscape);
     }
 }

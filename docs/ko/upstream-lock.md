@@ -72,7 +72,8 @@ git -C third_party/codex checkout 6b9826e3aa83b1a5947db50f4332cb9c65f1b340
 **이 핀에서, 코드로:** 파싱, 헝크 검증, 적용 API, 그리고 패리티용으로
 고른 업스트림 픽스처(`crates/patch` → `codex-apply-patch`);
 `pre_main_hardening()`(`codex-process-hardening`); 비공개 소켓 디렉터리 +
-bind(`codex-uds`); 대화형 spawn(`crates/pty` → `codex-utils-pty`).
+bind(`codex-uds`); 대화형 spawn(`crates/pty` → `codex-utils-pty`);
+no-follow 파일시스템 I/O(`crates/file-system` → `LOCAL_FS`).
 
 **그 크레이트가 허용해도 제품 기본값으로 거절:** 심링크 follow,
 sandbox `None` 독립 CLI, 모델의 호스트 절대 경로, 조용한 `git apply`.
@@ -82,7 +83,7 @@ sandbox `None` 독립 CLI, 모델의 호스트 절대 경로, 조용한 `git app
 App Server, `codex-core`, `codex-exec`, login, models.
 [codex-reuse.md](codex-reuse.md)를 보세요. 이 SHA에서 재사용 선호
 (**아직 연결 안 함**): `codex-file-search`. 적극 평가:
-`codex-file-system`, `codex-shell-command`, `codex-linux-sandbox`
+`codex-shell-command`, `codex-linux-sandbox`
 (전이 `codex-sandboxing`, `codex-network-proxy`; `codex-protocol`은
 어댑터에서만 허용). `codex-exec-server-protocol`은 내부 DTO 후보입니다.
 `codex-exec-server`는 참고 / 이후 백엔드이며 영구 거절은 아닙니다.

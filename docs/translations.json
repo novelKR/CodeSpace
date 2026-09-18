@@ -145,8 +145,8 @@
         "프로토콜-호환성",
         "현재-배치"
       ],
-      "source_sha256": "0dc9b04fe30797f0c4da9d413b192bc808096e53ac853123b4b338666199f4a9",
-      "translation_sha256": "19f1554a15da21c192abf4ab17c42bd8ffcbbf1475332e8228a4c4af2edd05a0"
+      "source_sha256": "1e2cc610d5339aeaee3e15c8885ffa0e5ed4f6fce5cefc6080368e99f7940cdc",
+      "translation_sha256": "7f4705198510476da9c44c51ca5d4595fb532a3d2a9799deef5dda14781ad196"
     },
     {
       "id": "execution-substrate",
@@ -165,6 +165,8 @@
         "fswatch와-검색",
         "hooks-and-skills",
         "invariant",
+        "pathsandbox-vs-codespace-fs",
+        "pathsandbox와-codespace-fs",
         "roadmap-implementation-later",
         "scheduler-after-the-single-write-lock",
         "take-leave-concepts",
@@ -177,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "5d4f9376ec278fac0818b11eafa2d4f3f4de972ac36785e7a6b7b3276432933b",
-      "translation_sha256": "1a8a242d9e5ebc1f0e1d0b3b785f0d9732c94c232511872655c7b2bdd9ba2b58"
+      "source_sha256": "3d06938828108472e341e9f95916895313b9d89929e397d02cb1938dbfd1d7b2",
+      "translation_sha256": "026498c8f408c7ba9a4f7fe0542e3de7c70c9446b39ab039d051547e1148d04a"
     },
     {
       "id": "protocol-compatibility",
@@ -252,8 +254,8 @@
         "프로세스-정직성",
         "프로필-mvp"
       ],
-      "source_sha256": "3e551ed0eb1575787d0d5ea631ca306a7843869397a96e4a04c78ce02a3cbdd6",
-      "translation_sha256": "616620b6f6aca2f279f9f265ae275a7a45097af31394db582c1c8b02f7cd0693"
+      "source_sha256": "62ec79114259d72b9e74fcdcbcc6fa6ed044271f052106dbbb9aeed645bfe2d3",
+      "translation_sha256": "9f34f3b5f25c4bf0f8980574df1f9ae7ab558b8d917a4d6e1ac84ce60eae436c"
     },
     {
       "id": "runner-isolation",
@@ -272,8 +274,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "72f70843875b258ad45e1aabad259ea34ccb716890efc69f883af1cc6aa3f761",
-      "translation_sha256": "8b5ceaa2d5e1435d609ab1a765559f4df26d4aa73097a231001075ffcb3ab889"
+      "source_sha256": "e0b51312a25955a7764ffa0656af396eea25d0d711497fe4896ad11e8662aaaf",
+      "translation_sha256": "7d40e85e253d9ed62684d1434e846467530282787d701085d820b447fac99e03"
     },
     {
       "id": "error-codes",
@@ -340,8 +342,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "5f71321d25552783bfa62ad74293048db2b0c99487ce427280184daff4a5930b",
-      "translation_sha256": "15122a20ebe8f2867734c154b8812ebb74521b1263550988c9d16194f7be087d"
+      "source_sha256": "d00aac4e87035a01ababcb1cdf5284934ef2939f4ef0bf869f8b1842aa05ddb0",
+      "translation_sha256": "d04171321d200aa654a4a0392be7f62c7999f7beacf6109747896a4f7b287238"
     },
     {
       "id": "upstream-lock",
@@ -362,8 +364,8 @@
         "재사용하는-것과-거절하는-것",
         "파일-복사-벤더가-금지인-이유"
       ],
-      "source_sha256": "931d0e87f859e9ba1de6174a342fa5034b511a785cdd5796d58d39b628590c2a",
-      "translation_sha256": "c81180a72b4c96021b9c6ae43b3ef6cc20e609549da4a2175930fb3126c5e472"
+      "source_sha256": "97bc1e8932861350d8556f2e4830a67d8529127773634914eec46743368aeafe",
+      "translation_sha256": "fda2318e052d44f3276e6a7b3bb208e485c1963669ac800f1b9551607c6c9085"
     },
     {
       "id": "upstream-update",

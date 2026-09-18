@@ -11,6 +11,7 @@ description = "Runner trait, execution DTOs, InProcessRunner, and opt-in UdsRunn
 codespace-domain = { path = "../domain" }
 codespace-policy = { path = "../policy" }
 codespace-pty = { path = "../pty" }
+codespace-fs = { path = "../file-system" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

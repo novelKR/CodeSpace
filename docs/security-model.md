@@ -72,6 +72,17 @@ fails with `WORKSPACE_BUSY`.
 - Reject Move when the destination already exists.
 - Do not follow `..` out of the workspace.
 - Do not pass host-absolute paths from the model into the engine.
+- `PathSandbox` authorizes the logical path. It does **not** make the
+  later open safe. Live `read` / `find` may race a process that swaps a
+  directory for a symlink (TOCTOU).
+- Runner-owned file operations and rollback use `codespace-fs`, a thin
+  adapter over Codex `LOCAL_FS` with `follow_symlinks: false`.
+- `apply_patch` mutation uses `crates/patch` →
+  `apply_patch_with_options` + `LOCAL_FS` `follow_symlinks: false`
+  (`sandbox: None`). Helper preflight and post-hash may still use
+  `std::fs`; that is not the no-follow boundary.
+- The shared primitive is Codex `LOCAL_FS` no-follow, not `codespace-fs`
+  itself. `sandbox: None` does not disable that pin.
 
 See [behavior-differences.md](behavior-differences.md).
 

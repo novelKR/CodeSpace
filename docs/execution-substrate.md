@@ -41,7 +41,8 @@ bump. Re-check graphs after a deliberate W13 update.
 CI: `policy-scan` job runs `scripts/check-no-model-deps.sh` **without**
 submodules, in parallel with `rust`. Core manifests may not declare
 `codex-*` deps. Core sources keep the agent/model grep. Isolated
-adapter manifests (`crates/patch`, `crates/codex-runtime`, `crates/pty`) use an
+adapter manifests (`crates/patch`, `crates/codex-runtime`, `crates/pty`,
+`crates/file-system`) use an
 **allowlist**; `third_party/codex` sources are never scanned.
 `SCAN_BASE` limits the tree to the update range; unknown range scans
 all core crates and adapter manifests. Clippy/tests still always run.
@@ -104,6 +105,46 @@ absolute path (internal; later Codex AbsolutePath / PathUri in the adapter)
 Runner / patch helper
 ```
 
+## PathSandbox vs codespace-fs
+
+`PathSandbox` is logical authorization and workspace selection
+(relative path, stay inside the root, reject `..`, reject leaf and
+ancestor symlinks and special files). Its pre-check `symlink_metadata`
+is **not** the I/O safety boundary.
+
+The shared I/O primitive is Codex `LOCAL_FS` with
+`follow_symlinks: false`. `codespace-fs` is the Runner adapter for
+read, find, version, mkdir, chmod, remove, and rollback. `apply_patch`
+mutation goes `crates/patch` → `apply_patch_with_options` on the same
+`LOCAL_FS` pin (`sandbox: None`). Helper preflight and post-hash may
+still use `std::fs`.
+
+`sandbox: None` means OS command sandbox is not reused as a file-tool
+authorizer. It does **not** mean unbounded I/O. File-tool workspace
+scope, command sandbox, and network enforcement stay separate axes.
+
+Live `exec_command` may run while `read` / `find` are allowed
+(`read_while_process_live`, `find_while_process_live`). A process can
+replace a directory with a symlink between PathSandbox's lstat and the
+open. Safety at that moment is no-follow `LOCAL_FS` I/O, not the
+earlier lstat.
+
+`find` walks with upstream caps (depth 64, 10,000 directories, 50,000
+entries), then applies CodeSpace glob and the user limit. `truncated`
+is true if the walk was cut or the filtered list exceeds the limit.
+Hidden directories are not pruned (`prune_hidden_directories: false`).
+Stopping the walk at the user limit when there is no glob is a P1
+optimization; P0 keeps the bounded full walk.
+
+Operator-registered `workspace.root` is the trust anchor. `find` and
+ancestor checks may `canonicalize` that root. Descendants under it are
+never followed.
+
+For wire compatibility, some adapter failures (`NotFound`,
+`NotDirectory`, generic `Io`) currently collapse into `PATH_ESCAPE`.
+That is not the final filesystem error taxonomy. `PATH_ESCAPE` still
+means workspace escape (`../`, absolute).
+
 ## `command/exec`: shape vs crates
 
 App Server `command/exec` at the **pin**
@@ -143,9 +184,10 @@ Do **not** take `codex-exec` (product exec flow) or embed App Server.
 ([codex-reuse.md](codex-reuse.md)). Do **not** default sandbox policy
 from “the Codex user’s config.” Gateway maps an already-allowed
 request onto runner DTOs. Prefer `codex-process-hardening`,
-`codex-utils-pty`, and `codex-uds` (transport primitive; RPC stays
-CodeSpace). Actively evaluate `codex-file-system` under PathSandbox
-scope, then `codex-linux-sandbox` (dev-dep includes `codex-core`;
+`codex-utils-pty`, `codex-uds` (transport primitive; RPC stays
+CodeSpace), and `codex-file-system` under PathSandbox scope
+(`crates/file-system` → `LOCAL_FS`, no-follow I/O and bounded walk).
+Then `codex-linux-sandbox` (dev-dep includes `codex-core`;
 keep that out of the product graph) plus `codex-network-proxy` when a
 network axis exists. A container does not replace that subgraph.
 
@@ -249,7 +291,8 @@ P0 code for this substrate is in: Runner exec DTO **shape**
 `PermissionProfile` (`process_exec`) and Environment in `crates/policy`,
 resource serializer (request vs process owners), opt-in `UdsRunner` +
 `codespace-codex-runtime` (process-hardening + UDS), isolated
-`crates/pty` → `codex-utils-pty`. Live MCP tool **names** stay frozen;
+`crates/pty` → `codex-utils-pty`, isolated `crates/file-system` →
+`LOCAL_FS`. Live MCP tool **names** stay frozen;
 `exec_command` has optional `tty` (default false).
 
 **P0** — landed or next subgraph WPs: `codex-apply-patch` (done), exec
@@ -257,7 +300,8 @@ runtime **shape** on Runner DTOs (done), PermissionProfile domain in
 `crates/policy` (done), Environment domain (operator-registered; not a
 tool arg) (done), resource serializer (done), transport
 (`UdsRunner`) with process-hardening + UDS (done, opt-in), PTY I/O
-backend (done). Still out: filesystem → linux-sandbox → network.
+backend (done), filesystem mechanics under PathSandbox (done). Still
+out: linux-sandbox → network.
 
 **P1** — operation state machine / diff ledger, approval fallback
 tools, internal watch, richer process handles (resize, caps),
@@ -270,5 +314,5 @@ MCP contract, deterministic hooks, skills as resources or prompts.
 
 The next **code** WPs are remaining execution subgraph crates behind
 the existing trait, without splitting `apply_patch` into gateway RPCs.
-Start at filesystem. Sandbox / network are not a default homegrown OS
+Start at linux-sandbox. Sandbox / network are not a default homegrown OS
 stack ([codex-reuse.md](codex-reuse.md)).

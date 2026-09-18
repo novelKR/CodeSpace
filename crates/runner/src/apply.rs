@@ -8,19 +8,23 @@ use crate::process::InProcessRunner;
 use crate::PathSandbox;
 
 impl InProcessRunner {
-    pub fn read_file(&self, ws: &Workspace, path: &str) -> Result<ReadResult, ErrorBody> {
+    pub async fn read_file(&self, ws: &Workspace, path: &str) -> Result<ReadResult, ErrorBody> {
         ws.require_file_read()?;
-        PathSandbox::new(ws.clone()).read_file(path)
+        PathSandbox::new(ws.clone()).read_file(path).await
     }
 
-    pub fn find_files(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, ErrorBody> {
+    pub async fn find_files(
+        &self,
+        ws: &Workspace,
+        glob: Option<&str>,
+    ) -> Result<FindResult, ErrorBody> {
         ws.require_file_read()?;
-        PathSandbox::new(ws.clone()).find(glob)
+        PathSandbox::new(ws.clone()).find(glob).await
     }
 
-    pub fn file_version(&self, ws: &Workspace, path: &str) -> Result<String, ErrorBody> {
+    pub async fn file_version(&self, ws: &Workspace, path: &str) -> Result<String, ErrorBody> {
         ws.require_file_read()?;
-        PathSandbox::new(ws.clone()).version(path)
+        PathSandbox::new(ws.clone()).version(path).await
     }
 
     pub async fn apply_patch_txn(
@@ -31,7 +35,7 @@ impl InProcessRunner {
         ws.require_file_write()?;
         let sandbox = PathSandbox::new(ws.clone());
         for (path, expected) in &req.expected_versions {
-            let actual = sandbox.version(path)?;
+            let actual = sandbox.version(path).await?;
             if &actual != expected {
                 return Err(ErrorBody::new(
                     ErrorCode::VersionConflict,
@@ -41,7 +45,8 @@ impl InProcessRunner {
         }
         if req.check_only {
             let preview = crate::patch_helper::preflight(&ws.root, &req.patch).await?;
-            let (changes, _) = crate::patch_verify::overlay_before(&sandbox, &preview.changes)?;
+            let (changes, _) =
+                crate::patch_verify::overlay_before(&sandbox, &preview.changes).await?;
             return Ok(RunnerApplyPatchResult {
                 status: PatchStatus::Checked,
                 files: preview.files,
@@ -49,15 +54,16 @@ impl InProcessRunner {
             });
         }
         let planned = crate::patch_helper::preflight(&ws.root, &req.patch).await?;
-        let (_, before) = crate::patch_verify::overlay_before(&sandbox, &planned.changes)?;
-        let snaps = crate::rollback::snapshot(&sandbox, &planned.files)?;
+        let (_, before) = crate::patch_verify::overlay_before(&sandbox, &planned.changes).await?;
+        let snaps = crate::rollback::snapshot(&sandbox, &planned.files).await?;
         match crate::patch_helper::apply(&ws.root, &req.patch, false).await {
             Ok(applied) => {
                 let changes = crate::patch_verify::verify_disk_matches_claimed(
                     &sandbox,
                     &applied.changes,
                     &before,
-                )?;
+                )
+                .await?;
                 Ok(RunnerApplyPatchResult {
                     status: PatchStatus::Applied,
                     files: applied.files,
@@ -65,7 +71,7 @@ impl InProcessRunner {
                 })
             }
             Err(_) => {
-                let complete = crate::rollback::restore(&sandbox, &snaps);
+                let complete = crate::rollback::restore(&sandbox, &snaps).await;
                 Ok(RunnerApplyPatchResult {
                     status: if complete {
                         PatchStatus::FailedRolledBack

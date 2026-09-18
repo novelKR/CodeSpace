@@ -72,7 +72,8 @@ and a path dependency, not a crates.io moving version.
 selected upstream fixtures for parity (`crates/patch` →
 `codex-apply-patch`); `pre_main_hardening()` (`codex-process-hardening`);
 private socket directory + bind (`codex-uds`); interactive spawn
-(`crates/pty` → `codex-utils-pty`).
+(`crates/pty` → `codex-utils-pty`); no-follow filesystem I/O
+(`crates/file-system` → `LOCAL_FS`).
 
 **Rejected as product defaults** even if that crate allows them:
 symlink follow, sandbox `None` standalone CLI, host-absolute paths from
@@ -83,7 +84,7 @@ dep, including `codex-protocol` types. Product runtime stays out
 everywhere: App Server, `codex-core`, `codex-exec`, login, models.
 See [codex-reuse.md](codex-reuse.md). Prefer-reuse at this SHA, **not
 yet wired:** `codex-file-search`. Active evaluation:
-`codex-file-system`, `codex-shell-command`, `codex-linux-sandbox`
+`codex-shell-command`, `codex-linux-sandbox`
 (transitives `codex-sandboxing`, `codex-network-proxy`;
 `codex-protocol` allowed only in the adapter). `codex-exec-server-protocol`
 is an internal DTO candidate. `codex-exec-server` is a reference /

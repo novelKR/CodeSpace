@@ -35,7 +35,12 @@ leftovers are unlinked. `/tmp` itself is never chmodded.
 
 `codespace-runner::PathSandbox` applies the same relative-path + symlink
 + special-file rules for unit tests and for `read` / `find` / versions.
-If Docker is not used, **Linux container isolation is unverified**. Host
+That is workspace authorization, not race-proof I/O. File bytes,
+metadata, mkdir, chmod, remove, and bounded walks go through isolated
+`crates/file-system` (`codespace-fs`, no-follow `LOCAL_FS`). Live
+processes may mutate the tree between PathSandbox's lstat and the
+adapter open; no-follow I/O is the safety boundary. If Docker is not
+used, **Linux container isolation is unverified**. Host
 seccomp/AppArmor and Docker Desktop vs Linux engine differences are also
 unverified.
 
@@ -57,7 +62,7 @@ disconnect or gateway shutdown kills the worker and host children;
 is same-connection only. That **transport** is implemented; it
 is opt-in (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`) on the
 **same host**. It does not claim Linux isolation. Next WPs are
-filesystem / linux-sandbox / network, not a second transport rewrite.
+linux-sandbox / network, not a second transport rewrite.
 Prefer `codex-uds` as the socket primitive; the Runner RPC stays a
 CodeSpace contract.
 
@@ -66,7 +71,8 @@ UDS, filesystem mechanics, and network isolation are **not** a default
 homegrown stack. Prefer upstream execution subgraphs
 ([codex-reuse.md](codex-reuse.md)), staged
 process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
-network. `codex-linux-sandbox` can sit beside a container; keep its
+network (filesystem is taken via `crates/file-system`).
+`codex-linux-sandbox` can sit beside a container; keep its
 `codex-core` **dev-dep** out of the product graph. `codex-exec` stays
 rejected. `codex-exec-server` is a reference / future backend, not a
 forever reject. Gateway policy remains the only allow path. Do not
