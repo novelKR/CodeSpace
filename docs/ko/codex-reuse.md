@@ -50,7 +50,7 @@ CodeSpace Core          ← only authorization authority
           │  crates/pty (codespace-pty)
           │    interactive spawn; runner API에 Codex 타입 없음
           │  crates/file-system (codespace-fs)
-          │    no-follow I/O + 제한된 walk; 인가자는 PathSandbox
+          │    no-follow I/O + 제한된 walk; PathSandbox가 인가, I/O 안전은 어댑터
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -238,8 +238,13 @@ Runner/MCP 표면에 두지 않습니다(P1).
 
 **`codex-file-system`** via `crates/file-system` (`codespace-fs`).
 제한된 walk, `LOCAL_FS`를 통한 no-follow I/O(`sandbox: None`).
-공개 타입은 CodeSpace(`Path` / bytes / walk 결과)만. 인가자는
-`PathSandbox`. MCP `read` / `find`는 워크스페이스 상대로 남습니다.
+공개 타입은 CodeSpace(`Path` / bytes / walk 결과 / `FsError`)만.
+`PathSandbox`는 **인가자**(논리 워크스페이스 선택)로 남습니다. I/O
+안전 경계가 아닙니다. 살아 있는 프로세스가 사전 검사와 경쟁할 수
+있습니다. `codespace-fs`가 레이스에 강한 no-follow
+open/read/write/remove/walk와 typed error(`SymlinkRejected`,
+`NotRegularFile`)를 소유합니다. MCP `read` / `find`는 워크스페이스
+상대로 남습니다.
 
 ### 재사용 선호 (그 WP가 올 때)
 

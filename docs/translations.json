@@ -165,6 +165,8 @@
         "fswatch와-검색",
         "hooks-and-skills",
         "invariant",
+        "pathsandbox-vs-codespace-fs",
+        "pathsandbox와-codespace-fs",
         "roadmap-implementation-later",
         "scheduler-after-the-single-write-lock",
         "take-leave-concepts",
@@ -177,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "2e530169b25c817329be80024a15ba83465e0b27b5a3d00f85c0bccddd729ec5",
-      "translation_sha256": "f305af3b8814a8aff14d635f67c25ebe44479de8930e6e607a536eac82492db1"
+      "source_sha256": "d8094cec6058954b9eaca1756d55cc0184d5ae252623879227a4e66eaedfa23f",
+      "translation_sha256": "4a09032a8ab338ae5d6dd093b90705c50e5438385995202b1a5acc34562ed0e7"
     },
     {
       "id": "protocol-compatibility",
@@ -252,8 +254,8 @@
         "프로세스-정직성",
         "프로필-mvp"
       ],
-      "source_sha256": "3e551ed0eb1575787d0d5ea631ca306a7843869397a96e4a04c78ce02a3cbdd6",
-      "translation_sha256": "616620b6f6aca2f279f9f265ae275a7a45097af31394db582c1c8b02f7cd0693"
+      "source_sha256": "600ed40245c11849ceee33f84bb1052848af966dfa71c4dde6ad8f39d083d8ad",
+      "translation_sha256": "21b24b556f236dc98cc9736797b7395d3b30860dbed9a35c7867044b794a47b3"
     },
     {
       "id": "runner-isolation",
@@ -272,8 +274,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "e0228b0c1592125c2bf3436f6e963f552959abce4bd8337867a5a40226ddd3cc",
-      "translation_sha256": "55cd3973d23545d88cb8d4a184944a99772a0d7c23b6836023f9faad5ab4a075"
+      "source_sha256": "e0b51312a25955a7764ffa0656af396eea25d0d711497fe4896ad11e8662aaaf",
+      "translation_sha256": "7d40e85e253d9ed62684d1434e846467530282787d701085d820b447fac99e03"
     },
     {
       "id": "error-codes",
@@ -340,8 +342,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "2e33efb4be3f6bdc0d72b4172c1ffa2b03943aca7eef3ef74d3dee2a5d2d8052",
-      "translation_sha256": "5759df02e14fe7514b83fe27bf8cc6e0da4655069bb02b7b0debc906056067d7"
+      "source_sha256": "d00aac4e87035a01ababcb1cdf5284934ef2939f4ef0bf869f8b1842aa05ddb0",
+      "translation_sha256": "d04171321d200aa654a4a0392be7f62c7999f7beacf6109747896a4f7b287238"
     },
     {
       "id": "upstream-lock",

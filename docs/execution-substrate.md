@@ -105,6 +105,31 @@ absolute path (internal; later Codex AbsolutePath / PathUri in the adapter)
 Runner / patch helper
 ```
 
+## PathSandbox vs codespace-fs
+
+`PathSandbox` is logical authorization and workspace selection
+(relative path, stay inside the root, reject `..`, reject leaf and
+ancestor symlinks and special files). Its pre-check `symlink_metadata`
+is **not** the I/O safety boundary.
+
+`codespace-fs` is the I/O safety boundary: every open, read, write,
+remove, mkdir, chmod, and walk pins no-follow (`follow_symlinks:
+false`, walk `follow_directory_symlinks: false`) through `LOCAL_FS`.
+`sandbox: None` means OS command sandbox is not reused as a file-tool
+authorizer. It does **not** mean unbounded I/O. File-tool workspace
+scope, command sandbox, and network enforcement stay separate axes.
+
+Live `exec_command` may run while `read` / `find` are allowed
+(`read_while_process_live`, `find_while_process_live`). A process can
+replace a directory with a symlink between PathSandbox's lstat and the
+open. Safety at that moment is the adapter's no-follow I/O, not the
+earlier lstat.
+
+`find` walks with upstream caps (depth 64, 10,000 directories, 50,000
+entries), then applies CodeSpace glob and the user limit. `truncated`
+is true if the walk was cut or the filtered list exceeds the limit.
+Hidden directories are not pruned (`prune_hidden_directories: false`).
+
 ## `command/exec`: shape vs crates
 
 App Server `command/exec` at the **pin**

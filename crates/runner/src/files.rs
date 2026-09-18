@@ -109,21 +109,12 @@ impl PathSandbox {
 }
 
 pub(crate) fn fs_err(err: FsError) -> ErrorBody {
-    let msg = err.message();
-    if is_symlink_io(&msg) {
-        return ErrorBody::new(ErrorCode::SymlinkRejected, "symlink files are rejected");
-    }
     match err {
-        FsError::NotFound => ErrorBody::new(ErrorCode::PathEscape, "file not found"),
-        FsError::Other(msg) => ErrorBody::new(ErrorCode::PathEscape, msg),
+        FsError::NotFound => ErrorBody::new(ErrorCode::PathEscape, err.message()),
+        FsError::SymlinkRejected => ErrorBody::new(ErrorCode::SymlinkRejected, err.message()),
+        FsError::NotRegularFile => ErrorBody::new(ErrorCode::SpecialFileRejected, err.message()),
+        FsError::Io(msg) => ErrorBody::new(ErrorCode::PathEscape, msg),
     }
-}
-
-fn is_symlink_io(msg: &str) -> bool {
-    let lower = msg.to_ascii_lowercase();
-    lower.contains("symbolic link")
-        || lower.contains("symlink")
-        || lower.contains("too many levels")
 }
 
 fn glob_match(pat: &str, path: &str) -> bool {

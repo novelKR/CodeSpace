@@ -70,6 +70,12 @@ Codex 세션 설정과 `permissionProfile`은 허용 경로가 아닙니다. 게
 - 목적지가 이미 있으면 Move를 거절.
 - 워크스페이스 밖으로 `..`를 따르지 않음.
 - 모델의 호스트 절대 경로를 엔진에 넘기지 않음.
+- `PathSandbox`는 논리 경로를 인가합니다. 이후 open을 안전하게 만들지
+  **않습니다**. 살아 있는 `read` / `find`는 디렉터리를 심링크로 바꾸는
+  프로세스와 경쟁할 수 있습니다(TOCTOU).
+- 실제 I/O 안전은 `codespace-fs`의 no-follow 연산입니다(rollback
+  mkdir/chmod/write/remove 포함). `LOCAL_FS`의 `sandbox: None`은 그
+  no-follow 고정을 끄지 않습니다.
 
 [behavior-differences.md](behavior-differences.md)를 보세요.
 

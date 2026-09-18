@@ -29,8 +29,9 @@ pub const RUNNER_UID: u32 = 10001;
 pub const WORKSPACE_MOUNT: &str = "/workspace";
 
 /// Workspace path authorizer. `resolve` keeps `resolve_path` plus leaf
-/// symlink/special-file rejection. File bytes, metadata, and bounded
-/// walks go through `codespace-fs` (no-follow I/O).
+/// and ancestor symlink/special-file rejection. That pre-check is not
+/// race-proof I/O. File bytes, metadata, mkdir, chmod, remove, and
+/// bounded walks go through `codespace-fs` (no-follow operations).
 #[derive(Debug, Clone)]
 pub struct PathSandbox {
     workspace: Workspace,

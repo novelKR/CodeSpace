@@ -34,9 +34,12 @@ Unix 소켓을 씁니다. 게이트웨이가 unique 0700 leaf를 만듭니다
 ## macOS / Docker 없음
 
 `codespace-runner::PathSandbox`는 단위 시험과 `read` / `find` / versions에
-같은 상대 경로 + 심링크 + 특수 파일 규칙을 적용합니다. 파일 바이트와
-제한된 walk는 격리된 `crates/file-system`(`codespace-fs`, no-follow
-`LOCAL_FS`)을 탑니다. Docker를 쓰지
+같은 상대 경로 + 심링크 + 특수 파일 규칙을 적용합니다. 워크스페이스
+인가이지, 레이스에 안전한 I/O가 아닙니다. 파일 바이트, metadata, mkdir,
+chmod, remove, 제한된 walk는 격리된 `crates/file-system`(`codespace-fs`,
+no-follow `LOCAL_FS`)을 탑니다. PathSandbox의 lstat과 어댑터 open 사이에
+살아 있는 프로세스가 트리를 바꿀 수 있습니다. 안전 경계는 no-follow
+I/O입니다. Docker를 쓰지
 않으면 **Linux 컨테이너 격리는 검증되지 않습니다**. 호스트
 seccomp/AppArmor와 Docker Desktop 대 Linux 엔진 차이도 검증되지 않습니다.
 

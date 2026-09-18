@@ -1,10 +1,13 @@
 //! Isolated filesystem adapter. Wraps `LOCAL_FS` (`ExecutorFileSystem`) and
-//! exposes only CodeSpace-owned types. PathSandbox stays the authorizer.
-//! Codex sandbox context and `PermissionProfile` stay inside this crate.
+//! exposes only CodeSpace-owned types. PathSandbox is the authorizer
+//! (logical workspace selection), not the I/O safety boundary. This crate
+//! pins no-follow I/O. Codex sandbox context and `PermissionProfile` stay
+//! inside this crate.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::ReadFileOptions;
 use codex_exec_server::RemoveOptions;
@@ -13,6 +16,9 @@ use codex_exec_server::WalkOptions;
 use codex_exec_server::WriteFileOptions;
 use codex_exec_server::LOCAL_FS;
 use codex_utils_path_uri::PathUri;
+
+#[cfg(unix)]
+mod unix;
 
 /// Matches pinned `codex-file-system::MAX_WALK_DEPTH`.
 pub const MAX_WALK_DEPTH: usize = 64;
@@ -37,28 +43,45 @@ pub struct WalkResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsError {
     NotFound,
-    Other(String),
+    SymlinkRejected,
+    NotRegularFile,
+    Io(String),
 }
 
 impl FsError {
     pub fn message(&self) -> String {
         match self {
             Self::NotFound => "file not found".into(),
-            Self::Other(msg) => msg.clone(),
+            Self::SymlinkRejected => "symlink files are rejected".into(),
+            Self::NotRegularFile => "not a regular file".into(),
+            Self::Io(msg) => msg.clone(),
         }
     }
 }
 
 fn uri(path: &Path) -> Result<PathUri, FsError> {
-    PathUri::from_host_native_path(path).map_err(|err| FsError::Other(err.to_string()))
+    PathUri::from_host_native_path(path).map_err(|err| FsError::Io(err.to_string()))
 }
 
-fn map_io(err: io::Error) -> FsError {
+pub(crate) fn map_io(err: io::Error) -> FsError {
     if err.kind() == io::ErrorKind::NotFound {
-        FsError::NotFound
-    } else {
-        FsError::Other(err.to_string())
+        return FsError::NotFound;
     }
+    let msg = err.to_string();
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("not a regular file") {
+        return FsError::NotRegularFile;
+    }
+    if err.kind() == io::ErrorKind::NotADirectory
+        || lower.contains("path contains a symbolic link")
+        || lower.contains("symbolic link")
+        || lower.contains("symlink")
+        || lower.contains("too many levels")
+        || lower.contains("not a directory")
+    {
+        return FsError::SymlinkRejected;
+    }
+    FsError::Io(msg)
 }
 
 const NO_FOLLOW_READ: ReadFileOptions = ReadFileOptions {
@@ -68,6 +91,10 @@ const NO_FOLLOW_WRITE: WriteFileOptions = WriteFileOptions {
     follow_symlinks: false,
 };
 const NO_FOLLOW_META: GetMetadataOptions = GetMetadataOptions {
+    follow_symlinks: false,
+};
+const NO_FOLLOW_MKDIR: CreateDirectoryOptions = CreateDirectoryOptions {
+    recursive: true,
     follow_symlinks: false,
 };
 
@@ -103,6 +130,15 @@ pub async fn metadata(path: &Path) -> Result<FileMeta, FsError> {
     })
 }
 
+/// Create directories without following symlinks. `sandbox` is always `None`.
+pub async fn create_dir_all(path: &Path) -> Result<(), FsError> {
+    let path = uri(path)?;
+    LOCAL_FS
+        .create_directory(&path, NO_FOLLOW_MKDIR, None)
+        .await
+        .map_err(map_io)
+}
+
 /// Remove a file without following symlinks.
 pub async fn remove_file(path: &Path) -> Result<(), FsError> {
     let path = uri(path)?;
@@ -118,6 +154,24 @@ pub async fn remove_file(path: &Path) -> Result<(), FsError> {
         )
         .await
         .map_err(map_io)
+}
+
+/// Unix mode bits without following symlinks, including intermediate dirs.
+#[cfg(unix)]
+pub async fn unix_mode(path: &Path) -> Result<u32, FsError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || unix::unix_mode_sync(&path))
+        .await
+        .map_err(|err| FsError::Io(format!("filesystem task failed: {err}")))?
+}
+
+/// chmod without following symlinks, including intermediate dirs.
+#[cfg(unix)]
+pub async fn set_unix_mode(path: &Path, mode: u32) -> Result<(), FsError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || unix::set_unix_mode_sync(&path, mode))
+        .await
+        .map_err(|err| FsError::Io(format!("filesystem task failed: {err}")))?
 }
 
 /// Bounded walk of regular files. Directory symlinks are not followed.
@@ -197,15 +251,58 @@ mod tests {
             .await
             .expect_err("directory symlink must not be followed");
         assert!(
-            !matches!(err, FsError::NotFound),
-            "should fail as I/O, not missing: {err:?}"
+            matches!(err, FsError::SymlinkRejected),
+            "expected SymlinkRejected, got {err:?}"
         );
-        let msg = err.message().to_ascii_lowercase();
+    }
+
+    #[tokio::test]
+    async fn read_rejects_fifo_as_not_regular_file() {
+        let (_dir, root) = canon_temp();
+        let fifo = root.join("pipe");
+        let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) }, 0);
+        let err = read(&fifo).await.expect_err("fifo is not a regular file");
         assert!(
-            msg.contains("symbolic link")
-                || msg.contains("symlink")
-                || msg.contains("not a directory"),
-            "{msg}"
+            matches!(err, FsError::NotRegularFile),
+            "expected NotRegularFile, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_dir_all_skips_directory_symlink() {
+        let (_dir, root) = canon_temp();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), root.join("via")).unwrap();
+        let err = create_dir_all(&root.join("via").join("nested"))
+            .await
+            .expect_err("mkdir must not follow a directory symlink");
+        assert!(
+            matches!(err, FsError::SymlinkRejected),
+            "expected SymlinkRejected, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unix_mode_rejects_symlink_and_set_mode_is_nofollow() {
+        let (_dir, root) = canon_temp();
+        let file = root.join("a.txt");
+        std::fs::write(&file, "hi").unwrap();
+        let mode = unix_mode(&file).await.unwrap();
+        set_unix_mode(&file, 0o600).await.unwrap();
+        assert_eq!(unix_mode(&file).await.unwrap() & 0o777, 0o600);
+        let _ = mode;
+
+        symlink("/etc/passwd", root.join("link")).unwrap();
+        let err = unix_mode(&root.join("link")).await.unwrap_err();
+        assert!(
+            matches!(err, FsError::SymlinkRejected),
+            "expected SymlinkRejected, got {err:?}"
+        );
+        let err = set_unix_mode(&root.join("link"), 0o600).await.unwrap_err();
+        assert!(
+            matches!(err, FsError::SymlinkRejected),
+            "expected SymlinkRejected, got {err:?}"
         );
     }
 

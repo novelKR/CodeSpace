@@ -52,7 +52,7 @@ CodeSpace Core          ← only authorization authority
           │  crates/pty (codespace-pty)
           │    interactive spawn; no Codex types on the runner API
           │  crates/file-system (codespace-fs)
-          │    no-follow I/O + bounded walk; PathSandbox stays the authorizer
+          │    no-follow I/O + bounded walk; PathSandbox authorizes, adapter I/O is the safety boundary
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -240,9 +240,12 @@ Runner/MCP surface (P1).
 
 **`codex-file-system`** via `crates/file-system` (`codespace-fs`).
 Bounded walk, no-follow I/O through `LOCAL_FS` (`sandbox: None`).
-Public types stay CodeSpace (`Path` / bytes / walk result).
-`PathSandbox` remains the authorizer. MCP `read` / `find` stay
-workspace-relative.
+Public types stay CodeSpace (`Path` / bytes / walk result / `FsError`).
+`PathSandbox` remains the **authorizer** (logical workspace selection).
+It is not the I/O safety boundary; live processes may race a pre-check.
+`codespace-fs` owns race-resistant no-follow open/read/write/remove/walk
+and typed errors (`SymlinkRejected`, `NotRegularFile`). MCP `read` /
+`find` stay workspace-relative.
 
 ### Prefer reuse (when that WP)
 

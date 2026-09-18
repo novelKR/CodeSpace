@@ -72,6 +72,12 @@ fails with `WORKSPACE_BUSY`.
 - Reject Move when the destination already exists.
 - Do not follow `..` out of the workspace.
 - Do not pass host-absolute paths from the model into the engine.
+- `PathSandbox` authorizes the logical path. It does **not** make the
+  later open safe. Live `read` / `find` may race a process that swaps a
+  directory for a symlink (TOCTOU).
+- Actual I/O safety is `codespace-fs` no-follow operations (including
+  rollback mkdir/chmod/write/remove). `sandbox: None` on `LOCAL_FS` does
+  not disable that no-follow pin.
 
 See [behavior-differences.md](behavior-differences.md).
 

@@ -106,6 +106,29 @@ absolute path (internal; later Codex AbsolutePath / PathUri in the adapter)
 Runner / patch helper
 ```
 
+## PathSandbox와 codespace-fs
+
+`PathSandbox`는 논리 인가와 워크스페이스 선택입니다(상대 경로, 루트
+안, `..` 거절, leaf/조상 심링크와 특수 파일 거절). 사전
+`symlink_metadata` 검사는 **I/O 안전 경계가 아닙니다**.
+
+`codespace-fs`가 I/O 안전 경계입니다. 모든 open, read, write, remove,
+mkdir, chmod, walk가 no-follow를 고정합니다(`follow_symlinks: false`,
+walk는 `follow_directory_symlinks: false`). `LOCAL_FS`를 탑니다.
+`sandbox: None`은 OS 명령 샌드박스를 파일 도구 인가자로 쓰지 않는다는
+뜻입니다. 무한 I/O라는 뜻이 **아닙니다**. 파일 도구 워크스페이스 범위,
+명령 샌드박스, 네트워크 강제는 서로 다른 축입니다.
+
+살아 있는 `exec_command`가 있어도 `read` / `find`는 허용됩니다
+(`read_while_process_live`, `find_while_process_live`). PathSandbox의
+lstat과 open 사이에 프로세스가 디렉터리를 심링크로 바꿀 수 있습니다.
+그 순간의 안전은 앞선 lstat이 아니라 어댑터의 no-follow I/O입니다.
+
+`find`는 업스트림 한도(깊이 64, 디렉터리 10,000, 항목 50,000)로 walk한
+뒤 CodeSpace glob과 사용자 limit를 적용합니다. walk가 잘리거나 필터
+결과가 limit를 넘으면 `truncated`가 true입니다. 숨김 디렉터리는
+가지치기하지 않습니다(`prune_hidden_directories: false`).
+
 ## `command/exec`: 형태 대 크레이트
 
 핀의 App Server `command/exec`

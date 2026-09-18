@@ -718,6 +718,8 @@ dependencies = [
  "codex-exec-server",
  "codex-file-system",
  "codex-utils-path-uri",
+ "libc",
+ "rustix",
  "tempfile",
  "tokio",
 ]

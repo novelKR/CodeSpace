@@ -35,9 +35,12 @@ leftovers are unlinked. `/tmp` itself is never chmodded.
 
 `codespace-runner::PathSandbox` applies the same relative-path + symlink
 + special-file rules for unit tests and for `read` / `find` / versions.
-File bytes and bounded walks go through isolated `crates/file-system`
-(`codespace-fs`, no-follow `LOCAL_FS`). If Docker is not used, **Linux
-container isolation is unverified**. Host
+That is workspace authorization, not race-proof I/O. File bytes,
+metadata, mkdir, chmod, remove, and bounded walks go through isolated
+`crates/file-system` (`codespace-fs`, no-follow `LOCAL_FS`). Live
+processes may mutate the tree between PathSandbox's lstat and the
+adapter open; no-follow I/O is the safety boundary. If Docker is not
+used, **Linux container isolation is unverified**. Host
 seccomp/AppArmor and Docker Desktop vs Linux engine differences are also
 unverified.
 
