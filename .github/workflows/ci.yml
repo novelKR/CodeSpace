@@ -55,10 +55,11 @@ jobs:
           cargo build --locked --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime
           cargo test --locked --manifest-path crates/pty/Cargo.toml
           cargo test --locked --manifest-path crates/file-system/Cargo.toml
-          # Linux isolation tests must not skip a failed helper probe.
-          export CODESPACE_REQUIRE_LINUX_SANDBOX=1
-          cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml
+          cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --lib
           cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox
+          # Linux isolation tests must not skip a failed helper probe. Scope the
+          # requirement to integration tests so unit tests can verify the default.
+          CODESPACE_REQUIRE_LINUX_SANDBOX=1 cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --test isolation
           # Worker apply_patch still shells out to the patch helper. Export
           # CODESPACE_PATCH_BIN before workspace and UDS tests. RuntimeProcess
           # tests spawn the worker when CODESPACE_RUNTIME_BIN is set.
