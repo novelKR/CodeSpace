@@ -21,6 +21,9 @@ use codex_utils_path_uri::PathUri;
 /// `CODESPACE_RUNTIME_BIN`.
 pub const HELPER_BIN_ENV: &str = "CODESPACE_LINUX_SANDBOX_BIN";
 pub const HELPER_BIN_NAME: &str = "codespace-linux-sandbox";
+/// Linux CI sets this to `1` so a failed helper probe is a test failure,
+/// not a skip.
+pub const REQUIRE_ENV: &str = "CODESPACE_REQUIRE_LINUX_SANDBOX";
 
 /// PATH inside the sandbox. Host `HOME` / `~/.cargo/bin` are not mounted
 /// for toolchain discovery.
@@ -64,6 +67,11 @@ pub fn helper_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let candidate = exe.parent()?.join(HELPER_BIN_NAME);
     candidate.is_file().then_some(candidate)
+}
+
+/// True when tests must not skip a failed Linux helper probe.
+pub fn require_linux_sandbox() -> bool {
+    std::env::var_os(REQUIRE_ENV).is_some_and(|value| value == "1")
 }
 
 /// Cached Linux helper + bwrap/userns/pid/seccomp probe. Non-Linux is
@@ -339,6 +347,11 @@ mod tests {
     #[test]
     fn crate_is_isolated_adapter() {
         assert_eq!(env!("CARGO_PKG_NAME"), "codespace-linux-sandbox");
+    }
+
+    #[test]
+    fn require_env_defaults_off() {
+        assert!(!require_linux_sandbox());
     }
 
     #[test]

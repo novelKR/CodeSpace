@@ -342,8 +342,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "8909f0424cfcde3bfce310b6cef62a94494385fc64509a681d674a45fc274612",
-      "translation_sha256": "8d67695855f631909fe4e909f750549f6b76debd1621637d1a5ea9bbf97adc12"
+      "source_sha256": "297049584fa4f28463c61b3192c914ca6e521a293b2a4dc271a9dd6c92d78aa4",
+      "translation_sha256": "8c5c56114cf330ef5bf1da6ecb6ae89d0837c091b1c0b4e7263d2dcb279a5cbb"
     },
     {
       "id": "upstream-lock",

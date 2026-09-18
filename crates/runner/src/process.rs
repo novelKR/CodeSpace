@@ -574,10 +574,7 @@ fn exec_launch(
     let spec = SandboxExecSpec {
         workspace_root: ws.root.clone(),
         writable_workspace: matches!(req.policy.workspace_profile, Profile::WorkspaceWrite),
-        // This WP hard-denies network. Enabled is not upgraded to FullAccess.
-        network: match req.policy.network {
-            NetworkAxis::Restricted | NetworkAxis::Enabled => SandboxNetwork::Restricted,
-        },
+        network: sandbox_network(req.policy.network)?,
     };
     let launch = codespace_linux_sandbox::prepare(&spec, &req.argv, &ws.root).map_err(|err| {
         ErrorBody::new(
@@ -586,6 +583,16 @@ fn exec_launch(
         )
     })?;
     Ok((launch.program, launch.args, true))
+}
+
+fn sandbox_network(network: NetworkAxis) -> Result<SandboxNetwork, ErrorBody> {
+    match network {
+        NetworkAxis::Restricted => Ok(SandboxNetwork::Restricted),
+        NetworkAxis::Enabled => Err(ErrorBody::new(
+            ErrorCode::ProcessSpawnFailed,
+            "linux command sandbox does not support Enabled network yet",
+        )),
+    }
 }
 
 fn spawn_env(cwd: &Path, req: &RunnerExecRequest, sandboxed: bool) -> HashMap<String, String> {
@@ -667,6 +674,31 @@ mod tests {
             root.to_path_buf(),
             Profile::WorkspaceWrite,
         )
+    }
+
+    #[test]
+    fn enabled_network_is_not_silently_restricted() {
+        let err = sandbox_network(NetworkAxis::Enabled).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        assert_eq!(
+            sandbox_network(NetworkAxis::Restricted).unwrap(),
+            SandboxNetwork::Restricted
+        );
+    }
+
+    #[test]
+    fn linux_ci_requires_sandbox_probe() {
+        if !codespace_linux_sandbox::require_linux_sandbox() {
+            return;
+        }
+        assert!(
+            cfg!(target_os = "linux"),
+            "CODESPACE_REQUIRE_LINUX_SANDBOX=1 is Linux CI only"
+        );
+        assert!(
+            crate::linux_sandbox_available(),
+            "CODESPACE_REQUIRE_LINUX_SANDBOX=1 but linux sandbox helper probe failed"
+        );
     }
 
     #[tokio::test]

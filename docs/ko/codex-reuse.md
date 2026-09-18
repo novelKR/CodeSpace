@@ -190,6 +190,14 @@ checkout과 cargo가 지배합니다.
 `codex-core`, `codex-app-server`, `async-openai`). 크레이트 이름을
 언급하는 주석은 cargo 의존성이 아닙니다.
 
+linux-sandbox 어댑터는 Rama **0.3.0-alpha.4** leaf
+크레이트(`rama-error`, `rama-macros`, `rama-utils`)를 resolver
+가드로도 고정합니다. Codex 핀 `6b9826e`는 그 train으로 검증되어
+있습니다. 새로 resolve하면 `rama-core`는 alpha.4인데 leaf만
+stable `0.3.0`이 될 수 있습니다. 가드는 격리 helper lock과 root lock
+(path 의존) 모두에 적용됩니다. CI `cargo clippy` / `cargo test`는
+`--locked`입니다.
+
 독립 `apply_patch` 바이너리를 보안 경계로 감싸지 **마세요**. Codex App
 Server를 내부 백엔드로 감싸지 **마세요**.
 

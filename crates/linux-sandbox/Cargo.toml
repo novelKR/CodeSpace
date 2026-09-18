@@ -19,6 +19,14 @@ codex-linux-sandbox = { path = "../../third_party/codex/codex-rs/linux-sandbox" 
 codex-protocol = { path = "../../third_party/codex/codex-rs/protocol" }
 codex-sandboxing = { path = "../../third_party/codex/codex-rs/sandboxing" }
 codex-utils-path-uri = { path = "../../third_party/codex/codex-rs/utils/path-uri" }
+# Resolver guards. Codex pin 6b9826e is validated against the Rama
+# 0.3.0-alpha.4 train. Leaf crates use ^0.3.0-alpha.4, so a fresh
+# resolve can pick stable 0.3.0 and break OpaqueError. These keys are
+# not used in CodeSpace code; they pin the release train for both this
+# workspace and the root workspace (path dep).
+rama-error = "=0.3.0-alpha.4"
+rama-macros = "=0.3.0-alpha.4"
+rama-utils = "=0.3.0-alpha.4"
 
 [dev-dependencies]
 serde_json = "1"

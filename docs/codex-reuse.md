@@ -191,6 +191,13 @@ graph, `codex-utils-path-uri`, `codex-process-hardening`;
 `codex-app-server`, `async-openai`). Comments that mention a crate
 name are not cargo deps.
 
+The linux-sandbox adapter also pins the Rama **0.3.0-alpha.4** leaf
+crates (`rama-error`, `rama-macros`, `rama-utils`) as resolver guards.
+Codex pin `6b9826e` is validated against that train. A fresh resolve can
+otherwise pick stable `0.3.0` for those leaves while `rama-core` stays
+alpha.4. The guards apply to both the isolated helper lock and the root
+lock (path dependency). CI `cargo clippy` / `cargo test` use `--locked`.
+
 Do **not** wrap the standalone `apply_patch` binary as a security
 boundary. Do **not** wrap Codex App Server as an internal backend.
 

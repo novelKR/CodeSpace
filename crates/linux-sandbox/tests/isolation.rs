@@ -6,8 +6,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use codespace_linux_sandbox::{
-    prepare_from_helper, probe_helper, sandbox_exec_env, SandboxExecSpec, SandboxLaunch,
-    SandboxNetwork,
+    prepare_from_helper, probe_helper, require_linux_sandbox, sandbox_exec_env, SandboxExecSpec,
+    SandboxLaunch, SandboxNetwork, REQUIRE_ENV,
 };
 
 fn helper_bin() -> PathBuf {
@@ -61,7 +61,18 @@ fn run_status(root: &Path, command: &[String]) -> std::process::ExitStatus {
 }
 
 fn linux_ready() -> bool {
-    cfg!(target_os = "linux") && probe_helper(&helper_bin())
+    let ready = cfg!(target_os = "linux") && probe_helper(&helper_bin());
+    if require_linux_sandbox() {
+        assert!(
+            cfg!(target_os = "linux"),
+            "{REQUIRE_ENV}=1 is Linux CI only"
+        );
+        assert!(
+            ready,
+            "{REQUIRE_ENV}=1 but linux sandbox helper probe failed"
+        );
+    }
+    ready
 }
 
 fn python3() -> Option<&'static Path> {
@@ -145,6 +156,10 @@ sys.stdout.buffer.write(data)
 
 #[test]
 fn helper_probe_matches_platform() {
+    if require_linux_sandbox() {
+        assert!(linux_ready());
+        return;
+    }
     if cfg!(target_os = "linux") {
         if !probe_helper(&helper_bin()) {
             eprintln!("skip: bubblewrap/userns/seccomp probe failed");

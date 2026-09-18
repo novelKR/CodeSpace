@@ -41,22 +41,24 @@ jobs:
           cargo fmt --check --manifest-path crates/linux-sandbox/Cargo.toml
       - name: Clippy
         run: |
-          cargo clippy --all-targets -- -D warnings
-          cargo clippy --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path crates/codex-runtime/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path crates/pty/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path crates/file-system/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path crates/linux-sandbox/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path crates/codex-runtime/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path crates/pty/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path crates/file-system/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path crates/linux-sandbox/Cargo.toml --all-targets -- -D warnings
       - name: Test
         run: |
-          cargo test --manifest-path crates/patch/Cargo.toml
-          cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch
-          cargo test --manifest-path crates/codex-runtime/Cargo.toml
-          cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime
-          cargo test --manifest-path crates/pty/Cargo.toml
-          cargo test --manifest-path crates/file-system/Cargo.toml
-          cargo test --manifest-path crates/linux-sandbox/Cargo.toml
-          cargo build --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox
+          cargo test --locked --manifest-path crates/patch/Cargo.toml
+          cargo build --locked --manifest-path crates/patch/Cargo.toml --bin codespace-patch
+          cargo test --locked --manifest-path crates/codex-runtime/Cargo.toml
+          cargo build --locked --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime
+          cargo test --locked --manifest-path crates/pty/Cargo.toml
+          cargo test --locked --manifest-path crates/file-system/Cargo.toml
+          # Linux isolation tests must not skip a failed helper probe.
+          export CODESPACE_REQUIRE_LINUX_SANDBOX=1
+          cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml
+          cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox
           # Worker apply_patch still shells out to the patch helper. Export
           # CODESPACE_PATCH_BIN before workspace and UDS tests. RuntimeProcess
           # tests spawn the worker when CODESPACE_RUNTIME_BIN is set.
@@ -64,4 +66,4 @@ jobs:
           export CODESPACE_PATCH_BIN="${PWD}/crates/patch/target/debug/codespace-patch"
           export CODESPACE_RUNTIME_BIN="${PWD}/crates/codex-runtime/target/debug/codespace-codex-runtime"
           export CODESPACE_LINUX_SANDBOX_BIN="${PWD}/crates/linux-sandbox/target/debug/codespace-linux-sandbox"
-          cargo test --workspace
+          cargo test --locked --workspace
