@@ -130,10 +130,7 @@ async fn file_tools_reject_escape_absolute_symlink_and_fifo() {
         )
         .await;
     let text = err_text(&special);
-    assert!(
-        text.contains("SPECIAL_FILE_REJECTED") || text.contains("regular file"),
-        "{text}"
-    );
+    assert!(text.contains("SPECIAL_FILE_REJECTED"), "{text}");
 
     let _ = root;
     client.cancel().await.expect("cancel");

@@ -82,7 +82,7 @@ impl PathSandbox {
         let root = self
             .root()
             .canonicalize()
-            .map_err(|err| ErrorBody::new(ErrorCode::FileOperationFailed, err.to_string()))?;
+            .map_err(|err| fs_error_body(FsError::Io(err.to_string())))?;
         let walked = codespace_fs::walk_files(&root)
             .await
             .map_err(fs_error_body)?;

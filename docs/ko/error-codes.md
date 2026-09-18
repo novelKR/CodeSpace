@@ -35,10 +35,10 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 | `INVALID_PATCH` | 패치 파싱/검증(W06 / W09); after-hash / delete-still-present / 생략된 `after_version`. rollback 파일시스템 I/O는 이 코드가 아님 |
 | `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
 | `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
-| `PATH_ESCAPE` | 허용된 workspace/path 범위를 벗어나려는 논리적 요청(`../` 또는 절대 경로) |
+| `PATH_ESCAPE` | workspace/path containment 위반: `../`·절대경로 요청, 또는 `find` walk 결과가 `workspace.root` 밖 |
 | `FILE_NOT_FOUND` | 대상 경로가 없음 |
 | `PATH_NOT_DIRECTORY` | 디렉터리여야 하는 경로 구성 요소가 일반 파일임(`ENOTDIR`) |
-| `FILE_OPERATION_FAILED` | 범위 안 경로에 대한 일반 파일시스템 I/O(`find` 루트 canonicalize 실패 포함) |
+| `FILE_OPERATION_FAILED` | containment는 유지됐지만 filesystem operation 자체가 실패(`find` 루트 canonicalize 포함) |
 | `SYMLINK_REJECTED` | 심링크 파일 또는 조상 |
 | `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
 | `ADD_FILE_EXISTS` | Add File destination already exists |
@@ -77,8 +77,10 @@ JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
 `NotFound` → `FILE_NOT_FOUND`, `NotDirectory` → `PATH_NOT_DIRECTORY`,
 일반 `Io` → `FILE_OPERATION_FAILED`, `SymlinkRejected` →
 `SYMLINK_REJECTED`, `NotRegularFile` → `SPECIAL_FILE_REJECTED`.
-`PATH_ESCAPE`는 워크스페이스/경로 범위를 벗어나려는 논리적 요청만
-뜻합니다.
+`PATH_ESCAPE`는 workspace/path containment 위반입니다. 범위를 벗어나려는
+요청(`../`, 절대 경로)이거나, walk 결과가 `strip_prefix(workspace.root)`에
+실패한 경우입니다. `FILE_OPERATION_FAILED`는 containment는 유지된 채
+operation 자체가 실패한 것입니다.
 
 `INVALID_COMMAND`는 구조적으로 잘못된 argv입니다. 게이트웨이는
 `process_id` 발급과 mutation lease 전에 거절합니다. 러너도 같은 검사를

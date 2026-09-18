@@ -142,7 +142,7 @@ async fn read_and_find_use_versions_and_relative_paths() {
         .await;
     let special_text = format!("{special:?}");
     assert!(
-        special_text.contains("SPECIAL_FILE_REJECTED") || special_text.contains("regular file"),
+        special_text.contains("SPECIAL_FILE_REJECTED"),
         "{special_text}"
     );
 
@@ -160,6 +160,16 @@ async fn read_and_find_use_versions_and_relative_paths() {
         via_text.contains("SYMLINK_REJECTED") || via_text.contains("symlink"),
         "{via_text}"
     );
+
+    std::fs::remove_dir_all(&ws).unwrap();
+    let gone = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_FIND)
+                .with_arguments(object!({ "workspace_id": "demo" })),
+        )
+        .await;
+    let gone_text = format!("{gone:?}");
+    assert!(gone_text.contains("FILE_OPERATION_FAILED"), "{gone_text}");
 
     client.cancel().await.expect("cancel");
 }

@@ -179,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "6c9f542a4bc21a921915b2075b648a44709ffa936a4ba442f040ace672bc2aeb",
-      "translation_sha256": "906ae5a1be350c812d5571c3b5d1e68185338fbe7c8dcc62dc8e3d1067aec62f"
+      "source_sha256": "58e66aca7d48f430fff8eaa039d218fe9cc83af6c6e5adf268d37f53b5655f93",
+      "translation_sha256": "0728cc5fc5ea4b0918d1266ac913e7b30761aaebd52003859abd094627b8f3cd"
     },
     {
       "id": "protocol-compatibility",
@@ -292,8 +292,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "9ce736a71607443f4144a61777948e01948603a761162f6ef4edded3b7f64288",
-      "translation_sha256": "a060019f92425e1639eb3228f6fa02da48620732fefde40a11778a60f7fe606a"
+      "source_sha256": "938d76381e8d66fe50bf0f368c4cab54158dce6502fe6865ad3a2d549c9bfeec",
+      "translation_sha256": "4e8eaea37cb09b6d9a92012525ccd4dbfa01f76eafea5b4eae91aed154966f99"
     },
     {
       "id": "codex-reuse",

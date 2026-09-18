@@ -143,11 +143,11 @@ lstat과 open 사이에 프로세스가 디렉터리를 심링크로 바꿀 수 
 `FILE_NOT_FOUND`, `NotDirectory`는 `PATH_NOT_DIRECTORY`, 일반 `Io`는
 `FILE_OPERATION_FAILED`, `SymlinkRejected`는 `SYMLINK_REJECTED`,
 `NotRegularFile`는 `SPECIAL_FILE_REJECTED`입니다. `PATH_ESCAPE`는
-워크스페이스/경로 범위를 벗어나려는 논리적 요청(`../`, 절대 경로)만
-뜻합니다. `find` 루트 canonicalize 실패는 `FILE_OPERATION_FAILED`이고,
-walk 결과가 워크스페이스 루트에 `strip_prefix`되지 않을 때만
-`PATH_ESCAPE`입니다. rollback 파일시스템 실패도 같은 매핑이며
-`INVALID_PATCH`가 아닙니다.
+workspace/path containment 위반입니다. `../`·절대경로 요청이거나, walk
+결과가 워크스페이스 루트에 `strip_prefix`되지 않아 범위 밖이 관찰된
+경우입니다. `find` 루트 canonicalize 실패는 `FILE_OPERATION_FAILED`입니다
+(containment는 유지, operation 실패). rollback 파일시스템 실패도 같은
+매핑이며 `INVALID_PATCH`가 아닙니다.
 
 ## `command/exec`: 형태 대 크레이트
 

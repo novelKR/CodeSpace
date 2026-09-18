@@ -354,3 +354,22 @@ async fn uds_read_filesystem_errors_keep_product_codes() {
         ErrorCode::SpecialFileRejected
     );
 }
+
+#[tokio::test]
+async fn uds_find_on_deleted_root_is_file_operation_failed() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    let dir = tempdir().unwrap();
+    let ws = workspace(dir.path());
+    drop(dir);
+    assert_eq!(
+        execution_code(&runner.find(&ws, None).await.unwrap_err()),
+        ErrorCode::FileOperationFailed
+    );
+}

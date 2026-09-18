@@ -32,10 +32,10 @@ Serialized as `SCREAMING_SNAKE_CASE` in JSON:
 | `INVALID_PATCH` | Patch parsing/validation (W06 / W09); after-hash / delete-still-present / omitted `after_version`. Rollback filesystem I/O is not this code |
 | `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
 | `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
-| `PATH_ESCAPE` | Logical request that would leave the allowed workspace/path scope (`../` or absolute) |
+| `PATH_ESCAPE` | Workspace/path containment violation: a `../` or absolute request, or a `find` walk result outside `workspace.root` |
 | `FILE_NOT_FOUND` | Target path does not exist |
 | `PATH_NOT_DIRECTORY` | A path component that must be a directory is a regular file (`ENOTDIR`) |
-| `FILE_OPERATION_FAILED` | Generic filesystem I/O after the path was in workspace scope (`find` root canonicalize failure included) |
+| `FILE_OPERATION_FAILED` | Containment held, but the filesystem operation itself failed (`find` root canonicalize included) |
 | `SYMLINK_REJECTED` | Symlink file or ancestor |
 | `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
 | `ADD_FILE_EXISTS` | Add File destination already exists |
@@ -75,7 +75,10 @@ process-spawn failures, or rollback filesystem I/O.
 `NotFound` → `FILE_NOT_FOUND`, `NotDirectory` → `PATH_NOT_DIRECTORY`,
 generic `Io` → `FILE_OPERATION_FAILED`, `SymlinkRejected` →
 `SYMLINK_REJECTED`, `NotRegularFile` → `SPECIAL_FILE_REJECTED`.
-`PATH_ESCAPE` is only a logical workspace/path-scope escape.
+`PATH_ESCAPE` is a workspace/path containment violation: a client
+request that would leave scope (`../`, absolute), or a walk result that
+fails `strip_prefix(workspace.root)`. `FILE_OPERATION_FAILED` means
+containment held and the operation itself failed.
 
 `INVALID_COMMAND` is a structurally invalid argv. The gateway rejects it
 before minting a `process_id` or taking a mutation lease. The runner
