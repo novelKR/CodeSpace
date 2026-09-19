@@ -43,7 +43,7 @@ python3 -B docs-site/scripts/site.py check
 python3 -B docs-site/scripts/site.py preview
 ```
 
-Preview is `http://127.0.0.1:43141/CodeSpace/`. Rebuild after edits; use this verified static preview instead of the Vite development server. English is at the root and Korean under `/ko/`; guides use `/guide/` and `/ko/guide/`. Copy page uses the current language's maintained Markdown. Search runs locally in the browser.
+Preview is `http://127.0.0.1:43141/CodeSpace/`. After edits, stop preview, rebuild, and restart preview: it serves only files matching the manifest loaded at startup. Use this verified static preview instead of the Vite development server. English is at the root and Korean under `/ko/`; guides use `/guide/` and `/ko/guide/`. Copy page uses the current language's maintained Markdown. Search runs locally in the browser.
 
 Check desktop and narrow layouts in both themes, including long code/table content. Exercise navigation, language switching, search, and copying. A passing registry/build check alone does not establish readability or correctness.
 
