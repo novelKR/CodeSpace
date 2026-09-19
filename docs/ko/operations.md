@@ -27,16 +27,19 @@ Codex 핀은 [upstream-lock.md](upstream-lock.md)의 커밋에 있는
 [codex-reuse.md](codex-reuse.md)와
 [execution-substrate.md](execution-substrate.md)를 보세요.
 
-게이트웨이가 패치 헬퍼를 자기 옆에서 찾을 수 있도록 게이트웨이와 패치
-헬퍼를 **같은** 디렉터리에 빌드하세요(`CODESPACE_PATCH_BIN`을 설정해도
+게이트웨이가 패치 헬퍼와 Linux 샌드박스 헬퍼를 자기 옆에서 찾을 수
+있도록 게이트웨이와 헬퍼를 **같은** 디렉터리에 빌드하세요
+(`CODESPACE_PATCH_BIN` / `CODESPACE_LINUX_SANDBOX_BIN`을 설정해도
 됩니다). UDS 워커는 선택입니다(`CODESPACE_RUNTIME_BIN`).
 
 ```bash
 cargo build -p codespace-server --bin codespace-mcp --release
 cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
+cargo build --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox --release
 mkdir -p dist
 cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
+cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
 # Optional Unix-socket worker (not the default exec path):
 cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
 cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
@@ -49,7 +52,12 @@ cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 `InProcessRunner`를 실행합니다. hardening은 워커/헬퍼 **프로세스**
 강화입니다(`main` 첫 줄 `pre_main_hardening()`, `ctor` 없음). command
 sandbox가 아닙니다. 기본 `exec_command`는 여전히 프로세스 내부 호스트
-spawn입니다. `exec_command.tty` 기본값은 false(파이프)입니다.
+spawn입니다. Linux에서 `CODESPACE_LINUX_SANDBOX_BIN`(또는 게이트웨이 옆
+`codespace-linux-sandbox`) probe가 성공하면 그 spawn을 헬퍼가 감쌉니다.
+`workspace_info.execution.isolation.command_sandbox`는 그때만
+`linux-sandbox`이고, 아니면 `none`입니다. Restricted 네트워크는 그때
+OS에서 강제됩니다(`network.enforcement=enforced`).
+`exec_command.tty` 기본값은 false(파이프)입니다.
 `tty: true`는 24x80 PTY를 붙입니다. Exec DTO cwd는 `WorkspaceRoot`이며
 `PATH` / `HOME` / `LANG`은 러너 프로세스에서 적용합니다(PTY일 때
 `TERM=xterm`).
@@ -81,8 +89,9 @@ spawn입니다. `exec_command.tty` 기본값은 false(파이프)입니다.
 occupancy 아님 — `exec_command`나 `apply_patch`는 여전히
 `WORKSPACE_BUSY`일 수 있음; 도구 존재는 `tools_exposed`), process가
 가능할 때 resize 없는 고정 24x80 PTY, mutation lease /
-`WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대 command sandbox 없음,
-OS 강제 없는 restricted 네트워크 정책입니다.
+`WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대 광고된 Linux command
+sandbox, 헬퍼 probe가 성공하면 OS가 강제하는 restricted 네트워크
+정책입니다.
 `output_combined=true`는 `read_process`가 하나의 combined stream만
 노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
 `exec_command`는 `dispatch_status`(`confirmed` 또는

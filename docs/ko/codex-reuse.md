@@ -51,6 +51,8 @@ CodeSpace Core          ← only authorization authority
           │    interactive spawn; runner API에 Codex 타입 없음
           │  crates/file-system (codespace-fs)
           │    no-follow I/O + 제한된 walk; PathSandbox가 인가, I/O 안전은 어댑터
+          │  crates/linux-sandbox (codespace-linux-sandbox)
+          │    사용자 argv 헬퍼 wrap; Restricted 네트워크 hard deny; Runner에 Codex 타입 없음
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -98,7 +100,7 @@ CodeSpace core
 
 isolated adapter (crates/patch today;
 crates/codex-runtime today; crates/pty today;
-crates/file-system today)
+crates/file-system today; crates/linux-sandbox today)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
@@ -145,7 +147,8 @@ Runner helper
 - **격리된** Cargo 워크스페이스에서의 경로 의존성이며 저장소 루트가
   아닙니다. 오늘: `crates/patch`, `crates/codex-runtime`
   (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`),
-  `crates/file-system` (`codespace-fs`).
+  `crates/file-system` (`codespace-fs`), `crates/linux-sandbox`
+  (`codespace-linux-sandbox`).
 - NOTICE + Apache-2.0 귀속.
 - 제품 정책은 서브그래프 앞과 뒤에 남습니다.
 - Codex 워크스페이스에서 크레이트를 파일 복사하지 마세요.
@@ -166,7 +169,7 @@ checkout과 cargo가 지배합니다.
 | core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system` | tiny | adapter in the update range; allowlist only |
+| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system`; `crates/linux-sandbox` | tiny | adapter in the update range; allowlist only |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 갱신 범위는 `SCAN_BASE`(PR base / 이전 `main`)입니다. 범위를 모르면
@@ -180,10 +183,20 @@ checkout과 cargo가 지배합니다.
 `codex-exec-server`, `codex-utils-path-uri`, `codex-process-hardening`;
 `crates/codex-runtime`: `codex-process-hardening`, `codex-uds`;
 `crates/pty`: `codex-utils-pty`; `crates/file-system`:
-`codex-file-system`, `codex-exec-server`, `codex-utils-path-uri`). 소스는 에이전트/모델
+`codex-file-system`, `codex-exec-server`, `codex-utils-path-uri`;
+`crates/linux-sandbox`: `codex-linux-sandbox`, `codex-sandboxing`,
+`codex-protocol`, `codex-utils-path-uri`). 소스는 에이전트/모델
 패턴을 유지합니다(`api.openai.com`, Responses, `codex-login`,
 `codex-core`, `codex-app-server`, `async-openai`). 크레이트 이름을
 언급하는 주석은 cargo 의존성이 아닙니다.
+
+linux-sandbox 어댑터는 Rama **0.3.0-alpha.4** leaf
+크레이트(`rama-error`, `rama-macros`, `rama-utils`)를 resolver
+가드로도 고정합니다. Codex 핀 `6b9826e`는 그 train으로 검증되어
+있습니다. 새로 resolve하면 `rama-core`는 alpha.4인데 leaf만
+stable `0.3.0`이 될 수 있습니다. 가드는 격리 helper lock과 root lock
+(path 의존) 모두에 적용됩니다. CI `cargo clippy` / `cargo test`는
+`--locked`입니다.
 
 독립 `apply_patch` 바이너리를 보안 경계로 감싸지 **마세요**. Codex App
 Server를 내부 백엔드로 감싸지 **마세요**.
@@ -204,8 +217,9 @@ login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전�
 
 문서화된 순서입니다. **이 WP에서 코드로 가져옴:** process-hardening, UDS,
 PTY(`crates/pty` → `codex-utils-pty`), filesystem(`crates/file-system`
-→ `LOCAL_FS` / `ExecutorFileSystem`). **아직 안 가져옴:** linux-sandbox,
-network.
+→ `LOCAL_FS` / `ExecutorFileSystem`), linux-sandbox
+(`crates/linux-sandbox` → 헬퍼 wrap, Restricted hard deny). **아직 안
+가져옴:** network(`Enabled` + proxy).
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -246,6 +260,24 @@ open/read/write/remove/walk와 typed error(`SymlinkRejected`,
 `NotRegularFile`)를 소유합니다. MCP `read` / `find`는 워크스페이스
 상대로 남습니다.
 
+**`codex-linux-sandbox`** via `crates/linux-sandbox`
+(`codespace-linux-sandbox`).
+([`codex-rs/linux-sandbox/Cargo.toml`](../../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
+
+사용자 argv를 `spawn_pipe` / `spawn_pty`에서 헬퍼로 감쌉니다.
+Restricted 네트워크는 `--unshare-net`과 Restricted seccomp입니다. 직접
+프록시 플래그(`--allow-network-for-proxy`, `--proxy-route-spec`)는
+쓰지 않습니다. 그건 다음 WP입니다. 런타임 의존성에는 `codex-core`가
+없습니다. **dev-dependencies에는 있습니다** — 어댑터 시험이 그
+그래프를 제품 바이너리로 끌어오면 안 됩니다. 공개 타입은
+CodeSpace(`SandboxExecSpec` / `SandboxLaunch`)만.
+`codex_protocol::PermissionProfile`은 이 크레이트 안에 남습니다.
+
+**전이(어댑터에서 허용):** `codex-sandboxing`, `codex-network-proxy`,
+`codex-protocol`. 프록시의 직접 사용은 PermissionProfile **네트워크**
+축이 있을 때입니다. 허용 엔진이 아닙니다. 루트 워크스페이스 의존성이
+아닙니다.
+
 ### 재사용 선호 (그 WP가 올 때)
 
 **`codex-uds`** (이미 `codespace-codex-runtime`에 있음)
@@ -271,20 +303,6 @@ Unix: Tokio `fs` / `net` / `rt`. 선택적 Runner Unix 소켓 워커의 소켓
 
 Tree-sitter Bash/PowerShell, shlex, `which`. 파싱 / 인용 / 실행 파일
 해석만. 허용 엔진이 아닙니다.
-
-**`codex-linux-sandbox`**
-([`codex-rs/linux-sandbox/Cargo.toml`](../../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
-
-Landlock, seccomp, process-hardening, network-proxy, protocol,
-sandboxing. 너비는 응집력 있는 Linux 샌드박스입니다. **컨테이너**가
-이를 대체하지 않습니다. 런타임 의존성에는 `codex-core`가 없습니다.
-**dev-dependencies에는 있습니다** — 어댑터 시험이 그 그래프를 제품
-바이너리로 끌어오면 안 됩니다.
-
-**전이(서브그래프를 가져가면 어댑터에서 허용):**
-`codex-sandboxing`, `codex-network-proxy`. 프록시의 직접 사용은
-PermissionProfile **네트워크** 축이 있을 때입니다. 허용 엔진이
-아닙니다. 루트 워크스페이스 의존성이 아닙니다.
 
 ### 내부 프로토콜 후보
 
@@ -349,12 +367,13 @@ rollout, history. 제품 exec 흐름이지 `spawn`이 아닙니다.
 - 컨테이너 수명주기와 워크스페이스 바인드 마운트 **정책**.
 - 격리된 어댑터 워크스페이스(`crates/patch`,
   `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
-  `codespace-pty`, `crates/file-system` / `codespace-fs`).
+  `codespace-pty`, `crates/file-system` / `codespace-fs`,
+  `crates/linux-sandbox` / `codespace-linux-sandbox`).
 
 ## 다음 구현 WP
 
 다음 **코드** 작업 패키지는 기존 `Runner` 트레이트 뒤의 남은 실행
-서브그래프(linux-sandbox, network)입니다.
+서브그래프(network: `Enabled` + proxy)입니다.
 `apply_patch`를 게이트웨이가 구동하는 여러 RPC로 쪼개면 안 됩니다.
 
 기본으로 자체 PTY / Landlock / seccomp 스택을 두지 마세요.

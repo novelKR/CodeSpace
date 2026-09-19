@@ -1,15 +1,18 @@
 //! Managed workspace processes. Request lifetime is not process lifetime.
-//! Pipe spawn uses host `tokio::process::Command`. `tty: true` uses the
-//! isolated `codespace-pty` adapter. UDS dispatch lives in `UdsRunner`.
+//! Pipe spawn uses `tokio::process::Command`. `tty: true` uses the isolated
+//! `codespace-pty` adapter. When the Linux helper probe succeeds, both wrap
+//! the same helper argv. UDS dispatch lives in `UdsRunner`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use codespace_domain::{ErrorBody, ErrorCode, ProcessId};
-use codespace_policy::Workspace;
+use codespace_domain::{ErrorBody, ErrorCode, ProcessId, Profile};
+use codespace_linux_sandbox::{sandbox_exec_env, SandboxExecSpec, SandboxNetwork};
+use codespace_policy::{NetworkAxis, Workspace};
 use codespace_pty::PtySession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
@@ -180,10 +183,9 @@ impl InProcessRunner {
             completed_at,
             process_id,
         } = ctx;
-        let mut child = Command::new(&req.argv[0]);
-        if req.argv.len() > 1 {
-            child.args(&req.argv[1..]);
-        }
+        let (program, args, sandboxed) = exec_launch(ws, &req)?;
+        let mut child = Command::new(&program);
+        child.args(&args);
         child
             .current_dir(&cwd)
             .env_clear()
@@ -191,12 +193,7 @@ impl InProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if req.env.use_runner_defaults {
-            for (key, value) in runner_local_exec_env(&cwd) {
-                child.env(key, value);
-            }
-        }
-        for (key, value) in &req.env.overrides {
+        for (key, value) in spawn_env(&cwd, &req, sandboxed) {
             child.env(key, value);
         }
         let mut spawned = child.spawn().map_err(|err| {
@@ -289,22 +286,13 @@ impl InProcessRunner {
             completed_at,
             process_id,
         } = ctx;
-        let mut env = HashMap::new();
+        let (program, args, sandboxed) = exec_launch(ws, &req)?;
+        let mut env = spawn_env(&cwd, &req, sandboxed);
         if req.env.use_runner_defaults {
-            for (key, value) in runner_local_exec_env(&cwd) {
-                env.insert(key, value);
-            }
             env.insert("TERM".into(), "xterm".into());
         }
-        for (key, value) in &req.env.overrides {
-            env.insert(key.clone(), value.clone());
-        }
-        let args = if req.argv.len() > 1 {
-            req.argv[1..].to_vec()
-        } else {
-            Vec::new()
-        };
-        let mut session = codespace_pty::spawn(&req.argv[0], &args, &cwd, &env)
+        let (program, args) = utf8_launch(&program, &args)?;
+        let mut session = codespace_pty::spawn(&program, &args, &cwd, &env)
             .await
             .map_err(|err| {
                 ErrorBody::new(
@@ -569,6 +557,81 @@ fn missing(id: &str) -> ErrorBody {
     )
 }
 
+/// Wrap user argv with the Linux helper when [`probe`](codespace_linux_sandbox::probe)
+/// succeeded. Probe failure keeps direct user argv. Probe success never
+/// unsandboxes on a later setup/spawn error.
+fn exec_launch(
+    ws: &Workspace,
+    req: &RunnerExecRequest,
+) -> Result<(PathBuf, Vec<OsString>, bool), ErrorBody> {
+    if !codespace_linux_sandbox::probe() {
+        return Ok((
+            PathBuf::from(&req.argv[0]),
+            req.argv.iter().skip(1).map(OsString::from).collect(),
+            false,
+        ));
+    }
+    let spec = SandboxExecSpec {
+        workspace_root: ws.root.clone(),
+        writable_workspace: matches!(req.policy.workspace_profile, Profile::WorkspaceWrite),
+        network: sandbox_network(req.policy.network)?,
+    };
+    let launch = codespace_linux_sandbox::prepare(&spec, &req.argv, &ws.root).map_err(|err| {
+        ErrorBody::new(
+            ErrorCode::ProcessSpawnFailed,
+            format!("linux sandbox setup failed: {err}"),
+        )
+    })?;
+    Ok((launch.program, launch.args, true))
+}
+
+fn sandbox_network(network: NetworkAxis) -> Result<SandboxNetwork, ErrorBody> {
+    match network {
+        NetworkAxis::Restricted => Ok(SandboxNetwork::Restricted),
+        NetworkAxis::Enabled => Err(ErrorBody::new(
+            ErrorCode::ProcessSpawnFailed,
+            "linux command sandbox does not support Enabled network yet",
+        )),
+    }
+}
+
+fn spawn_env(cwd: &Path, req: &RunnerExecRequest, sandboxed: bool) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    if req.env.use_runner_defaults {
+        let defaults = if sandboxed {
+            sandbox_exec_env(cwd)
+        } else {
+            runner_local_exec_env(cwd)
+        };
+        env.extend(defaults);
+    }
+    for (key, value) in &req.env.overrides {
+        env.insert(key.clone(), value.clone());
+    }
+    env
+}
+
+fn utf8_launch(program: &Path, args: &[OsString]) -> Result<(String, Vec<String>), ErrorBody> {
+    let program = program.to_str().ok_or_else(|| {
+        ErrorBody::new(
+            ErrorCode::ProcessSpawnFailed,
+            "sandbox helper path is not UTF-8",
+        )
+    })?;
+    let args = args
+        .iter()
+        .map(|arg| {
+            arg.to_str().map(str::to_string).ok_or_else(|| {
+                ErrorBody::new(
+                    ErrorCode::ProcessSpawnFailed,
+                    "sandbox helper argument is not UTF-8",
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((program.to_string(), args))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +674,32 @@ mod tests {
             root.to_path_buf(),
             Profile::WorkspaceWrite,
         )
+    }
+
+    #[test]
+    fn enabled_network_is_not_silently_restricted() {
+        let err = sandbox_network(NetworkAxis::Enabled).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        assert_eq!(
+            sandbox_network(NetworkAxis::Restricted).unwrap(),
+            SandboxNetwork::Restricted
+        );
+    }
+
+    #[test]
+    fn linux_ci_requires_sandbox_probe() {
+        if !codespace_linux_sandbox::require_linux_sandbox() {
+            return;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        panic!("CODESPACE_REQUIRE_LINUX_SANDBOX=1 is Linux CI only");
+
+        #[cfg(target_os = "linux")]
+        assert!(
+            crate::linux_sandbox_available(),
+            "CODESPACE_REQUIRE_LINUX_SANDBOX=1 but linux sandbox helper probe failed"
+        );
     }
 
     #[tokio::test]
@@ -801,21 +890,28 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = workspace(dir.path());
         let runner = InProcessRunner::new(Arc::new(|_| {}));
-        let err = runner
+        let process_id = ProcessId("proc-missing".into());
+        let result = runner
             .exec(
                 &ws,
                 RunnerExecRequest::for_host(
                     vec!["/no/such/codespace-exec".into()],
-                    ProcessId("proc-missing".into()),
+                    process_id.clone(),
                     Profile::WorkspaceWrite,
                 ),
             )
-            .await
-            .unwrap_err();
-        assert_eq!(
-            err.as_execution().map(|body| body.code),
-            Some(ErrorCode::ProcessSpawnFailed)
-        );
+            .await;
+        if crate::linux_sandbox_available() {
+            // Helper spawn succeeded; the inner command failed inside bwrap.
+            result.expect("sandboxed helper spawn");
+            let _ = wait_chunk(&runner, &process_id).await;
+        } else {
+            let err = result.unwrap_err();
+            assert_eq!(
+                err.as_execution().map(|body| body.code),
+                Some(ErrorCode::ProcessSpawnFailed)
+            );
+        }
     }
 
     #[tokio::test]
@@ -823,17 +919,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = workspace(dir.path());
         let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-tty-missing".into());
         let mut req = RunnerExecRequest::for_host(
             vec!["/no/such/codespace-exec".into()],
-            ProcessId("proc-tty-missing".into()),
+            process_id.clone(),
             Profile::WorkspaceWrite,
         );
         req.tty = true;
-        let err = runner.exec(&ws, req).await.unwrap_err();
-        assert_eq!(
-            err.as_execution().map(|body| body.code),
-            Some(ErrorCode::ProcessSpawnFailed)
-        );
+        let result = runner.exec(&ws, req).await;
+        if crate::linux_sandbox_available() {
+            result.expect("sandboxed helper spawn");
+            let _ = wait_chunk(&runner, &process_id).await;
+        } else {
+            let err = result.unwrap_err();
+            assert_eq!(
+                err.as_execution().map(|body| body.code),
+                Some(ErrorCode::ProcessSpawnFailed)
+            );
+        }
     }
 
     #[tokio::test]
@@ -908,5 +1011,44 @@ mod tests {
             chunk.contains("hello"),
             "PTY write_stdin/read_process roundtrip, got {chunk:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn terminate_reaps_sandboxed_sleep() {
+        if !crate::linux_sandbox_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-sandbox-sleep".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/sleep".into(), "30".into()],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        runner.kill_host(&process_id).unwrap();
+        let mut eof = false;
+        for _ in 0..50 {
+            let result = runner
+                .read_process(RunnerReadProcess {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                })
+                .await
+                .unwrap();
+            if result.eof {
+                eof = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(eof, "SIGTERM on the helper must reap the sandbox tree");
     }
 }

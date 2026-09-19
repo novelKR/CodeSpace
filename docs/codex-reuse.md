@@ -53,6 +53,8 @@ CodeSpace Core          ← only authorization authority
           │    interactive spawn; no Codex types on the runner API
           │  crates/file-system (codespace-fs)
           │    no-follow I/O + bounded walk; PathSandbox authorizes, adapter I/O is the safety boundary
+          │  crates/linux-sandbox (codespace-linux-sandbox)
+          │    helper wrap of user argv; Restricted net hard deny; no Codex types on Runner
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -100,7 +102,7 @@ CodeSpace core
 
 isolated adapter (crates/patch today;
 crates/codex-runtime today; crates/pty today;
-crates/file-system today)
+crates/file-system today; crates/linux-sandbox today)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
@@ -145,8 +147,9 @@ runtime adapter:
 - Pin stays [upstream-lock.md](upstream-lock.md) (`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`).
 - Path dependency from an **isolated** Cargo workspace, not the repo
   root. Today: `crates/patch`, `crates/codex-runtime`
-  (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`), and
-  `crates/file-system` (`codespace-fs`).
+  (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`),
+  `crates/file-system` (`codespace-fs`), and `crates/linux-sandbox`
+  (`codespace-linux-sandbox`).
 - NOTICE + Apache-2.0 attribution.
 - Product policy stays in front of and behind the subgraph.
 - Do not file-copy a crate out of the Codex workspace.
@@ -167,7 +170,7 @@ checkout and cargo, not this grep.
 | core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system` | tiny | adapter in the update range; allowlist only |
+| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system`; `crates/linux-sandbox` | tiny | adapter in the update range; allowlist only |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 Update range is `SCAN_BASE` (PR base / previous `main`). Unknown range
@@ -181,10 +184,19 @@ allow only the approved subgraph (`crates/patch` today:
 graph, `codex-utils-path-uri`, `codex-process-hardening`;
 `crates/codex-runtime`: `codex-process-hardening`, `codex-uds`;
 `crates/pty`: `codex-utils-pty`; `crates/file-system`:
-`codex-file-system`, `codex-exec-server`, `codex-utils-path-uri`). Sources keep the agent/model patterns
+`codex-file-system`, `codex-exec-server`, `codex-utils-path-uri`;
+`crates/linux-sandbox`: `codex-linux-sandbox`, `codex-sandboxing`,
+`codex-protocol`, `codex-utils-path-uri`). Sources keep the agent/model patterns
 (`api.openai.com`, Responses, `codex-login`, `codex-core`,
 `codex-app-server`, `async-openai`). Comments that mention a crate
 name are not cargo deps.
+
+The linux-sandbox adapter also pins the Rama **0.3.0-alpha.4** leaf
+crates (`rama-error`, `rama-macros`, `rama-utils`) as resolver guards.
+Codex pin `6b9826e` is validated against that train. A fresh resolve can
+otherwise pick stable `0.3.0` for those leaves while `rama-core` stays
+alpha.4. The guards apply to both the isolated helper lock and the root
+lock (path dependency). CI `cargo clippy` / `cargo test` use `--locked`.
 
 Do **not** wrap the standalone `apply_patch` binary as a security
 boundary. Do **not** wrap Codex App Server as an internal backend.
@@ -204,9 +216,10 @@ rejected.
 ## Staged take (when those WPs exist)
 
 Documented order. **Taken in code this WP:** process-hardening, UDS, PTY
-(`crates/pty` → `codex-utils-pty`), and filesystem (`crates/file-system`
-→ `LOCAL_FS` / `ExecutorFileSystem`). **Not taken:** linux-sandbox,
-network.
+(`crates/pty` → `codex-utils-pty`), filesystem (`crates/file-system`
+→ `LOCAL_FS` / `ExecutorFileSystem`), and linux-sandbox
+(`crates/linux-sandbox` → helper wrap, Restricted hard deny). **Not
+taken:** network (`Enabled` + proxy).
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -247,6 +260,23 @@ It is not the I/O safety boundary; live processes may race a pre-check.
 and typed errors (`SymlinkRejected`, `NotRegularFile`). MCP `read` /
 `find` stay workspace-relative.
 
+**`codex-linux-sandbox`** via `crates/linux-sandbox`
+(`codespace-linux-sandbox`).
+([`codex-rs/linux-sandbox/Cargo.toml`](../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
+
+Helper wrap of user argv (`spawn_pipe` / `spawn_pty`). Restricted
+network is `--unshare-net` plus Restricted seccomp. Direct proxy flags
+(`--allow-network-for-proxy`, `--proxy-route-spec`) are unused; that is
+the next WP. Runtime deps do not include `codex-core`; **dev-dependencies
+do** — adapter tests must not pull that graph into the product binary.
+Public types stay CodeSpace (`SandboxExecSpec` / `SandboxLaunch`).
+`codex_protocol::PermissionProfile` stays inside the crate.
+
+**Transitive (allowed in the adapter):** `codex-sandboxing`,
+`codex-network-proxy`, `codex-protocol`. Direct use of the proxy is for
+when a PermissionProfile **network** axis exists. Not an allow engine.
+Not a root-workspace dep.
+
 ### Prefer reuse (when that WP)
 
 **`codex-uds`** (already in `codespace-codex-runtime`)
@@ -272,19 +302,6 @@ MCP still exposes workspace-relative paths only.
 
 Tree-sitter Bash/PowerShell, shlex, `which`. Parse / quoting /
 executable resolution only. Not the allow engine.
-
-**`codex-linux-sandbox`**
-([`codex-rs/linux-sandbox/Cargo.toml`](../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
-
-Landlock, seccomp, process-hardening, network-proxy, protocol,
-sandboxing. Width is a cohesive Linux sandbox. A **container** does not
-replace it. Runtime deps do not include `codex-core`; **dev-dependencies
-do** — adapter tests must not pull that graph into the product binary.
-
-**Transitive (allowed in the adapter when the subgraph is taken):**
-`codex-sandboxing`, `codex-network-proxy`. Direct use of the proxy is
-for when a PermissionProfile **network** axis exists. Not an allow
-engine. Not a root-workspace dep.
 
 ### Internal protocol candidate
 
@@ -349,12 +366,13 @@ second authorizer.
 - Container lifecycle and workspace bind-mount **policy**.
 - Isolated adapter workspaces (`crates/patch`,
   `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
-  `codespace-pty`, `crates/file-system` / `codespace-fs`).
+  `codespace-pty`, `crates/file-system` / `codespace-fs`,
+  `crates/linux-sandbox` / `codespace-linux-sandbox`).
 
 ## Next implementation WP
 
-The next **code** work packages are remaining execution subgraph crates
-(linux-sandbox, network) behind the existing `Runner`
+The next **code** work package is the remaining execution subgraph
+(network: `Enabled` + proxy) behind the existing `Runner`
 trait. Do not split `apply_patch` into multiple gateway-driven RPCs.
 
 Do not default to a homegrown PTY / Landlock / seccomp stack. Take the

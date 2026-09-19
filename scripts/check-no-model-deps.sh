@@ -71,6 +71,15 @@ fs_key_allowed() {
   esac
 }
 
+# crates/linux-sandbox: helper argv + bwrap/seccomp. Direct keys only.
+# Transitive: codex-network-proxy (no direct proxy API).
+linux_sandbox_key_allowed() {
+  case "$1" in
+    codex-linux-sandbox|codex-sandboxing|codex-protocol|codex-utils-path-uri) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -85,6 +94,7 @@ scan_patch=0
 scan_runtime=0
 scan_pty=0
 scan_fs=0
+scan_linux_sandbox=0
 scan_all=0
 
 is_zero_sha() {
@@ -109,6 +119,9 @@ want_all() {
   fi
   if [[ -d crates/file-system ]]; then
     scan_fs=1
+  fi
+  if [[ -d crates/linux-sandbox ]]; then
+    scan_linux_sandbox=1
   fi
 }
 
@@ -159,6 +172,11 @@ else
             scan_fs=1
           fi
           ;;
+        crates/linux-sandbox|crates/linux-sandbox/*)
+          if [[ -d crates/linux-sandbox ]]; then
+            scan_linux_sandbox=1
+          fi
+          ;;
       esac
     done < <(git diff --name-only "$merge_base"...HEAD)
   else
@@ -177,7 +195,8 @@ if [[ "$scan_all" -eq 0 &&
       "$scan_patch" -eq 0 &&
       "$scan_runtime" -eq 0 &&
       "$scan_pty" -eq 0 &&
-      "$scan_fs" -eq 0 ]]; then
+      "$scan_fs" -eq 0 &&
+      "$scan_linux_sandbox" -eq 0 ]]; then
   echo "policy-scan skipped (no core crate or adapter changes)"
   exit 0
 fi
@@ -189,7 +208,7 @@ selected=()
 [[ "$scan_store" -eq 1 ]] && selected+=("store")
 [[ "$scan_server" -eq 1 ]] && selected+=("server")
 
-echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime pty=$scan_pty fs=$scan_fs"
+echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime pty=$scan_pty fs=$scan_fs linux-sandbox=$scan_linux_sandbox"
 
 scan_manifest() {
   local file="$1"
@@ -236,6 +255,11 @@ scan_adapter_manifest() {
         ;;
       fs)
         if ! fs_key_allowed "$key"; then
+          bad+="$line"$'\n'
+        fi
+        ;;
+      linux-sandbox)
+        if ! linux_sandbox_key_allowed "$key"; then
           bad+="$line"$'\n'
         fi
         ;;
@@ -313,6 +337,10 @@ fi
 
 if [[ "$scan_fs" -eq 1 ]]; then
   launch scan_adapter_manifest crates/file-system/Cargo.toml fs
+fi
+
+if [[ "$scan_linux_sandbox" -eq 1 ]]; then
+  launch scan_adapter_manifest crates/linux-sandbox/Cargo.toml linux-sandbox
 fi
 
 for pid in "${pids[@]+"${pids[@]}"}"; do

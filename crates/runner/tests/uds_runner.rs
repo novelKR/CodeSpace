@@ -164,7 +164,7 @@ async fn uds_exec_lost_response_is_ambiguous() {
 }
 
 #[tokio::test]
-async fn uds_spawn_failure_is_process_spawn_failed() {
+async fn uds_missing_executable_respects_sandbox_spawn_boundary() {
     let (client, server) = UnixStream::pair().expect("unix pair");
     let (worker, events) = host_worker();
     tokio::spawn(async move {
@@ -175,22 +175,42 @@ async fn uds_spawn_failure_is_process_spawn_failed() {
     let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
     let dir = tempdir().unwrap();
     let ws = workspace(dir.path());
-    let err = runner
+    let process_id = ProcessId("proc-uds-missing".into());
+    let result = runner
         .exec(
             &ws,
             RunnerExecRequest::for_host(
                 vec!["/no/such/codespace-exec".into()],
-                ProcessId("proc-uds-missing".into()),
+                process_id.clone(),
                 Profile::WorkspaceWrite,
             ),
         )
-        .await
-        .unwrap_err();
-    match err {
-        RunnerError::Execution(body) => {
-            assert_eq!(body.code, ErrorCode::ProcessSpawnFailed, "{body:?}");
+        .await;
+
+    if codespace_runner::linux_sandbox_available() {
+        let spawned = result.expect("sandbox helper should spawn successfully");
+        assert_eq!(spawned.process_id, process_id);
+        for _ in 0..50 {
+            let read = runner
+                .read_process(codespace_runner::RunnerReadProcess {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                })
+                .await
+                .unwrap();
+            if read.eof {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        other => panic!("expected Execution(ProcessSpawnFailed), got {other:?}"),
+    } else {
+        let err = result.unwrap_err();
+        match err {
+            RunnerError::Execution(body) => {
+                assert_eq!(body.code, ErrorCode::ProcessSpawnFailed, "{body:?}");
+            }
+            other => panic!("expected Execution(ProcessSpawnFailed), got {other:?}"),
+        }
     }
 }
 

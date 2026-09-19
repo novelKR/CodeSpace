@@ -725,9 +725,14 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         exec["process"]["capabilities"]["tty"]["resize_supported"],
         false
     );
-    assert_eq!(exec["isolation"]["command_sandbox"], "none");
+    if codespace_runner::linux_sandbox_available() {
+        assert_eq!(exec["isolation"]["command_sandbox"], "linux-sandbox");
+        assert_eq!(exec["network"]["enforcement"], "enforced");
+    } else {
+        assert_eq!(exec["isolation"]["command_sandbox"], "none");
+        assert_eq!(exec["network"]["enforcement"], "none");
+    }
     assert_eq!(exec["network"]["policy"], "restricted");
-    assert_eq!(exec["network"]["enforcement"], "none");
     client.cancel().await.expect("cancel");
 }
 

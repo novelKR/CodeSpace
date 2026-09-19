@@ -42,7 +42,7 @@ CI: `policy-scan` job runs `scripts/check-no-model-deps.sh` **without**
 submodules, in parallel with `rust`. Core manifests may not declare
 `codex-*` deps. Core sources keep the agent/model grep. Isolated
 adapter manifests (`crates/patch`, `crates/codex-runtime`, `crates/pty`,
-`crates/file-system`) use an
+`crates/file-system`, `crates/linux-sandbox`) use an
 **allowlist**; `third_party/codex` sources are never scanned.
 `SCAN_BASE` limits the tree to the update range; unknown range scans
 all core crates and adapter manifests. Clippy/tests still always run.
@@ -63,8 +63,10 @@ filesystem glob + network axes live in `crates/policy` as
 `PermissionProfile`, mapped from those profiles. `process_exec` is the
 Exec axis (`read-only` denies, `workspace-write` allows). Path globs are
 **domain only**; live enforcement stays coarse `allow(Write|Exec)` plus
-PathSandbox. The network axis is recorded only; it does not grant. This
-is not an import of Codex user config.
+PathSandbox. Restricted network is OS-enforced when the Linux helper
+probe succeeds (`workspace_info.execution.network.enforcement=enforced`).
+`Enabled` / proxy is later. The axis never grants. This is not an
+import of Codex user config.
 
 ## Four axes (target domain)
 
@@ -192,9 +194,10 @@ request onto runner DTOs. Prefer `codex-process-hardening`,
 `codex-utils-pty`, `codex-uds` (transport primitive; RPC stays
 CodeSpace), and `codex-file-system` under PathSandbox scope
 (`crates/file-system` → `LOCAL_FS`, no-follow I/O and bounded walk).
-Then `codex-linux-sandbox` (dev-dep includes `codex-core`;
-keep that out of the product graph) plus `codex-network-proxy` when a
-network axis exists. A container does not replace that subgraph.
+`codex-linux-sandbox` is taken via `crates/linux-sandbox` (dev-dep
+includes `codex-core`; keep that out of the product graph). Plus
+`codex-network-proxy` when a network axis exists. A container does not
+replace that subgraph.
 
 App Server streaming processes are connection-scoped and die when that
 connection closes. CodeSpace keeps **MCP request lifetime ≠ process
@@ -297,7 +300,8 @@ P0 code for this substrate is in: Runner exec DTO **shape**
 resource serializer (request vs process owners), opt-in `UdsRunner` +
 `codespace-codex-runtime` (process-hardening + UDS), isolated
 `crates/pty` → `codex-utils-pty`, isolated `crates/file-system` →
-`LOCAL_FS`. Live MCP tool **names** stay frozen;
+`LOCAL_FS`, isolated `crates/linux-sandbox` → `codex-linux-sandbox`.
+Live MCP tool **names** stay frozen;
 `exec_command` has optional `tty` (default false).
 
 **P0** — landed or next subgraph WPs: `codex-apply-patch` (done), exec
@@ -305,8 +309,9 @@ runtime **shape** on Runner DTOs (done), PermissionProfile domain in
 `crates/policy` (done), Environment domain (operator-registered; not a
 tool arg) (done), resource serializer (done), transport
 (`UdsRunner`) with process-hardening + UDS (done, opt-in), PTY I/O
-backend (done), filesystem mechanics under PathSandbox (done). Still
-out: linux-sandbox → network.
+backend (done), filesystem mechanics under PathSandbox (done), Linux
+command sandbox (done: helper wrap, Restricted hard deny). Still
+out: network (`Enabled` + proxy).
 
 **P1** — operation state machine / diff ledger, approval fallback
 tools, internal watch, richer process handles (resize, caps),
@@ -319,5 +324,5 @@ MCP contract, deterministic hooks, skills as resources or prompts.
 
 The next **code** WPs are remaining execution subgraph crates behind
 the existing trait, without splitting `apply_patch` into gateway RPCs.
-Start at linux-sandbox. Sandbox / network are not a default homegrown OS
+Start at network. Sandbox / network are not a default homegrown OS
 stack ([codex-reuse.md](codex-reuse.md)).
