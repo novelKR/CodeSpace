@@ -202,13 +202,15 @@ checkout과 cargo가 지배합니다.
 
 linux-sandbox **helper lock**은 Rama **0.3.0-alpha.4** leaf
 크레이트(`rama-error`, `rama-macros`, `rama-utils`)를 resolver
-가드로 고정합니다. Codex 핀 `6b9826e`는 그 train으로 검증되어
-있습니다. 새로 resolve하면 `rama-core`는 alpha.4인데 leaf만
-stable `0.3.0`이 될 수 있습니다. 러너는 helper 크레이트를 path
-의존하지 **않으므로** 그 가드가 sandbox를 통해 root lock에 들어오지
-않습니다. root는 `codespace-fs`를 통해 Rama를 볼 수 있습니다.
-helper CI `cargo clippy` / `cargo test`는 `--locked`입니다. rust
-job은 `cargo tree -p codespace-runner`에서 helper-package
+가드로 고정합니다. **file-system lock**(`crates/file-system`)도 같은
+leaf를 고정합니다. root가 `codespace-fs` → `codex-exec-server` /
+`codex-protocol`로 Rama를 보기 때문입니다. Codex 핀 `6b9826e`는 그
+train으로 검증되어 있습니다. 새로 resolve하면 `rama-core`는
+alpha.4인데 leaf만 stable `0.3.0`이 될 수 있습니다. 러너는 helper
+크레이트를 path 의존하지 **않으므로** helper 가드가 sandbox를 통해
+root lock에 들어오지 않습니다. helper와 file-system CI
+`cargo clippy` / `cargo test`는 `--locked`입니다. rust job은
+`cargo tree -p codespace-runner`에서 helper-package
 edge(`codespace-linux-sandbox`, `codex-linux-sandbox`)를 검사합니다.
 `codex-sandboxing` / `landlock` / `seccompiler`는 `codespace-fs` →
 `codex-protocol`로 남을 수 있으며, 그건 sandbox helper 그래프가

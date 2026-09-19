@@ -109,6 +109,12 @@ fn run_ok(root: &Path, command: &[String]) -> String {
         !plan.exists(),
         "run --plan must unlink the opaque plan file"
     );
+    if let Some(parent) = plan.parent() {
+        assert!(
+            !parent.exists(),
+            "run --plan must remove the empty plan directory"
+        );
+    }
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 

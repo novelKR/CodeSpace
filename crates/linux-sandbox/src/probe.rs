@@ -78,7 +78,7 @@ fn probe_ok() -> bool {
     let child = match child.spawn() {
         Ok(child) => child,
         Err(err) => {
-            let _ = std::fs::remove_file(&plan);
+            crate::plan::discard(&plan);
             if require {
                 eprintln!("linux sandbox probe spawn failed: {err}");
             }
@@ -88,12 +88,14 @@ fn probe_ok() -> bool {
     match wait_with_timeout(child, PROBE_TIMEOUT) {
         Some(status) if status.success() => true,
         Some(status) => {
+            crate::plan::discard(&plan);
             if require {
                 eprintln!("linux sandbox probe exited with {status}");
             }
             false
         }
         None => {
+            crate::plan::discard(&plan);
             if require {
                 eprintln!("linux sandbox probe timed out after {PROBE_TIMEOUT:?}");
             }

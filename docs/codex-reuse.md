@@ -203,16 +203,17 @@ name are not cargo deps.
 
 The linux-sandbox **helper lock** pins the Rama **0.3.0-alpha.4** leaf
 crates (`rama-error`, `rama-macros`, `rama-utils`) as resolver guards.
-Codex pin `6b9826e` is validated against that train. A fresh resolve can
-otherwise pick stable `0.3.0` for those leaves while `rama-core` stays
-alpha.4. The runner does **not** path-depend the helper crate, so those
-guards do not enter the root lock via sandbox. Root may still see Rama
-through `codespace-fs`. Helper CI `cargo clippy` / `cargo test` use
-`--locked`. The rust job also checks `cargo tree -p codespace-runner`
-for helper-package edges (`codespace-linux-sandbox`,
-`codex-linux-sandbox`). `codex-sandboxing` / `landlock` / `seccompiler`
-may still appear via `codespace-fs` → `codex-protocol`; that is not the
-sandbox helper graph.
+The **file-system lock** (`crates/file-system`) pins the same leaves
+because root still sees Rama through `codespace-fs` → `codex-exec-server`
+/ `codex-protocol`. Codex pin `6b9826e` is validated against that train.
+A fresh resolve can otherwise pick stable `0.3.0` for those leaves while
+`rama-core` stays alpha.4. The runner does **not** path-depend the helper
+crate, so helper guards do not enter the root lock via sandbox. Helper
+and file-system CI `cargo clippy` / `cargo test` use `--locked`. The rust
+job also checks `cargo tree -p codespace-runner` for helper-package
+edges (`codespace-linux-sandbox`, `codex-linux-sandbox`).
+`codex-sandboxing` / `landlock` / `seccompiler` may still appear via
+`codespace-fs` → `codex-protocol`; that is not the sandbox helper graph.
 
 Do **not** wrap the standalone `apply_patch` binary as a security
 boundary. Do **not** wrap Codex App Server as an internal backend.

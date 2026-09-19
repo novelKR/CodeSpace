@@ -774,6 +774,9 @@ dependencies = [
  "codex-file-system",
  "codex-utils-path-uri",
  "libc",
+ "rama-error",
+ "rama-macros",
+ "rama-utils",
  "rustix",
  "tokio",
 ]

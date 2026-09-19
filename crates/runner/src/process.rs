@@ -577,7 +577,7 @@ struct ExecLaunch {
 impl ExecLaunch {
     fn abort_plan(&self) {
         if let Some(path) = &self.plan_path {
-            let _ = std::fs::remove_file(path);
+            linux_sandbox::discard_plan(path);
         }
     }
 }
@@ -698,6 +698,17 @@ mod tests {
         )
     }
 
+    const REQUIRE_ENV: &str = "CODESPACE_REQUIRE_LINUX_SANDBOX";
+
+    fn require_linux_sandbox() -> bool {
+        std::env::var_os(REQUIRE_ENV).is_some_and(|value| value == "1")
+    }
+
+    #[test]
+    fn require_env_defaults_off() {
+        assert!(!require_linux_sandbox());
+    }
+
     #[test]
     fn enabled_network_is_not_silently_restricted() {
         let err = sandbox_network(NetworkAxis::Enabled).unwrap_err();
@@ -710,7 +721,7 @@ mod tests {
 
     #[test]
     fn linux_ci_requires_sandbox_probe() {
-        if !linux_sandbox::require_linux_sandbox() {
+        if !require_linux_sandbox() {
             return;
         }
 

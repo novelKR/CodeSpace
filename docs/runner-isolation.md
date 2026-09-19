@@ -6,7 +6,10 @@
 `exec_command` is a host process. When the Linux helper probe succeeds,
 pipe and PTY spawn the same `codespace-linux-sandbox run --plan` argv
 (bubblewrap + `no_new_privs`/seccomp; Codex translation stays inside
-that process). When the probe fails (macOS, no
+that process). Prepare / protocol / helper OS-spawn failure is
+`PROCESS_SPAWN_FAILED`. After the managed helper process is spawned,
+`run --plan` load, self-exec, or inner sandbox failure is a managed
+process exit. When the probe fails (macOS, no
 bwrap), spawn is unsandboxed and `workspace_info` advertises `none`.
 Gateway unit tests may run on macOS. That is not a
 claim that Linux isolation was verified on the development laptop.

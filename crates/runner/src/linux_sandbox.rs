@@ -20,9 +20,6 @@ use codespace_linux_sandbox_protocol::{
 /// `CODESPACE_RUNTIME_BIN`.
 pub const HELPER_BIN_ENV: &str = "CODESPACE_LINUX_SANDBOX_BIN";
 pub const HELPER_BIN_NAME: &str = "codespace-linux-sandbox";
-/// Linux CI sets this to `1` so a failed helper probe is a test failure,
-/// not a skip.
-pub const REQUIRE_ENV: &str = "CODESPACE_REQUIRE_LINUX_SANDBOX";
 
 /// PATH inside the sandbox. Host `HOME` / `~/.cargo/bin` are not mounted
 /// for toolchain discovery.
@@ -54,11 +51,6 @@ pub fn helper_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let candidate = exe.parent()?.join(HELPER_BIN_NAME);
     candidate.is_file().then_some(candidate)
-}
-
-/// True when tests must not skip a failed Linux helper probe.
-pub fn require_linux_sandbox() -> bool {
-    std::env::var_os(REQUIRE_ENV).is_some_and(|value| value == "1")
 }
 
 /// Cached `helper probe`. Non-Linux is always `false`. A failed probe
@@ -235,6 +227,21 @@ fn spawn_failed(message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(ErrorCode::ProcessSpawnFailed, message.into())
 }
 
+/// Drop a leftover opaque plan after a failed helper OS spawn. Unlinks
+/// the file, then the empty `codespace-linux-sandbox-*` parent dir.
+pub(crate) fn discard_plan(path: &Path) {
+    let parent = path.parent().map(Path::to_path_buf);
+    let _ = std::fs::remove_file(path);
+    if let Some(parent) = parent {
+        if parent.file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .starts_with("codespace-linux-sandbox-")
+        }) {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+}
+
 fn wait_with_timeout(
     mut child: std::process::Child,
     timeout: Duration,
@@ -271,11 +278,6 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).unwrap();
         path
-    }
-
-    #[test]
-    fn require_env_defaults_off() {
-        assert!(!require_linux_sandbox());
     }
 
     #[test]
