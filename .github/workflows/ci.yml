@@ -16,7 +16,13 @@ jobs:
       - name: Core Codex / model dep scan
         env:
           SCAN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: ./scripts/check-no-model-deps.sh
+        run: python3 scripts/validate-upstream.py policy python --output target/upstream-reports/policy
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-${{ github.job }}-${{ matrix.name || 'single' }}-${{ github.run_attempt }}
+          path: target/upstream-reports/
+          if-no-files-found: warn
 
   rust-format:
     name: Rust / Format + upstream pin
@@ -28,16 +34,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Upstream pin
-        run: PIN_ONLY=1 ./scripts/check-upstream-pin.sh
-      - name: Format
-        run: |
-          cargo fmt --check
-          cargo fmt --check --manifest-path crates/patch/Cargo.toml
-          cargo fmt --check --manifest-path crates/codex-runtime/Cargo.toml
-          cargo fmt --check --manifest-path crates/pty/Cargo.toml
-          cargo fmt --check --manifest-path crates/file-system/Cargo.toml
-          cargo fmt --check --manifest-path crates/linux-sandbox/Cargo.toml
+      - name: Format and pin
+        run: python3 scripts/validate-upstream.py pin format --output target/upstream-reports/format
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-${{ github.job }}-${{ matrix.name || 'single' }}-${{ github.run_attempt }}
+          path: target/upstream-reports/
+          if-no-files-found: warn
 
   rust-clippy:
     name: Rust / Clippy (${{ matrix.name }})
@@ -47,27 +51,11 @@ jobs:
       matrix:
         include:
           - name: root
-            command: |
-              set -euo pipefail
-              cargo clippy --locked --all-targets -- -D warnings
-              fail=0
-              for pkg in codespace-linux-sandbox codex-linux-sandbox; do
-                if cargo tree -p codespace-runner --locked --edges normal -i "$pkg" --prefix none >/dev/null 2>&1; then
-                  echo "codespace-runner graph must not include $pkg" >&2
-                  cargo tree -p codespace-runner --locked --edges normal -i "$pkg" --prefix none >&2 || true
-                  fail=1
-                fi
-              done
-              test "$fail" -eq 0
+            stage: clippy-root dependencies
           - name: adapters
-            command: |
-              cargo clippy --locked --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
-              cargo clippy --locked --manifest-path crates/pty/Cargo.toml --all-targets -- -D warnings
-              cargo clippy --locked --manifest-path crates/file-system/Cargo.toml --all-targets -- -D warnings
+            stage: clippy-adapters
           - name: codex-adapters
-            command: |
-              cargo clippy --locked --manifest-path crates/codex-runtime/Cargo.toml --all-targets -- -D warnings
-              cargo clippy --locked --manifest-path crates/linux-sandbox/Cargo.toml --all-targets -- -D warnings
+            stage: clippy-codex
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,7 +71,13 @@ jobs:
             ~/.cargo/git
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - name: Clippy
-        run: ${{ matrix.command }}
+        run: python3 scripts/validate-upstream.py ${{ matrix.stage }} --output target/upstream-reports/${{ matrix.name }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-${{ github.job }}-${{ matrix.name || 'single' }}-${{ github.run_attempt }}
+          path: target/upstream-reports/
+          if-no-files-found: warn
 
   rust-unit:
     name: Rust / Unit (${{ matrix.name }})
@@ -91,19 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: patch
-            command: cargo test --locked --manifest-path crates/patch/Cargo.toml
-          - name: codex-runtime
-            command: cargo test --locked --manifest-path crates/codex-runtime/Cargo.toml
-          - name: pty
-            command: cargo test --locked --manifest-path crates/pty/Cargo.toml
-          - name: file-system
-            command: cargo test --locked --manifest-path crates/file-system/Cargo.toml
-          - name: linux-sandbox-protocol
-            command: cargo test --locked -p codespace-linux-sandbox-protocol
-          - name: linux-sandbox
-            command: cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --bins --test cli
+        name: [patch, codex-runtime, pty, file-system, linux-sandbox-protocol, linux-sandbox]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,7 +99,13 @@ jobs:
             ~/.cargo/git
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
       - name: Unit tests
-        run: ${{ matrix.command }}
+        run: python3 scripts/validate-upstream.py unit-${{ matrix.name }} --output target/upstream-reports/unit-${{ matrix.name }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-${{ github.job }}-${{ matrix.name || 'single' }}-${{ github.run_attempt }}
+          path: target/upstream-reports/
+          if-no-files-found: warn
 
   rust-linux-isolation:
     name: Rust / Linux isolation
@@ -154,12 +142,14 @@ jobs:
             echo "Disabling kernel.apparmor_restrict_unprivileged_userns for bubblewrap."
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Build Linux sandbox helper
-        run: cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox
       - name: Linux isolation tests
-        env:
-          CODESPACE_REQUIRE_LINUX_SANDBOX: "1"
-        run: cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --test isolation
+        run: python3 scripts/validate-upstream.py linux-isolation --output target/upstream-reports/isolation
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-${{ github.job }}-${{ matrix.name || 'single' }}-${{ github.run_attempt }}
+          path: target/upstream-reports/
+          if-no-files-found: warn
 
   rust-integration:
     name: Rust / Integration
@@ -191,17 +181,33 @@ jobs:
           if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Build helpers
-        run: |
-          cargo build --locked --manifest-path crates/patch/Cargo.toml --bin codespace-patch
-          cargo build --locked --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime
-          cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox
       - name: Workspace integration tests
-        env:
-          CODESPACE_PATCH_BIN: ${{ github.workspace }}/crates/patch/target/debug/codespace-patch
-          CODESPACE_RUNTIME_BIN: ${{ github.workspace }}/crates/codex-runtime/target/debug/codespace-codex-runtime
-          CODESPACE_LINUX_SANDBOX_BIN: ${{ github.workspace }}/crates/linux-sandbox/target/debug/codespace-linux-sandbox
-        run: cargo test --locked --workspace
+        run: python3 scripts/validate-upstream.py integration --output target/upstream-reports/integration
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-${{ github.job }}-${{ matrix.name || 'single' }}-${{ github.run_attempt }}
+          path: target/upstream-reports/
+          if-no-files-found: warn
+
+  rust-macos:
+    name: Rust / macOS contracts
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: macOS contracts and dependencies
+        run: python3 scripts/validate-upstream.py macos-core dependencies --output target/upstream-reports/macos
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-${{ github.job }}-${{ matrix.name || 'single' }}-${{ github.run_attempt }}
+          path: target/upstream-reports/
+          if-no-files-found: warn
 
   rust:
     name: rust
@@ -212,6 +218,8 @@ jobs:
       - rust-unit
       - rust-linux-isolation
       - rust-integration
+      - rust-macos
+      - policy-scan
     runs-on: ubuntu-latest
     steps:
       - name: Require all Rust checks
@@ -221,3 +229,5 @@ jobs:
           test "${{ needs.rust-unit.result }}" = "success"
           test "${{ needs.rust-linux-isolation.result }}" = "success"
           test "${{ needs.rust-integration.result }}" = "success"
+          test "${{ needs.rust-macos.result }}" = "success"
+          test "${{ needs.policy-scan.result }}" = "success"

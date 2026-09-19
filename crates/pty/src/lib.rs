@@ -88,16 +88,29 @@ mod tests {
         assert_eq!(env!("CARGO_PKG_NAME"), "codespace-pty");
     }
 
-    #[test]
-    fn default_size_is_24x80_and_matches_upstream() {
-        assert_eq!(DEFAULT_ROWS, 24);
-        assert_eq!(DEFAULT_COLS, 80);
-        let upstream = codex_utils_pty::TerminalSize::default();
-        assert_eq!(
-            (upstream.rows, upstream.cols),
-            (DEFAULT_ROWS, DEFAULT_COLS),
-            "upstream TerminalSize::default drifted from advertised PTY size"
-        );
+    #[tokio::test]
+    async fn created_terminal_has_advertised_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
+        let mut session = spawn("/bin/stty", &["size".into()], dir.path(), &env)
+            .await
+            .expect("spawn stty");
+        let mut output = session.take_stdout().expect("stdout");
+        let code = tokio::time::timeout(Duration::from_secs(5), session.take_exit().unwrap())
+            .await
+            .expect("exit timeout")
+            .expect("exit receiver");
+        assert_eq!(code, 0);
+        let bytes = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = output.recv().await {
+                bytes.extend(chunk);
+            }
+            bytes
+        })
+        .await
+        .expect("output timeout");
+        assert_eq!(String::from_utf8(bytes).unwrap().trim(), "24 80");
     }
 
     #[tokio::test]

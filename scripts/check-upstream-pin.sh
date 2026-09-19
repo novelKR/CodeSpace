@@ -45,4 +45,5 @@ if [[ "${PIN_ONLY:-}" == "1" ]]; then
   exit 0
 fi
 
-cargo test --manifest-path crates/patch/Cargo.toml
+echo "This gate covers SHA + patch only; full qualification: python3 scripts/validate-upstream.py all"
+cargo test --locked --manifest-path crates/patch/Cargo.toml
