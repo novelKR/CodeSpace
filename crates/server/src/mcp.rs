@@ -673,14 +673,16 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("WORKSPACE_BUSY"), "{text}");
+        assert!(text.contains("command_sandbox is linux-sandbox"), "{text}");
         assert!(
-            text.contains("Host execution is not an OS command sandbox"),
+            text.contains("host execution is not an OS command sandbox"),
             "{text}"
         );
         assert!(
             text.contains("Network policy is reported by workspace_info"),
             "{text}"
         );
+        assert!(text.contains("execution.network.enforcement"), "{text}");
         assert!(
             text.contains("absence of enforcement is not permission"),
             "{text}"
@@ -989,6 +991,33 @@ mod tests {
         .0
     }
 
+    async fn assert_missing_exec_boundary_and_release(cs: &CodeSpace, store: &Store, tty: bool) {
+        let result = cs
+            .exec_command(Parameters(ExecCommandParams {
+                workspace_id: WorkspaceId("demo".into()),
+                command: vec!["/no/such/codespace-exec".into()],
+                work_id: None,
+                tty,
+            }))
+            .await;
+
+        if linux_sandbox_available() {
+            let started = result.expect("sandbox helper should spawn successfully").0;
+            assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+            for _ in 0..50 {
+                if store.try_acquire_write("demo").is_ok() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        } else {
+            let err = parse_exec_err(result);
+            assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        }
+
+        let _lease = store.try_acquire_write("demo").expect("lease released");
+    }
+
     #[tokio::test]
     async fn invalid_command_does_not_hold_lease() {
         let dir = tempfile::tempdir().unwrap();
@@ -1010,47 +1039,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirmed_spawn_failure_releases_lease() {
+    async fn missing_executable_releases_lease_across_spawn_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let ws_root = dir.path().join("ws");
         std::fs::create_dir(&ws_root).unwrap();
-        let cs = CodeSpace::new(write_registry(ws_root));
-        let err = parse_exec_err(
-            cs.exec_command(Parameters(ExecCommandParams {
-                workspace_id: WorkspaceId("demo".into()),
-                command: vec!["/no/such/codespace-exec".into()],
-                work_id: None,
-                tty: false,
-            }))
-            .await,
-        );
-        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
-        let started = exec_echo(&cs).await;
-        assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+        let store = Arc::new(Store::memory().unwrap());
+        let cs = CodeSpace::with_store(write_registry(ws_root), store.clone());
+        assert_missing_exec_boundary_and_release(&cs, &store, false).await;
     }
 
     #[tokio::test]
-    async fn tty_confirmed_spawn_failure_is_process_spawn_failed() {
+    async fn tty_missing_executable_releases_lease_across_spawn_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let ws_root = dir.path().join("ws");
         std::fs::create_dir(&ws_root).unwrap();
-        let cs = CodeSpace::new(write_registry(ws_root));
-        let err = parse_exec_err(
-            cs.exec_command(Parameters(ExecCommandParams {
-                workspace_id: WorkspaceId("demo".into()),
-                command: vec!["/no/such/codespace-exec".into()],
-                work_id: None,
-                tty: true,
-            }))
-            .await,
-        );
-        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
-        let started = exec_echo(&cs).await;
-        assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+        let store = Arc::new(Store::memory().unwrap());
+        let cs = CodeSpace::with_store(write_registry(ws_root), store.clone());
+        assert_missing_exec_boundary_and_release(&cs, &store, true).await;
     }
 
     #[tokio::test]
-    async fn uds_spawn_failure_releases_lease_and_propagates_code() {
+    async fn uds_missing_executable_releases_lease_across_spawn_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let ws_root = dir.path().join("ws");
         std::fs::create_dir(&ws_root).unwrap();
@@ -1070,17 +1079,7 @@ mod tests {
             }),
         ));
         let cs = CodeSpace::with_store_and_runner(write_registry(ws_root), store.clone(), runner);
-        let err = parse_exec_err(
-            cs.exec_command(Parameters(ExecCommandParams {
-                workspace_id: WorkspaceId("demo".into()),
-                command: vec!["/no/such/codespace-exec".into()],
-                work_id: None,
-                tty: false,
-            }))
-            .await,
-        );
-        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
-        let _lease = store.try_acquire_write("demo").expect("lease released");
+        assert_missing_exec_boundary_and_release(&cs, &store, false).await;
     }
 
     #[tokio::test]
