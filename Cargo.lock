@@ -817,6 +817,7 @@ dependencies = [
  "codespace-policy",
  "codespace-pty",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

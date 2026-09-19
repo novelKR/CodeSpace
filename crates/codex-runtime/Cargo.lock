@@ -786,6 +786,9 @@ dependencies = [
  "codex-file-system",
  "codex-utils-path-uri",
  "libc",
+ "rama-error",
+ "rama-macros",
+ "rama-utils",
  "rustix",
  "tokio",
 ]
@@ -825,6 +828,7 @@ dependencies = [
  "codespace-policy",
  "codespace-pty",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

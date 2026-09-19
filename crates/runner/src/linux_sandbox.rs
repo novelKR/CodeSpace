@@ -5,9 +5,10 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -137,26 +138,24 @@ pub(crate) fn prepare_run_from_helper(
         argv: argv.to_vec(),
     };
     let payload = serde_json::to_vec(&request).map_err(|err| spawn_failed(err.to_string()))?;
-    let mut spawned = Command::new(helper)
+    let spawned = Command::new(helper)
         .arg("prepare")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| spawn_failed(format!("failed to spawn linux sandbox prepare: {err}")))?;
-    if let Some(mut stdin) = spawned.stdin.take() {
-        if let Err(err) = stdin.write_all(&payload) {
-            let _ = spawned.kill();
-            let _ = spawned.wait();
-            return Err(spawn_failed(format!(
-                "failed to write linux sandbox prepare request: {err}"
-            )));
-        }
-    }
-    let output = wait_output_with_timeout(spawned, PREPARE_TIMEOUT)?;
-    if output.stdout.len() > PREPARE_IO_LIMIT || output.stderr.len() > PREPARE_IO_LIMIT {
-        return Err(spawn_failed("linux sandbox prepare output too large"));
-    }
+    prepare_from_child(helper, spawned, &payload, PREPARE_TIMEOUT, PREPARE_IO_LIMIT)
+}
+
+fn prepare_from_child(
+    helper: &Path,
+    mut spawned: Child,
+    payload: &[u8],
+    timeout: Duration,
+    io_limit: usize,
+) -> Result<SandboxLaunch, ErrorBody> {
+    let output = communicate_prepare(&mut spawned, payload, timeout, io_limit)?;
     let response: SandboxPrepareResponse = serde_json::from_slice(&output.stdout)
         .map_err(|err| spawn_failed(format!("invalid linux sandbox prepare response: {err}")))?;
     match response {
@@ -186,32 +185,172 @@ pub(crate) fn prepare_run_from_helper(
     }
 }
 
-fn wait_output_with_timeout(
-    mut child: std::process::Child,
+fn communicate_prepare(
+    child: &mut Child,
+    payload: &[u8],
     timeout: Duration,
+    io_limit: usize,
 ) -> Result<Output, ErrorBody> {
+    let mut stdin = child.stdin.take();
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    if let Some(ref stdin) = stdin {
+        set_nonblocking(stdin).map_err(|err| {
+            reap(child);
+            spawn_failed(format!("failed to set prepare stdin nonblocking: {err}"))
+        })?;
+    }
+    if let Some(ref stdout) = stdout {
+        set_nonblocking(stdout).map_err(|err| {
+            reap(child);
+            spawn_failed(format!("failed to set prepare stdout nonblocking: {err}"))
+        })?;
+    }
+    if let Some(ref stderr) = stderr {
+        set_nonblocking(stderr).map_err(|err| {
+            reap(child);
+            spawn_failed(format!("failed to set prepare stderr nonblocking: {err}"))
+        })?;
+    }
+
     let start = Instant::now();
+    let mut written = 0usize;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut stdout_eof = stdout.is_none();
+    let mut stderr_eof = stderr.is_none();
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|err| spawn_failed(err.to_string()));
-            }
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(spawn_failed("linux sandbox prepare timed out"));
+        if start.elapsed() > timeout {
+            reap(child);
+            return Err(spawn_failed("linux sandbox prepare timed out"));
+        }
+        let stdin_done = if let Some(ref mut pipe) = stdin {
+            match write_nonblocking(pipe, payload, &mut written) {
+                Ok(done) => done,
+                Err(io_err) => {
+                    reap(child);
+                    return Err(spawn_failed(format!(
+                        "failed to write linux sandbox prepare request: {io_err}"
+                    )));
                 }
-                std::thread::sleep(Duration::from_millis(20));
             }
-            Err(err) => {
-                let _ = child.kill();
-                return Err(spawn_failed(err.to_string()));
+        } else {
+            false
+        };
+        if stdin_done {
+            stdin = None;
+        }
+        let stdout_done = if let Some(ref mut pipe) = stdout {
+            match read_nonblocking(pipe, &mut out, io_limit) {
+                Ok(done) => done,
+                Err(message) => {
+                    reap(child);
+                    return Err(spawn_failed(message));
+                }
+            }
+        } else {
+            false
+        };
+        if stdout_done {
+            stdout_eof = true;
+            stdout = None;
+        }
+        let stderr_done = if let Some(ref mut pipe) = stderr {
+            match read_nonblocking(pipe, &mut err, io_limit) {
+                Ok(done) => done,
+                Err(message) => {
+                    reap(child);
+                    return Err(spawn_failed(message));
+                }
+            }
+        } else {
+            false
+        };
+        if stderr_done {
+            stderr_eof = true;
+            stderr = None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if stdout_eof && stderr_eof {
+                    return Ok(Output {
+                        status,
+                        stdout: out,
+                        stderr: err,
+                    });
+                }
+            }
+            Ok(None) => {}
+            Err(wait_err) => {
+                reap(child);
+                return Err(spawn_failed(wait_err.to_string()));
             }
         }
+        std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn write_nonblocking(
+    stdin: &mut ChildStdin,
+    payload: &[u8],
+    written: &mut usize,
+) -> io::Result<bool> {
+    if *written >= payload.len() {
+        return Ok(true);
+    }
+    match stdin.write(&payload[*written..]) {
+        Ok(0) => Err(io::Error::new(
+            ErrorKind::WriteZero,
+            "prepare stdin closed before request was written",
+        )),
+        Ok(n) => {
+            *written += n;
+            Ok(*written >= payload.len())
+        }
+        Err(err) if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::Interrupted => {
+            Ok(false)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn read_nonblocking(
+    pipe: &mut impl Read,
+    buf: &mut Vec<u8>,
+    io_limit: usize,
+) -> Result<bool, String> {
+    let mut tmp = [0u8; 4096];
+    match pipe.read(&mut tmp) {
+        Ok(0) => Ok(true),
+        Ok(n) => {
+            if buf.len().saturating_add(n) > io_limit {
+                return Err("linux sandbox prepare output too large".into());
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            Ok(false)
+        }
+        Err(err) if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::Interrupted => {
+            Ok(false)
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn set_nonblocking<T: AsRawFd>(io: &T) -> io::Result<()> {
+    let fd = io.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn reap(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn utf8_path(path: &Path) -> Result<String, ErrorBody> {
@@ -351,5 +490,58 @@ mod tests {
     #[test]
     fn protocol_constant_is_one() {
         assert_eq!(SANDBOX_HELPER_PROTOCOL, 1);
+    }
+
+    #[test]
+    fn prepare_unread_large_stdin_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let helper = write_script(dir.path(), "#!/bin/sh\nexec sleep 30\n");
+        let spawned = Command::new(&helper)
+            .arg("prepare")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let payload = vec![b'x'; 256 * 1024];
+        let start = Instant::now();
+        let err = prepare_from_child(
+            &helper,
+            spawned,
+            &payload,
+            Duration::from_millis(300),
+            PREPARE_IO_LIMIT,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        assert!(err.message.contains("timed out"), "{}", err.message);
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "prepare hung: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn prepare_stdout_flood_is_too_large() {
+        let dir = tempfile::tempdir().unwrap();
+        let helper = write_script(dir.path(), "#!/bin/sh\nwhile :; do printf x; done\n");
+        let spawned = Command::new(&helper)
+            .arg("prepare")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let err = prepare_from_child(&helper, spawned, b"{}", Duration::from_secs(2), 64 * 1024)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        assert!(err.message.contains("output too large"), "{}", err.message);
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "prepare hung: {:?}",
+            start.elapsed()
+        );
     }
 }
