@@ -456,7 +456,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let helper = write_script(
             dir.path(),
-            "#!/bin/sh\nprintf '%s' '{\"type\":\"error\",\"message\":\"nope\"}'\nexit 1\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"type\":\"error\",\"message\":\"nope\"}'\nexit 1\n",
         );
         let err = prepare_run_from_helper(
             &helper,
@@ -474,7 +474,10 @@ mod tests {
     #[test]
     fn prepare_invalid_json_is_process_spawn_failed() {
         let dir = tempfile::tempdir().unwrap();
-        let helper = write_script(dir.path(), "#!/bin/sh\necho not-json\nexit 0\n");
+        let helper = write_script(
+            dir.path(),
+            "#!/bin/sh\ncat >/dev/null\necho not-json\nexit 0\n",
+        );
         let err = prepare_run_from_helper(
             &helper,
             dir.path(),
@@ -485,6 +488,12 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+        assert!(
+            err.message
+                .contains("invalid linux sandbox prepare response"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
