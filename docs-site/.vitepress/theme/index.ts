@@ -25,9 +25,9 @@ export default {
         },
         'home-features-after': () => {
           const ko = lang.value.startsWith('ko');
-          const labels = ko ? ['빌드', '검증', '산출물', '게시'] : ['Build', 'Verify', 'Artifact', 'Publish'];
-          return h('section', { class: 'deployment-path', 'aria-label': ko ? '배포 순서' : 'Deployment steps' }, [
-            h('p', { class: 'deployment-caption' }, ko ? '한 번 검증한 산출물로 게시합니다.' : 'Publish the artifact you verified.'),
+          const labels = ko ? ['작업 공간 등록', 'MCP 연결', '읽기·수정·실행', '결과 확인'] : ['Register a workspace', 'Connect MCP', 'Read, edit, run', 'Inspect results'];
+          return h('section', { class: 'deployment-path', 'aria-label': ko ? 'CodeSpace 사용 순서' : 'CodeSpace workflow' }, [
+            h('p', { class: 'deployment-caption' }, ko ? '에이전트가 작업을 판단하고, CodeSpace가 실행합니다.' : 'Your agent directs the work. CodeSpace executes it.'),
             h('ol', labels.map((text, index) => h('li', [h('span', { class: 'step-number', 'aria-hidden': 'true' }, String(index + 1).padStart(2, '0')), text]))),
           ]);
         },

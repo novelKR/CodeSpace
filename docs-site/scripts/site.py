@@ -203,6 +203,25 @@ def output_markdown(route):
     return route.lstrip('/') + '.md'
 
 
+def home_features(inventory, locale):
+    descriptions = {
+        'en': [
+            ('getting-started', 'Get started', 'Understand what CodeSpace provides, its limits, and how to connect your first workspace.'),
+            ('agent-integration', 'Connect an Agent Loop', 'Follow tool calls from reading and patching through execution, cancellation, and recovery.'),
+            ('operations', 'Operate and troubleshoot', 'Build the helpers, register workspaces, configure transports, and diagnose failures.'),
+        ],
+        'ko': [
+            ('getting-started', '시작하기', 'CodeSpace의 기능과 한계를 살펴보고 첫 작업 공간을 연결하는 방법을 알아봅니다.'),
+            ('agent-integration', 'Agent Loop 연동', '읽기와 패치부터 명령 실행, 취소, 복구까지 도구 호출 순서를 따라갑니다.'),
+            ('operations', '설치·운영·문제 해결', '도우미 빌드, 작업 공간 등록, 전송 방식 설정과 오류 확인 방법을 설명합니다.'),
+        ],
+    }
+    return [{'title': title, 'details': details,
+             'link': next(page['route'] for page in inventory
+                          if page['id'] == ident and page['locale'] == locale)}
+            for ident, title, details in descriptions[locale]]
+
+
 def prepare(root=ROOT):
     root = root.resolve()
     commit = git(root, 'rev-parse', 'HEAD')
@@ -229,19 +248,12 @@ def prepare(root=ROOT):
         copy = source / 'public' / page['copy']
         copy.parent.mkdir(parents=True, exist_ok=True)
         copy.write_bytes(raw)
-    group_rank = {group['id']: index for index, group in enumerate(groups)}
-    en_guides = [page for page in inventory if page['locale'] == 'en']
-    en_guides.sort(key=lambda page: (group_rank[page['section']], page['order']))
-    feature_sources = en_guides[:3]
     for locale, tagline, start in (
-        ('en', 'The client decides. This process reads, patches, and runs.', 'Start here'),
-        ('ko', '클라이언트가 판단합니다. 이 프로세스는 읽고, 패치하고, 실행합니다.', '시작하기'),
+        ('en', 'Workspace tools for an external coding agent: inspect files, apply patches, and run commands.', 'Start here'),
+        ('ko', '외부 코딩 에이전트가 파일을 읽고, 패치를 적용하고, 명령을 실행하는 작업 공간 도구입니다.', '시작하기'),
     ):
         prefix = '/ko' if locale == 'ko' else ''
-        features = []
-        for page in feature_sources:
-            mate = next(item for item in inventory if item['id'] == page['id'] and item['locale'] == locale)
-            features.append({'title': mate['title'], 'details': tagline, 'link': mate['route']})
+        features = home_features(inventory, locale)
         data = {
             'layout': 'home', 'docLocale': locale,
             'hero': {
