@@ -32,3 +32,38 @@ A passing patch subset is insufficient for an update that also affects execution
 ## Release and rollback
 
 Open a PR with the old/new SHA, behavioral changes, and test evidence. Do not merge a failed compatibility gate or silently fall back to another patch engine. If the update must be reverted, revert the submodule, adapter locks, required Cargo patches, and documentation together; then rerun the affected gates. A pin mismatch is an error, not a warning.
+
+## Reproducible validation reports
+
+Run `python3 scripts/validate-upstream.py all` for the complete local sequence.
+CI calls the same named stages in parallel; use `--help` to list them.
+Reports and command logs default to `target/upstream-reports/local`.
+Choose a different ignored directory with `--output` for each attempt; preserve
+previous reports before repeating a run. Reports record the source HEAD, Codex
+SHA, Rust host, and source/lockfile hashes. A changed input invalidates the run.
+`passed` applies only to the listed stages, not to all release gates.
+On macOS, Linux isolation is explicitly `not_run` and the overall result is
+`incomplete`; Linux CI evidence is still required. macOS CI additionally checks
+PTY and filesystem contracts. Neither result alone replaces the other platform.
+
+The dependency stage uses locked, target-filtered Cargo metadata and follows
+normal/build edges from product roots, excluding development edges. It rejects
+agent/product crates and Runner-to-sandbox-library edges with a dependency path.
+This checks package reachability, not whether a binary executes every linked API.
+Cargo's resolved feature unification can conservatively include optional edges.
+
+Generate a candidate report and compare it with an archived report for the same
+Rust target (the baseline is never updated automatically):
+
+```bash
+python3 scripts/upstream_dependencies.py --target x86_64-unknown-linux-gnu \
+  --compare target/baseline/dependencies.json \
+  --output target/candidate/dependencies.json
+```
+
+The comparison lists added/removed package identities and edges. A version or
+source change appears as removal plus addition. Ordinary changes require review;
+forbidden dependencies, malformed metadata, missing roots, or Cargo failure fail
+the gate. Source paths are repository-relative, never machine-specific identities.
+CI uploads reports/logs even on failed validation. The legacy pin script still
+checks only SHA and patch tests; it is not a complete qualification command.

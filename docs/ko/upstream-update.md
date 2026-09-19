@@ -36,3 +36,36 @@
 ## 반영과 되돌리기
 
 PR에 이전·새 SHA, 동작 변경, 테스트 근거를 기록합니다. 호환성 검사가 실패한 채 병합하거나 다른 패치 엔진으로 조용히 대체하지 않습니다. 되돌릴 때는 서브모듈, 어댑터 잠금 파일, 필요한 Cargo 패치, 문서를 함께 되돌리고 영향받는 검사를 다시 수행합니다. 고정 커밋 불일치는 경고가 아닌 오류입니다.
+
+## 재현 가능한 검증 보고서
+
+전체 로컬 검증은 `python3 scripts/validate-upstream.py all`로 실행합니다.
+CI도 같은 이름의 단계를 병렬 실행하며 목록은 `--help`로 확인합니다.
+보고서와 명령 로그는 기본적으로 `target/upstream-reports/local`에 생성됩니다.
+시도마다 `--output`으로 다른 Git 무시 디렉터리를 지정하거나 이전 결과를 보관합니다.
+보고서에는 소스 HEAD, Codex SHA, Rust 호스트, 소스와 lockfile 해시가 기록되며
+실행 중 입력이 바뀌면 실패합니다. `passed`는 기록된 단계만의 통과를 뜻합니다.
+macOS에서는 Linux 격리를 `not_run`, 전체 결과를 `incomplete`로 표시합니다.
+Linux CI 근거가 별도로 필요하며 macOS CI는 PTY와 파일 시스템 계약도 검사합니다.
+한 플랫폼 결과만으로 다른 플랫폼 검증을 대체하지 않습니다.
+
+의존성 검사는 `--locked`와 대상 플랫폼 필터를 사용한 Cargo metadata에서
+제품 root의 일반·빌드 의존성을 탐색하고 개발용 관계는 제외합니다.
+에이전트·제품 crate 및 Runner에서 샌드박스 라이브러리로 향하는 경로는 실패합니다.
+이는 패키지 도달 가능성 검사이며 모든 API가 실제 실행됨을 뜻하지 않습니다.
+Cargo feature 통합으로 선택적 관계가 보수적으로 포함될 수 있습니다.
+
+동일한 Rust target의 보관된 결과와 후보 결과를 비교할 수 있습니다.
+기준 결과를 자동 갱신하지 않습니다.
+
+```bash
+python3 scripts/upstream_dependencies.py --target x86_64-unknown-linux-gnu \
+  --compare target/baseline/dependencies.json \
+  --output target/candidate/dependencies.json
+```
+
+보고서는 추가·삭제된 패키지와 관계를 나열합니다. 버전·출처 변경은 삭제와 추가로
+표시됩니다. 일반 변화는 검토 대상이며 금지 의존성, 잘못된 metadata, 누락된 root,
+Cargo 실패는 검증 실패입니다. 경로 식별자는 저장소 상대 경로를 사용합니다.
+CI는 실패 시에도 보고서와 로그를 업로드합니다. 기존 pin 검사 스크립트는
+SHA와 패치 테스트만 확인하며 전체 검증 명령을 대체하지 않습니다.

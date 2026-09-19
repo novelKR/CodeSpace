@@ -599,6 +599,7 @@
         "forbidden",
         "local-gate",
         "release-and-rollback",
+        "reproducible-validation-reports",
         "review-the-candidate",
         "updating-codex-dependencies",
         "upstream-pin-update",
@@ -611,12 +612,13 @@
         "로컬-게이트",
         "반영과-되돌리기",
         "업스트림-핀-갱신",
+        "재현-가능한-검증-보고서",
         "점검-목록",
         "제출-전-검증",
         "후보-검토"
       ],
-      "source_sha256": "efe8b1d11db41148ec6dfd08a67b52fd72d2e32a480123f27668feff9e39f8da",
-      "translation_sha256": "fe4f0732755820b3b2db72190770359663ca6c6f2fcbc54227f714152ef7682d"
+      "source_sha256": "dcac8e5362953f5ade48326c69d48f4a448509853ec2eb6034fb6400fe0418b3",
+      "translation_sha256": "692bccd11d607df49a0802b0a37df204af071a23ec826d6e72f8bdd2973fa6ff"
     },
     {
       "id": "documentation",
