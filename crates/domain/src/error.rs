@@ -33,6 +33,9 @@ pub enum ErrorCode {
     IntentNotEditable,
     IntentRevisionConflict,
     QueueNotEmpty,
+    ApprovalRequired,
+    ApprovalNotFound,
+    ApprovalConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -41,6 +44,8 @@ pub struct ErrorBody {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
 }
 
 impl ErrorBody {
@@ -49,11 +54,17 @@ impl ErrorBody {
             code,
             message: message.into(),
             operation_id: None,
+            approval_id: None,
         }
     }
 
     pub fn with_operation_id(mut self, id: impl Into<String>) -> Self {
         self.operation_id = Some(id.into());
+        self
+    }
+
+    pub fn with_approval_id(mut self, id: impl Into<String>) -> Self {
+        self.approval_id = Some(id.into());
         self
     }
 }
@@ -108,6 +119,12 @@ mod tests {
         assert_eq!(json, "\"INTENT_ALREADY_CLAIMED\"");
         let json = serde_json::to_string(&ErrorCode::WorkClosed).unwrap();
         assert_eq!(json, "\"WORK_CLOSED\"");
+        let json = serde_json::to_string(&ErrorCode::ApprovalRequired).unwrap();
+        assert_eq!(json, "\"APPROVAL_REQUIRED\"");
+        let json = serde_json::to_string(&ErrorCode::ApprovalNotFound).unwrap();
+        assert_eq!(json, "\"APPROVAL_NOT_FOUND\"");
+        let json = serde_json::to_string(&ErrorCode::ApprovalConflict).unwrap();
+        assert_eq!(json, "\"APPROVAL_CONFLICT\"");
     }
 
     #[test]

@@ -86,6 +86,7 @@
       "translation": "docs/ko/agent-integration.md",
       "anchors": [
         "agent-loop-연동",
+        "confirm-a-held-mutation",
         "connect-an-agent-loop",
         "connect-and-inspect-capabilities",
         "handle-user-instructions-and-finish",
@@ -93,13 +94,14 @@
         "retry-and-recover-deliberately",
         "run-and-observe-a-command",
         "명령-실행과-결과-확인",
+        "보류된-변경-확인",
         "사용자-지시-처리와-완료",
         "연결과-기능-확인",
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "b02d9dc73657bafcebf7a13a29126570d3876fa4fa61f40e4da3bedb1b5146ca",
-      "translation_sha256": "8b1b6cd9fe4fd71247506e5b65598726154de486e70b7ccc1b98573979add0bf"
+      "source_sha256": "216aaab67be0983d76506c41a7f0024e952d2dbd2f3d3d256faa323d943bde61",
+      "translation_sha256": "7cc7d29a099b7f2e361c59f9a25abbd40bb7595e734f16cdc3b14a439c65ac09"
     },
     {
       "id": "operations",
@@ -150,8 +152,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "984ff0379f77362949c7ce1202d2f91485dd5fc623941199c179f021db78637f",
-      "translation_sha256": "7a85ef6419c22c789ce6135cee83170418aad9d8bbda7fc89da4813c04ac69ef"
+      "source_sha256": "e410b520e25f0b78d48c8dc20680612ee73be225c417c6c36aefce3583854471",
+      "translation_sha256": "b04d1f4f178484c4f5c0da16b8d7bded908e208b0eb90e405155ed5d6f2281db"
     },
     {
       "id": "chatgpt-connector",
@@ -238,8 +240,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "3e7a03a870203509f889b55470e67ee7521e19520e301fc2f3488d10b90bdf88",
-      "translation_sha256": "9ee671b1075bacf41e815b24486e6a81b6ba8514163d4a3a46713cb99ff45b0e"
+      "source_sha256": "a84fec739982f88f7a6585a4c14877ff2430bf58fea3d0e9a39ce2ce53644d7d",
+      "translation_sha256": "210911746fcecaae8522fe5020425e2cc525fa06e15ebb3e19e176cb1ea240fe"
     },
     {
       "id": "execution-substrate",
@@ -254,6 +256,7 @@
         "command-exec-형태-대-크레이트",
         "commandexec-shape-vs-crates",
         "commandexec-형태-대-크레이트",
+        "confirmation-holds",
         "environment-and-identity",
         "execution-and-observation",
         "execution-contracts",
@@ -295,10 +298,11 @@
         "실행과-결과-관측",
         "아직-제공하지-않는-기능",
         "정책과-실행-구현",
+        "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "ff5359e03a5a5e5b612316ca7ba9401a2cdd275e3a1eac127d6a7afa12ade9ea",
-      "translation_sha256": "ba8ce538b22e3c79343548cdf8a0ffa67665e3f7a02d7767d350360c965df33a"
+      "source_sha256": "f4aef34e70bbea56c598bfdee5743394cad9e6aedec491cf184d20dd336bd6eb",
+      "translation_sha256": "0f39df7ab0a3c3cfdb13fe95c2ba40e87484f43e4c46d151fb5b222e619216b2"
     },
     {
       "id": "protocol-compatibility",
@@ -468,8 +472,8 @@
         "전송-실패",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "1bd9af29f2af3a0a56e4962264079941b50144cf29914477e82f18f578cc4df1",
-      "translation_sha256": "0a89b1267b5040f3c614acef681072112a9881939e18a40febebde1e6203bfb2"
+      "source_sha256": "8064d7ee4e3dc2a9434bad4fe7167476a710768fc0ef10d02a60bdc119ff4489",
+      "translation_sha256": "954781e3247df7c19110d4d48cfea61579c07f9542b8dc1a5a155052cfea6c2f"
     },
     {
       "id": "codex-reuse",

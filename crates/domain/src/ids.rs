@@ -27,6 +27,10 @@ pub struct WorkId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct IntentId(pub String);
 
+/// Server-minted id for a confirmation hold. Distinct from [`OperationId`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovalId(pub String);
+
 #[cfg(test)]
 mod tests {
     use super::*;

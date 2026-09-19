@@ -19,7 +19,7 @@
 
 ## 도구 오류 코드
 
-오류는 대문자 식별자와 메시지로 전달합니다. 실패 전에 패치 기록을 만들었다면 `operation_id`가 포함될 수 있습니다. 그 전에 발생한 권한·점유·키 충돌 오류에는 작업 ID가 없습니다.
+오류는 대문자 식별자와 메시지로 전달합니다. 실패 전에 패치 기록을 만들었다면 `operation_id`가 포함될 수 있습니다. 확인 홀드 오류에는 `approval_id`가 있습니다. 그 전에 발생한 권한·점유·키 충돌 오류에는 작업 ID가 없습니다.
 
 | 코드 | 의미 |
 | --- | --- |
@@ -50,6 +50,9 @@
 | `INTENT_NOT_EDITABLE` | 지시 상태가 편집을 허용하지 않음 |
 | `INTENT_REVISION_CONFLICT` | 지시 수정 버전이 달라짐 |
 | `QUEUE_NOT_EMPTY` | 예약된 코드. 현재 work_finish는 closed:false를 반환함 |
+| `APPROVAL_REQUIRED` | 정책은 허용했으나 실행 전 호스트 확인이 필요함. `approval_id` 포함 |
+| `APPROVAL_NOT_FOUND` | 알 수 없는 확인 홀드 ID |
+| `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 이미 결정·소비됨 |
 
 ## 실행 요청과 완료의 구분
 

@@ -210,11 +210,15 @@ struct InboxError(ErrorBody);
 impl IntoResponse for InboxError {
     fn into_response(self) -> Response {
         let status = match self.0.code {
-            ErrorCode::WorkNotFound | ErrorCode::IntentNotFound => StatusCode::NOT_FOUND,
+            ErrorCode::WorkNotFound | ErrorCode::IntentNotFound | ErrorCode::ApprovalNotFound => {
+                StatusCode::NOT_FOUND
+            }
             ErrorCode::IntentAlreadyClaimed
             | ErrorCode::IntentRevisionConflict
             | ErrorCode::WorkClosed
-            | ErrorCode::QueueNotEmpty => StatusCode::CONFLICT,
+            | ErrorCode::QueueNotEmpty
+            | ErrorCode::ApprovalConflict
+            | ErrorCode::ApprovalRequired => StatusCode::CONFLICT,
             ErrorCode::Unauthorized => StatusCode::FORBIDDEN,
             _ => StatusCode::BAD_REQUEST,
         };

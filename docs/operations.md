@@ -45,7 +45,8 @@ Create an existing project directory and a registry outside it. Replace `/absolu
     "demo": {
       "root": "/absolute/path/to/project",
       "profile": "workspace-write",
-      "network": "restricted"
+      "network": "restricted",
+      "approvals": "off"
     }
   }
 }
@@ -54,6 +55,8 @@ Create an existing project directory and a registry outside it. Replace `/absolu
 Save this as `workspaces.json` in the CodeSpace checkout. `read-only` permits reads; `workspace-write` also permits patches and commands. Only the operator registers roots and chooses permissions. A tool's `workspace_id` selects a registration; it grants no permission by itself.
 
 `network` defaults to `restricted`. `enabled` requires the Linux helper and routes supported HTTP traffic through its managed proxy; it does not grant unrestricted host networking. Without a working helper, `enabled` execution fails. With `restricted` and no helper, host execution is possible but network restrictions are not OS-enforced. Use the reported enforcement state when deciding whether an environment is suitable.
+
+`approvals` defaults to `off`, which runs policy-allowed patches and commands immediately. `confirm` holds those tools before `begin()` or spawn and returns `APPROVAL_REQUIRED` with an `approval_id`. It is operator JSON like `network`, not an MCP argument, and it does not escalate the profile. Confirmation rows share `CODESPACE_OPERATIONS_DB` in an `approvals` table, separate from the patch operations ledger. See [Agent Loop integration](agent-integration.md) for resolve and resume.
 
 <a id="run-the-gateway"></a>
 

@@ -1,5 +1,6 @@
 //! Domain types for CodeSpace. No `rmcp` dependency.
 
+pub mod approval;
 pub mod error;
 pub mod execution;
 pub mod files;
@@ -12,6 +13,11 @@ pub mod profile;
 pub mod tools;
 pub mod work;
 
+pub use approval::{
+    ApprovalCreateParams, ApprovalCreateResult, ApprovalDecision, ApprovalResolveParams,
+    ApprovalResolveResult, ApprovalState, ApprovalTargetTool, ApprovalsMode, OperationResumeParams,
+    OperationResumeResult,
+};
 pub use error::{
     classify_http_status, ErrorBody, ErrorCode, FailureClass, TRANSPORT_FAILURE_IS_NOT_OPERATION,
 };
@@ -22,7 +28,7 @@ pub use execution::{
     WorkspaceExecutionInfo, WorkspaceSerializationInfo, PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
 };
 pub use files::{FindParams, FindResult, ReadParams, ReadResult};
-pub use ids::{IntentId, OperationId, OperationKey, ProcessId, WorkId, WorkspaceId};
+pub use ids::{ApprovalId, IntentId, OperationId, OperationKey, ProcessId, WorkId, WorkspaceId};
 pub use info::{workspace_info, WorkspaceInfo, WorkspaceInfoParams};
 pub use intent::{DeliveryPolicy, IntentKind, IntentState, UserIntent};
 pub use patch::{
@@ -35,7 +41,8 @@ pub use process::{
 };
 pub use profile::Profile;
 pub use tools::{
-    LIVE_TOOLS, SERVER_NAME, SERVER_VERSION, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_FIND,
+    LIVE_TOOLS, SERVER_NAME, SERVER_VERSION, TOOL_APPLY_PATCH, TOOL_APPROVAL_CREATE,
+    TOOL_APPROVAL_RESOLVE, TOOL_EXEC_COMMAND, TOOL_FIND, TOOL_OPERATION_RESUME,
     TOOL_OPERATION_STATUS, TOOL_READ, TOOL_READ_PROCESS, TOOL_STEER_CLAIM_NEXT,
     TOOL_STEER_COMPLETE, TOOL_STEER_STATUS, TOOL_TERMINATE_PROCESS, TOOL_WORKSPACE_INFO,
     TOOL_WORK_FINISH, TOOL_WORK_OPEN, TOOL_WRITE_STDIN, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,

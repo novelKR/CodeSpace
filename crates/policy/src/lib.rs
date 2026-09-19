@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use codespace_domain::{ErrorBody, ErrorCode, Profile, WorkspaceId};
+use codespace_domain::{ApprovalsMode, ErrorBody, ErrorCode, Profile, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 pub use environment::{
@@ -44,6 +44,9 @@ pub struct Workspace {
     /// Operator JSON, like `environment`. Not an MCP tool field.
     #[serde(default)]
     pub network: NetworkAxis,
+    /// Operator JSON confirmation hold. Not an MCP tool field and not a grant.
+    #[serde(default)]
+    pub approvals: ApprovalsMode,
 }
 
 fn default_environment_id() -> String {
@@ -59,6 +62,7 @@ impl Workspace {
             environment_id: DEFAULT_ENVIRONMENT_ID.to_string(),
             environment_kind: EnvironmentKind::Host,
             network: NetworkAxis::Restricted,
+            approvals: ApprovalsMode::Off,
         }
     }
 
@@ -103,6 +107,8 @@ struct FileWorkspace {
     environment: Option<String>,
     #[serde(default)]
     network: NetworkAxis,
+    #[serde(default)]
+    approvals: ApprovalsMode,
 }
 
 impl Registry {
@@ -175,6 +181,7 @@ impl Registry {
                 environment_id: environment.id.clone(),
                 environment_kind: environment.kind,
                 network: entry.network,
+                approvals: entry.approvals,
             });
         }
         Ok(registry)
@@ -281,6 +288,16 @@ mod tests {
         assert_eq!(ws.environment_id, DEFAULT_ENVIRONMENT_ID);
         assert_eq!(ws.environment_kind, EnvironmentKind::Host);
         assert_eq!(ws.network, NetworkAxis::Restricted);
+        assert_eq!(ws.approvals, ApprovalsMode::Off);
+    }
+
+    #[test]
+    fn approvals_confirm_is_operator_config() {
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","profile":"workspace-write","approvals":"confirm"}}}"#;
+        let registry = Registry::load_json(json).unwrap();
+        let ws = registry.get("demo").unwrap();
+        assert_eq!(ws.approvals, ApprovalsMode::Confirm);
+        assert!(allow(ws, Action::Write, &ClientClaims::default()).is_ok());
     }
 
     #[test]

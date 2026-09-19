@@ -19,7 +19,7 @@ Examples below are `tools/call` parameter objects, not complete JSON-RPC message
 }
 ```
 
-Inspect `execution.files.*.available`, `execution.process.available`, `execution.isolation.command_sandbox`, and `execution.network`. The tool list says what exists; workspace information says what the registered environment permits and supports. Availability does not reserve the workspace. Read-only workspaces cannot run commands.
+Inspect `execution.files.*.available`, `execution.process.available`, `execution.isolation.command_sandbox`, `execution.network`, and `execution.approvals`. The tool list says what exists; workspace information says what the registered environment permits and supports. Availability does not reserve the workspace. Read-only workspaces cannot run commands. `approvals` is an operator setting, not a client grant.
 
 ## Read and patch a file
 
@@ -130,10 +130,37 @@ Interactive input and cancellation use the same handle:
 
 A live command occupies the workspace. Wait for it to end or terminate it before applying a patch or starting another command. Reads and searches remain available. Long-lived development servers therefore require a workflow that stops them before edits.
 
+## Confirm a held mutation
+
+Default workspaces run allowed patches and commands immediately. If the operator set `approvals` to `confirm`, those tools return `APPROVAL_REQUIRED` and an `approval_id` instead of writing or spawning. This is a host confirmation hold, not a way to raise `read-only` to write or exec. Extra arguments such as `approved: true` or `network: true` do not grant rights.
+
+```json
+{
+  "name": "approval_resolve",
+  "arguments": {
+    "approval_id": "APPROVAL_ID_FROM_HOLD",
+    "decision": "grant"
+  }
+}
+```
+
+```json
+{
+  "name": "operation_resume",
+  "arguments": {
+    "approval_id": "APPROVAL_ID_FROM_HOLD"
+  }
+}
+```
+
+`approval_resolve` does not change the permission profile. `operation_resume` re-checks policy, then runs the original apply or exec path once. A successful patch resume can be looked up with `operation_status`. Deny is terminal. Repeating resume returns the stored result or `APPROVAL_CONFLICT`. The same three tools exist when approvals are `off`; only an explicit `approval_create` opens a hold in that mode. v1 does not distinguish host from model: a client that can call `approval_resolve` can grant the hold.
+
 ## Retry and recover deliberately
 
 | Situation | Agent action |
 | --- | --- |
+| `APPROVAL_REQUIRED` | Policy allowed the mutation; confirm with `approval_resolve` then `operation_resume`. Do not treat this as a grant of extra rights |
+| `APPROVAL_CONFLICT` | The hold is still pending, was denied, or was already consumed |
 | Patch response lost | Query `operation_status` using the original key, or the operation ID if known |
 | `VERSION_CONFLICT` | Read current content and produce a new patch; do not force the old one |
 | `OPERATION_KEY_CONFLICT` | The key belongs to different arguments; inspect the earlier request |

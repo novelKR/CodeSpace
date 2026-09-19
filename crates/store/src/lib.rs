@@ -1,6 +1,8 @@
-//! Single-instance SQLite operations and in-process workspace write locks.
+//! Single-instance SQLite operations, confirmation holds, and in-process workspace write locks.
 //! HTTP/JSON-RPC request ids are never stored as [`OperationId`] values.
 
+mod approvals;
+mod coord;
 mod resource;
 
 use std::path::Path;
@@ -13,6 +15,8 @@ use codespace_domain::{
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+pub use approvals::{ApprovalRecord, ResumeClaim};
+pub use coord::CreateIntent;
 pub use resource::{LockMode, Resource, ResourceGuard};
 
 #[derive(Debug, Clone)]
@@ -107,6 +111,19 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_intents_workspace_next
                 ON intents(workspace_id, state)
                 WHERE work_id IS NULL;",
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS approvals (
+                approval_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER,
+                result_json TEXT
+            );",
         )
         .map_err(|e| e.to_string())?;
         migrate_operations(&conn)?;
@@ -454,10 +471,6 @@ pub(crate) fn now_secs() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-
-mod coord;
-
-pub use coord::CreateIntent;
 
 #[cfg(test)]
 mod tests {

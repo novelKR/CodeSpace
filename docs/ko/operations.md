@@ -49,7 +49,8 @@ cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
     "demo": {
       "root": "/absolute/path/to/project",
       "profile": "workspace-write",
-      "network": "restricted"
+      "network": "restricted",
+      "approvals": "off"
     }
   }
 }
@@ -58,6 +59,8 @@ cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
 CodeSpace 저장소의 `workspaces.json`으로 저장합니다. `read-only`는 읽기를 허용하고, `workspace-write`는 패치와 명령 실행도 허용합니다. 경로와 권한은 운영자가 등록합니다. 도구에 전달하는 `workspace_id`는 등록 항목을 선택할 뿐, 권한을 부여하지 않습니다.
 
 `network` 기본값은 `restricted`입니다. `enabled`를 사용하려면 Linux 도우미가 필요하며, 지원되는 HTTP 통신은 관리 프록시를 거칩니다. 호스트 네트워크에 무제한 접근하는 설정이 아닙니다. 도우미를 사용할 수 없으면 `enabled` 실행은 실패합니다. `restricted`이고 도우미가 없으면 호스트 실행은 가능하지만 네트워크 제한은 OS 수준에서 강제되지 않습니다. 실제 환경의 적합성은 응답의 정책 집행 상태를 확인해 판단하세요.
+
+`approvals` 기본값은 `off`이며, 정책이 허용한 패치와 명령을 바로 실행합니다. `confirm`이면 `begin()`이나 프로세스 시작 전에 해당 도구를 홀드하고 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. `network`와 같은 운영자 JSON이며 MCP 도구 인자가 아니고 프로필을 올리지 않습니다. 확인 행은 패치 원장과 다른 `approvals` 테이블에 저장되며 `CODESPACE_OPERATIONS_DB`를 같이 씁니다. 확인과 재개는 [Agent Loop 연동](agent-integration.md)을 참고하세요.
 
 <a id="게이트웨이-실행"></a>
 <a id="게이트웨이-실행"></a>

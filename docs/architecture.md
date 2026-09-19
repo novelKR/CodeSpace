@@ -33,11 +33,11 @@ The UDS worker and default runner both execute on the same host. A Linux command
 | `server` | MCP transport, HTTP authentication/inbox, request validation and orchestration |
 | `domain` | CodeSpace tool parameters, results, IDs, error and execution types |
 | `policy` | Registered roots, environments, profiles, and network policy |
-| `store` | SQLite patch operations, logical works, user instructions; in-memory occupancy |
+| `store` | SQLite patch operations, confirmation holds, logical works, user instructions; in-memory occupancy |
 | `runner` | Execution DTOs, file scope, patch transaction, process supervision, UDS client/server protocol |
 | Isolated adapters | Codex patch, PTY, filesystem, worker hardening/socket, Linux sandbox mechanisms |
 
-Patch operations and works/intents survive restart only with a configured SQLite file. Process handles and occupancy leases are memory-only. `operation_status` does not track exec requests. The transport request ID, patch operation ID, process ID, work ID, and instruction ID serve different purposes.
+Patch operations, confirmation holds, and works/intents survive restart only with a configured SQLite file. Process handles and occupancy leases are memory-only. `operation_status` does not track exec requests. The transport request ID, patch operation ID, process ID, work ID, instruction ID, and approval ID serve different purposes.
 
 <a id="patch-apply-pipeline"></a>
 
@@ -56,7 +56,9 @@ MCP request completion does not end a managed process. Clients continue with its
 
 ## Extension boundaries
 
-The core does not import Codex types directly. Adapters may depend on a broader Codex execution graph; this does not make the gateway a Codex agent. Operator configuration selects environments, while MCP clients select only registered workspaces. Container execution, remote runners, approval-resume tools, and a resource scheduler are not implemented.
+The core does not import Codex types directly. Adapters may depend on a broader Codex execution graph; this does not make the gateway a Codex agent. Operator configuration selects environments, while MCP clients select only registered workspaces. Container execution, remote runners, and a resource scheduler are not implemented.
+
+Confirmation-hold tools (`approval_create`, `approval_resolve`, `operation_resume`) are implemented. They pause a mutation the profile already allows until the host confirms it. They do not raise `read-only` to write/exec, honor `ClientClaims.approved`, or change the permission profile. Resume re-checks policy. v1 does not separate host and model callers: any client that can call `approval_resolve` can grant a hold.
 
 Keep a patch transaction as one Runner call when adding transports. Keep permission decisions in the gateway rather than importing Codex user/session permissions as authority. [Execution contracts](execution-substrate.md) describe current invariants; [Codex reuse](codex-reuse.md) lists connected adapters.
 

@@ -4,6 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::approval::ApprovalsMode;
 use crate::error::ErrorCode;
 
 /// Advertised PTY size. Must match the isolated PTY adapter default.
@@ -152,6 +153,9 @@ pub struct WorkspaceExecutionInfo {
     pub serialization: WorkspaceSerializationInfo,
     pub isolation: IsolationInfo,
     pub network: NetworkInfo,
+    /// Operator confirmation-hold setting. Does not grant extra rights.
+    #[serde(default)]
+    pub approvals: ApprovalsMode,
 }
 
 impl WorkspaceExecutionInfo {
@@ -215,6 +219,7 @@ impl WorkspaceExecutionInfo {
                 enforcement: NetworkEnforcementState::None,
                 client_may_escalate: false,
             },
+            approvals: ApprovalsMode::Off,
         }
     }
 
@@ -399,6 +404,7 @@ mod tests {
         assert_files(&exec, false, false, false);
         assert_process_unavailable(&exec);
         let json = serde_json::to_value(&exec).unwrap();
+        assert_eq!(json["approvals"], "off");
         assert_eq!(json["environment"]["kind"], "linux-container");
         assert!(json.get("environment_id").is_none());
         assert!(!json.to_string().contains("\"environment_id\""));
