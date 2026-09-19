@@ -237,8 +237,8 @@ login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전�
 PTY(`crates/pty` → `codex-utils-pty`), filesystem(`crates/file-system`
 → `LOCAL_FS` / `ExecutorFileSystem`), linux-sandbox
 (`crates/linux-sandbox` 바이너리 → prepare / opaque plan / `run --plan`
-exec, Restricted hard deny). **아직 안
-가져옴:** network(`Enabled` + proxy).
+Restricted `exec` / Enabled 관리 프록시). **가져옴:**
+network(`Enabled` + proxy).
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -286,19 +286,22 @@ open/read/write/remove/walk와 typed error(`SymlinkRejected`,
 라이브러리 어댑터가 아니라 **프로세스 경계**입니다. 러너는
 `SandboxPrepareRequest` JSON(`SANDBOX_HELPER_PROTOCOL = 1`)을
 `prepare`에 보내고 plan **경로만** 받은 뒤 managed `run --plan`을
-spawn합니다. 헬퍼는 0600 plan을 unlink하고 같은 PID에서 Codex argv로
-`exec`합니다. `WIRE_PROTOCOL`은 `3`으로 남습니다. Restricted
-네트워크는 `--unshare-net`과 Restricted seccomp입니다. 직접
-프록시 플래그(`--allow-network-for-proxy`, `--proxy-route-spec`)는
-쓰지 않습니다. 그건 다음 WP입니다. 런타임 의존성에는 `codex-core`가
+spawn합니다. Restricted는 0600 plan을 unlink하고 같은 PID에서 Codex argv로
+`exec`합니다. Enabled는 헬퍼가 `NetworkProxy`를 띄우고
+`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`를 채운 뒤 Codex argv 자식을
+spawn+wait합니다(`--allow-network-for-proxy`; `--proxy-route-spec`은
+plan에 넣지 않고 Codex outer가 런타임에 붙입니다). `WIRE_PROTOCOL`은
+`3`으로 남습니다. Restricted 네트워크는 `--unshare-net`과 Restricted
+seccomp입니다. Enabled는 Codex FullAccess 호스트 네트워크가 아니라
+격리 netns + 그 관리 프록시입니다. 런타임 의존성에는 `codex-core`가
 없습니다. **dev-dependencies에는 있습니다** — 어댑터 시험이 그
 그래프를 제품 바이너리로 끌어오면 안 됩니다.
 `codex_protocol::PermissionProfile`은 헬퍼 안에 남습니다.
 `codespace-runner`는 `codespace-linux-sandbox-protocol`만 의존합니다.
 
-**전이(어댑터에서 허용):** `codex-sandboxing`, `codex-network-proxy`,
-`codex-protocol`. 프록시의 직접 사용은 PermissionProfile **네트워크**
-축이 있을 때입니다. 허용 엔진이 아닙니다. 루트 워크스페이스 의존성이
+**헬퍼에서 직접:** `codex-network-proxy`(Enabled `run --plan`의
+`NetworkProxy` 수명). **전이(어댑터에서 허용):** `codex-sandboxing`,
+`codex-protocol`. 허용 엔진이 아닙니다. 루트 워크스페이스 의존성이
 아닙니다.
 
 ### 재사용 선호 (그 WP가 올 때)

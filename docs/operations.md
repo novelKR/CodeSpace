@@ -58,7 +58,9 @@ gateway) probes successfully, that spawn is `helper run --plan` after a
 short `prepare`. Codex argv never enters the runner.
 `workspace_info.execution.isolation.command_sandbox` is `linux-sandbox`
 only then; otherwise `none`. Restricted network is OS-enforced in that
-case (`network.enforcement=enforced`). `exec_command.tty` defaults to false (pipes).
+case (`network.enforcement=enforced`). Enabled is the same enforcement
+state with a managed HTTP proxy inside the helper; without the helper
+it is `PROCESS_SPAWN_FAILED`, not host FullAccess. `exec_command.tty` defaults to false (pipes).
 `tty: true` attaches a PTY at 24x80. Exec DTO cwd is `WorkspaceRoot`; `PATH` /
 `HOME` / `LANG` are applied inside the runner process (`TERM=xterm` for PTY).
 
@@ -72,14 +74,18 @@ at a **real directory you registered**. Models cannot add workspaces.
   "workspaces": {
     "demo": {
       "root": "/absolute/path/to/your/project",
-      "profile": "workspace-write"
+      "profile": "workspace-write",
+      "network": "restricted"
     }
   }
 }
 ```
 
 Profiles: `read-only` (default intent) or `workspace-write`. `host-admin`
-is not a product profile. Optional operator `environments` may register
+is not a product profile. Optional operator `network` is `restricted`
+(default) or `enabled` — this is workspace JSON like `environment`, not
+a tool argument and not `{ "network": true }`. Enabled requires the
+Linux helper. Optional operator `environments` may register
 `host` or `linux-container`. Omitted environment is implicit local host.
 `linux-container` is not an exec path. Tools and `workspace_info` have
 no `environment_id`. Call `workspace_info` with a `workspace_id` to read
@@ -89,8 +95,8 @@ support only; not occupancy — `exec_command` or `apply_patch` may still
 return `WORKSPACE_BUSY`; tool existence is `tools_exposed`), fixed 24x80
 PTY without resize when a process is available, mutation lease /
 `WORKSPACE_BUSY`, workspace-scoped file tools vs Linux command sandbox
-when advertised, and restricted network policy with OS enforcement when
-the helper probe succeeds. `output_combined=true` means `read_process` exposes one
+when advertised, and `network.policy` (`restricted` or `enabled`) with
+OS enforcement when the helper probe succeeds. `output_combined=true` means `read_process` exposes one
 combined stream; stdout/stderr identity is not preserved. `exec_command`
 returns `dispatch_status`
 (`confirmed` or `unknown`). Treat `unknown` patch/exec as possibly

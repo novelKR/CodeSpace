@@ -41,6 +41,9 @@ pub struct Workspace {
     pub environment_id: String,
     #[serde(default)]
     pub environment_kind: EnvironmentKind,
+    /// Operator JSON, like `environment`. Not an MCP tool field.
+    #[serde(default)]
+    pub network: NetworkAxis,
 }
 
 fn default_environment_id() -> String {
@@ -55,6 +58,7 @@ impl Workspace {
             profile,
             environment_id: DEFAULT_ENVIRONMENT_ID.to_string(),
             environment_kind: EnvironmentKind::Host,
+            network: NetworkAxis::Restricted,
         }
     }
 
@@ -97,6 +101,8 @@ struct FileWorkspace {
     profile: Profile,
     #[serde(default)]
     environment: Option<String>,
+    #[serde(default)]
+    network: NetworkAxis,
 }
 
 impl Registry {
@@ -168,6 +174,7 @@ impl Registry {
                 profile: entry.profile,
                 environment_id: environment.id.clone(),
                 environment_kind: environment.kind,
+                network: entry.network,
             });
         }
         Ok(registry)
@@ -273,6 +280,7 @@ mod tests {
         assert_eq!(ws.profile, Profile::ReadOnly);
         assert_eq!(ws.environment_id, DEFAULT_ENVIRONMENT_ID);
         assert_eq!(ws.environment_kind, EnvironmentKind::Host);
+        assert_eq!(ws.network, NetworkAxis::Restricted);
     }
 
     #[test]
@@ -350,6 +358,21 @@ mod tests {
         let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","environment":"missing"}}}"#;
         let err = Registry::load_json(json).unwrap_err();
         assert!(err.contains("unknown environment"));
+    }
+
+    #[test]
+    fn operator_network_enabled_loads() {
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","network":"enabled"}}}"#;
+        let registry = Registry::load_json(json).unwrap();
+        let ws = registry.get("demo").unwrap();
+        assert_eq!(ws.network, NetworkAxis::Enabled);
+        assert_eq!(ws.profile, Profile::ReadOnly);
+    }
+
+    #[test]
+    fn unknown_network_fails_config_load() {
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","network":"open"}}}"#;
+        assert!(Registry::load_json(json).is_err());
     }
 
     #[test]

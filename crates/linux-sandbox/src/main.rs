@@ -6,6 +6,7 @@ mod codex;
 mod plan;
 mod prepare;
 mod probe;
+mod proxy;
 
 fn main() {
     let mut args = std::env::args();
@@ -30,7 +31,13 @@ fn run_plan(args: &[String]) {
         }
     };
     match plan::load_and_unlink(&plan_path) {
-        Ok(argv) => codex::exec_self(&argv),
+        Ok(argv) => {
+            if argv.iter().any(|arg| arg == "--allow-network-for-proxy") {
+                proxy::run_codex_with_proxy(&argv);
+            } else {
+                codex::exec_self(&argv);
+            }
+        }
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(1);

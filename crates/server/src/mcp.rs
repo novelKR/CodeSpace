@@ -71,7 +71,9 @@ workspace_info.execution.isolation.command_sandbox is linux-sandbox, \
 exec_command is wrapped by the Linux helper. When it is none, host \
 execution is not an OS command sandbox. Network policy is reported by \
 workspace_info. OS network enforcement follows \
-execution.network.enforcement; absence of enforcement is not permission.
+execution.network.enforcement; absence of enforcement is not permission. \
+Enabled network uses a managed proxy; a missing Linux helper is not \
+permission.
 
 Treat apply_patch status=unknown as possibly executed. Do not blindly retry \
 the mutation with a new operation_key.
@@ -230,7 +232,7 @@ impl CodeSpace {
             .mark_shell_busy(&params.workspace_id.0, &process_id.0)
             .map_err(err_json)?;
         let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
-        req.policy.network = PermissionProfile::from_workspace_profile(ws.profile).network;
+        req.policy.network = ws.network;
         req.tty = params.tty;
         match self.runner.exec(ws, req).await {
             Ok(result) => Ok(Json(ExecCommandResult {
@@ -497,7 +499,8 @@ fn client_network_policy(axis: NetworkAxis) -> NetworkPolicyState {
 }
 
 fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
-    let policy = PermissionProfile::from_workspace_profile(ws.profile);
+    let mut policy = PermissionProfile::from_workspace_profile(ws.profile);
+    policy.network = ws.network;
     let permissions = EffectivePermissionInfo {
         read: policy.allows(Action::Read),
         write: policy.allows(Action::Write),
@@ -515,15 +518,12 @@ fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
         permissions,
         client_network_policy(policy.network),
     );
-    advertise_linux_sandbox(info, policy.network)
+    advertise_linux_sandbox(info)
 }
 
-fn advertise_linux_sandbox(
-    info: WorkspaceExecutionInfo,
-    network: NetworkAxis,
-) -> WorkspaceExecutionInfo {
+fn advertise_linux_sandbox(info: WorkspaceExecutionInfo) -> WorkspaceExecutionInfo {
     if linux_sandbox_available() {
-        info.with_linux_command_sandbox(matches!(network, NetworkAxis::Restricted))
+        info.with_linux_command_sandbox()
     } else {
         info
     }
@@ -614,11 +614,13 @@ mod tests {
     }
 
     fn assert_advertised_matches_policy(ws: &Workspace, exec: &WorkspaceExecutionInfo) {
-        let policy = PermissionProfile::from_workspace_profile(ws.profile);
+        let mut policy = PermissionProfile::from_workspace_profile(ws.profile);
+        policy.network = ws.network;
         assert_eq!(exec.permissions.read, policy.allows(Action::Read));
         assert_eq!(exec.permissions.write, policy.allows(Action::Write));
         assert_eq!(exec.permissions.exec, policy.allows(Action::Exec));
         assert_eq!(exec.network.policy, client_network_policy(policy.network));
+        assert!(!exec.network.client_may_escalate);
         assert_eq!(
             exec.environment.exec_supported,
             ws.environment_kind.exec_supported()
@@ -652,9 +654,7 @@ mod tests {
                 exec.isolation.command_sandbox,
                 CommandSandboxState::LinuxSandbox
             );
-            if exec.network.policy == NetworkPolicyState::Restricted {
-                assert_eq!(exec.network.enforcement, NetworkEnforcementState::Enforced);
-            }
+            assert_eq!(exec.network.enforcement, NetworkEnforcementState::Enforced);
         } else {
             assert_eq!(exec.isolation.command_sandbox, CommandSandboxState::None);
             assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
@@ -685,6 +685,14 @@ mod tests {
         assert!(text.contains("execution.network.enforcement"), "{text}");
         assert!(
             text.contains("absence of enforcement is not permission"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Enabled network uses a managed proxy"),
+            "{text}"
+        );
+        assert!(
+            text.contains("missing Linux helper is not permission"),
             "{text}"
         );
         assert!(!text.contains("not granted by policy"), "{text}");
@@ -746,6 +754,36 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         assert!(json.get("environment_id").is_none());
         assert!(!json.to_string().contains("\"environment_id\""));
+    }
+
+    #[test]
+    fn workspace_info_operator_enabled_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::json!({
+            "workspaces": {
+                "demo": {
+                    "root": dir.path(),
+                    "profile": "workspace-write",
+                    "network": "enabled"
+                }
+            }
+        });
+        let registry = Registry::load_json(&json.to_string()).unwrap();
+        let info = lookup(&registry, Some("demo".into())).unwrap();
+        let exec = info.execution.as_ref().expect("execution");
+        assert_advertised_matches_policy(registry.get("demo").unwrap(), exec);
+        assert_eq!(exec.network.policy, NetworkPolicyState::Enabled);
+        assert!(!exec.network.client_may_escalate);
+        assert!(exec.permissions.write && exec.permissions.exec);
+        if linux_sandbox_available() {
+            assert_eq!(exec.network.enforcement, NetworkEnforcementState::Enforced);
+            assert_eq!(
+                exec.isolation.command_sandbox,
+                CommandSandboxState::LinuxSandbox
+            );
+        } else {
+            assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
+        }
     }
 
     #[test]

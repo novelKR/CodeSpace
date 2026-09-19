@@ -611,6 +611,7 @@ version = "0.6.0"
 dependencies = [
  "codespace-linux-sandbox-protocol",
  "codex-linux-sandbox",
+ "codex-network-proxy",
  "codex-protocol",
  "codex-sandboxing",
  "codex-utils-path-uri",
@@ -621,6 +622,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

@@ -7,11 +7,13 @@ use serde::{Deserialize, Serialize};
 /// JSON request/response version for helper `prepare`. Not UDS.
 pub const SANDBOX_HELPER_PROTOCOL: u32 = 1;
 
-/// This work package only hard-denies network. `Enabled` / proxy is later.
+/// Restricted is isolated netns + Restricted seccomp. Enabled is isolated
+/// netns plus the helper-owned managed proxy (`--allow-network-for-proxy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxNetwork {
     Restricted,
+    Enabled,
 }
 
 /// Stdin JSON for `codespace-linux-sandbox prepare`.
@@ -60,6 +62,17 @@ mod tests {
             serde_json::from_value::<SandboxPrepareRequest>(json).unwrap(),
             req
         );
+
+        let enabled = SandboxPrepareRequest {
+            network: SandboxNetwork::Enabled,
+            ..req.clone()
+        };
+        let json = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(json["network"], "enabled");
+        assert_eq!(
+            serde_json::from_value::<SandboxPrepareRequest>(json).unwrap(),
+            enabled
+        );
     }
 
     #[test]
@@ -87,7 +100,7 @@ mod tests {
             "workspace_root": "/",
             "command_cwd": "/",
             "writable_workspace": false,
-            "network": "enabled",
+            "network": "open",
             "argv": ["/bin/true"]
         });
         assert!(serde_json::from_value::<SandboxPrepareRequest>(json).is_err());

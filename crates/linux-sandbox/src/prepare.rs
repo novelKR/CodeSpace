@@ -77,17 +77,26 @@ pub(crate) fn linux_sandbox_args(
             &profile,
             &policy_cwd,
             /*use_legacy_landlock*/ false,
-            /*allow_network_for_proxy*/ false,
+            matches!(req.network, SandboxNetwork::Enabled),
         )
     }))
     .map_err(|_| "failed to build linux sandbox argv".to_string())?;
     if args.iter().any(|arg| {
-        arg == "--allow-network-for-proxy"
-            || arg == "--proxy-route-spec"
+        arg == "--proxy-route-spec"
             || arg == "--not-a-security-boundary"
             || arg == "--use-legacy-landlock"
     }) {
         return Err("linux sandbox argv included a forbidden helper flag".into());
+    }
+    let has_proxy_flag = args.iter().any(|arg| arg == "--allow-network-for-proxy");
+    match req.network {
+        SandboxNetwork::Restricted if has_proxy_flag => {
+            return Err("restricted network plan must not enable the managed proxy".into());
+        }
+        SandboxNetwork::Enabled if !has_proxy_flag => {
+            return Err("enabled network plan must include --allow-network-for-proxy".into());
+        }
+        SandboxNetwork::Restricted | SandboxNetwork::Enabled => {}
     }
     Ok(args)
 }
@@ -136,6 +145,7 @@ fn permission_profile(
     let file_system = FileSystemSandboxPolicy::restricted(entries);
     let network = match req.network {
         SandboxNetwork::Restricted => NetworkSandboxPolicy::Restricted,
+        SandboxNetwork::Enabled => NetworkSandboxPolicy::Enabled,
     };
     Ok(PermissionProfile::from_runtime_permissions(
         &file_system,
@@ -168,12 +178,16 @@ mod tests {
     use serde_json::Value;
 
     fn req(root: &Path, writable: bool) -> SandboxPrepareRequest {
+        req_network(root, writable, SandboxNetwork::Restricted)
+    }
+
+    fn req_network(root: &Path, writable: bool, network: SandboxNetwork) -> SandboxPrepareRequest {
         SandboxPrepareRequest {
             protocol: SANDBOX_HELPER_PROTOCOL,
             workspace_root: root.to_string_lossy().into_owned(),
             command_cwd: root.to_string_lossy().into_owned(),
             writable_workspace: writable,
-            network: SandboxNetwork::Restricted,
+            network,
             argv: vec!["/bin/echo".into(), "hi".into()],
         }
     }
@@ -184,6 +198,10 @@ mod tests {
 
     fn launch_args(root: &Path, writable: bool) -> Vec<String> {
         linux_sandbox_args(&req(root, writable), &dummy_helper()).expect("prepare")
+    }
+
+    fn launch_args_network(root: &Path, network: SandboxNetwork) -> Vec<String> {
+        linux_sandbox_args(&req_network(root, true, network), &dummy_helper()).expect("prepare")
     }
 
     fn profile_json(args: &[String]) -> Value {
@@ -245,6 +263,24 @@ mod tests {
             !dumped.contains("\"subpath\":\".git\""),
             "must not add Codex .git RO carveout: {dumped}"
         );
+    }
+
+    #[test]
+    fn enabled_plan_has_allow_network_for_proxy_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = launch_args_network(dir.path(), SandboxNetwork::Enabled);
+        assert!(
+            args.iter().any(|arg| arg == "--allow-network-for-proxy"),
+            "Enabled must request the loopback proxy bridge: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--proxy-route-spec"
+                || arg == "--not-a-security-boundary"
+                || arg == "--use-legacy-landlock"),
+            "proxy route spec is attached at helper run time, not in the plan: {args:?}"
+        );
+        let profile = profile_json(&args);
+        assert_eq!(profile["network"], "enabled");
     }
 
     #[test]

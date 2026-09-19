@@ -7,9 +7,12 @@
 같은 `codespace-linux-sandbox run --plan` argv를 씁니다(bubblewrap +
 `no_new_privs`/seccomp; Codex 변환은 그 프로세스 안). prepare /
 protocol / helper OS spawn 실패는 `PROCESS_SPAWN_FAILED`입니다.
-managed helper가 spawn된 뒤 `run --plan` load, self-exec, inner
-sandbox 실패는 managed process exit입니다. probe가 실패하면(macOS, bwrap 없음) 샌드박스
+managed helper가 spawn된 뒤 `run --plan` load, Restricted self-exec,
+Enabled 프록시 spawn, inner sandbox 실패는 managed process exit입니다.
+probe가 실패하면(macOS, bwrap 없음) Restricted는 샌드박스
 없이 실행하고 `workspace_info`는 `none`을 광고합니다.
+Enabled는 헬퍼 없이 `PROCESS_SPAWN_FAILED`이며 호스트 네트워크가
+아닙니다.
 게이트웨이 단위 시험은 macOS에서 실행할 수 있습니다. 그것은
 개발 노트북에서 Linux 격리를 검증했다는 주장이 아닙니다.
 
@@ -81,7 +84,7 @@ network (filesystem은 `crates/file-system`, linux-sandbox는
 `crates/linux-sandbox` 바이너리와 `crates/linux-sandbox-protocol`).
 `codex-linux-sandbox`는 컨테이너 옆에 둘 수
 있습니다. 그 `codex-core` **dev-dep**는 제품 그래프에서 빼 두세요.
-다음 WP는 network(`Enabled` + proxy)입니다. `codex-exec`는
+P0 network(`Enabled` + 관리 프록시)는 가져왔습니다. `codex-exec`는
 거절된 채로 남습니다. `codex-exec-server`는 참고 / 이후 백엔드이며
 영구 거절은 아닙니다. 게이트웨이 정책이 유일한 허용 경로입니다. compose
 픽스처에 호스트 Docker 소켓이나 이후 제어 소켓을 실수로 마운트하지

@@ -8,9 +8,10 @@ pipe and PTY spawn the same `codespace-linux-sandbox run --plan` argv
 (bubblewrap + `no_new_privs`/seccomp; Codex translation stays inside
 that process). Prepare / protocol / helper OS-spawn failure is
 `PROCESS_SPAWN_FAILED`. After the managed helper process is spawned,
-`run --plan` load, self-exec, or inner sandbox failure is a managed
-process exit. When the probe fails (macOS, no
-bwrap), spawn is unsandboxed and `workspace_info` advertises `none`.
+`run --plan` load, Restricted self-exec, Enabled proxy spawn, or inner
+sandbox failure is a managed process exit. When the probe fails (macOS, no
+bwrap), Restricted spawn is unsandboxed and `workspace_info` advertises `none`.
+Enabled without a helper is `PROCESS_SPAWN_FAILED` (not host network).
 Gateway unit tests may run on macOS. That is not a
 claim that Linux isolation was verified on the development laptop.
 
@@ -82,7 +83,7 @@ network (filesystem is taken via `crates/file-system`; linux-sandbox
 via the `crates/linux-sandbox` binary and `crates/linux-sandbox-protocol`).
 `codex-linux-sandbox` can sit beside a
 container; keep its `codex-core` **dev-dep** out of the product graph.
-The next WP is network (`Enabled` + proxy). `codex-exec` stays
+P0 network (`Enabled` + managed proxy) is taken. `codex-exec` stays
 rejected. `codex-exec-server` is a reference / future backend, not a
 forever reject. Gateway policy remains the only allow path. Do not
 mount a host Docker socket or a future control socket on the compose

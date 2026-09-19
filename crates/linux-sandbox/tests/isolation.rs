@@ -40,13 +40,13 @@ fn sandbox_exec_env(home: &Path) -> BTreeMap<String, String> {
     env
 }
 
-fn prepare_plan(root: &Path, command: &[String]) -> PathBuf {
+fn prepare_plan_network(root: &Path, command: &[String], network: &str) -> PathBuf {
     let request = serde_json::json!({
         "protocol": 1,
         "workspace_root": root,
         "command_cwd": root,
         "writable_workspace": true,
-        "network": "restricted",
+        "network": network,
         "argv": command,
     });
     let mut child = Command::new(helper_bin())
@@ -76,7 +76,15 @@ fn prepare_plan(root: &Path, command: &[String]) -> PathBuf {
 }
 
 fn launch(root: &Path, command: &[String]) -> (PathBuf, Vec<OsString>, PathBuf) {
-    let plan = prepare_plan(root, command);
+    launch_network(root, command, "restricted")
+}
+
+fn launch_network(
+    root: &Path,
+    command: &[String],
+    network: &str,
+) -> (PathBuf, Vec<OsString>, PathBuf) {
+    let plan = prepare_plan_network(root, command, network);
     (
         helper_bin(),
         vec![
@@ -119,7 +127,11 @@ fn run_ok(root: &Path, command: &[String]) -> String {
 }
 
 fn run_status(root: &Path, command: &[String]) -> std::process::ExitStatus {
-    let (program, args, _) = launch(root, command);
+    run_status_network(root, command, "restricted")
+}
+
+fn run_status_network(root: &Path, command: &[String], network: &str) -> std::process::ExitStatus {
+    let (program, args, _) = launch_network(root, command, network);
     Command::new(&program)
         .args(&args)
         .current_dir(root)
@@ -130,6 +142,30 @@ fn run_status(root: &Path, command: &[String]) -> std::process::ExitStatus {
         .stderr(Stdio::null())
         .status()
         .expect("spawn helper")
+}
+
+fn run_ok_network(root: &Path, command: &[String], network: &str) -> String {
+    let (program, args, plan) = launch_network(root, command, network);
+    let output = Command::new(&program)
+        .args(&args)
+        .current_dir(root)
+        .env_clear()
+        .envs(sandbox_exec_env(root))
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn helper");
+    assert!(
+        output.status.success(),
+        "status={} stderr={} stdout={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        !plan.exists(),
+        "run --plan must unlink the opaque plan file"
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn linux_ready() -> bool {
@@ -340,6 +376,97 @@ fn inet_socket_denied_unix_socket_allowed() {
 }
 
 #[test]
+fn enabled_http_reaches_host_loopback_only_through_proxy() {
+    if !linux_ready() {
+        return;
+    }
+    let Some(python) = python3() else {
+        eprintln!("skip: python3 not present for proxy checks");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (port, stop, server) = spawn_loopback_http();
+    let target = format!("http://127.0.0.1:{port}/");
+
+    let direct = run_status_network(
+        dir.path(),
+        &[
+            python.display().to_string(),
+            "-c".into(),
+            format!(
+                "import socket; s=socket.create_connection(('127.0.0.1', {port}), 2); s.close()"
+            ),
+        ],
+        "enabled",
+    );
+    assert!(
+        !direct.success(),
+        "Enabled netns must not reach host loopback except via the managed proxy"
+    );
+
+    let proxied = run_ok_network(
+        dir.path(),
+        &[
+            python.display().to_string(),
+            "-c".into(),
+            format!(
+                "import os, urllib.request\n\
+assert not os.environ.get('NO_PROXY')\n\
+assert not os.environ.get('no_proxy')\n\
+print(urllib.request.urlopen({target:?}, timeout=4).read().decode())"
+            ),
+        ],
+        "enabled",
+    );
+    let _ = stop.send(());
+    let _ = server.join();
+    assert!(
+        proxied.contains("hello"),
+        "HTTP through the managed proxy must succeed, got {proxied:?}"
+    );
+}
+
+fn spawn_loopback_http() -> (
+    u16,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback http");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let port = listener.local_addr().expect("local addr").port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let start = Instant::now();
+        loop {
+            if rx.try_recv().is_ok() || start.elapsed() > Duration::from_secs(12) {
+                break;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let mut buf = [0u8; 2048];
+                    let _ = stream.read(&mut buf);
+                    let body = b"hello";
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(body);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (port, tx, handle)
+}
+
+#[test]
 fn terminate_kills_sandbox_tree() {
     if !linux_ready() {
         return;
@@ -366,6 +493,39 @@ fn terminate_kills_sandbox_tree() {
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "sandbox tree did not die with the helper"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn terminate_kills_enabled_proxy_tree() {
+    if !linux_ready() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (program, args, _) =
+        launch_network(dir.path(), &["/bin/sleep".into(), "30".into()], "enabled");
+    let mut child = Command::new(&program)
+        .args(&args)
+        .current_dir(dir.path())
+        .env_clear()
+        .envs(sandbox_exec_env(dir.path()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    std::thread::sleep(Duration::from_millis(150));
+    child.kill().expect("kill helper");
+    let start = Instant::now();
+    loop {
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "Enabled proxy helper tree did not die with the helper"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

@@ -71,11 +71,10 @@ fs_key_allowed() {
   esac
 }
 
-# crates/linux-sandbox: helper argv + bwrap/seccomp. Direct keys only.
-# Transitive: codex-network-proxy (no direct proxy API).
+# crates/linux-sandbox: helper argv + bwrap/seccomp + Enabled NetworkProxy.
 linux_sandbox_key_allowed() {
   case "$1" in
-    codex-linux-sandbox|codex-sandboxing|codex-protocol|codex-utils-path-uri) return 0 ;;
+    codex-linux-sandbox|codex-sandboxing|codex-protocol|codex-utils-path-uri|codex-network-proxy) return 0 ;;
     *) return 1 ;;
   esac
 }
