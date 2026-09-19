@@ -334,6 +334,15 @@ async fn stdio_forced_2025_11_25_read_patch_exec() {
             .expect("operation_status"),
     );
     assert_eq!(status["status"], "applied");
+    assert_eq!(status["kind"], "patch");
+    assert_eq!(status["workspace_id"], "demo");
+    assert_eq!(status["events"][0]["name"], "minted");
+    assert_eq!(status["events"][1]["name"], "finished");
+    assert_eq!(status["events"][1]["status"], "applied");
+    let changes = status["changes"].as_array().expect("ledger changes");
+    assert!(changes
+        .iter()
+        .any(|change| { change["path"] == "extra.txt" && change["after_version"].is_string() }));
 
     let started = payload(
         &client

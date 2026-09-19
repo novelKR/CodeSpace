@@ -24,7 +24,7 @@ The operator registry maps `read-only` and `workspace-write` to effective permis
 | Environment | Operator-selected execution location; host implemented, registered container backend unavailable |
 | Workspace | Registered root selected by `workspace_id`; MCP file paths are relative |
 | Permission profile | Gateway-owned meaning of allowed file and process actions |
-| Operation | Persisted patch request with `operation_id` and optional idempotency key |
+| Operation | Persisted patch ledger with `operation_id`, optional idempotency key, `files`/`changes` hashes, and minted/finished events. Look up with `operation_status`. Does not track exec |
 | Process | Server-issued handle for a command; memory-only |
 | Work | Logical job and user-instruction queue; separate from a transport session |
 
@@ -38,7 +38,7 @@ The operator registry maps `read-only` and `workspace-write` to effective permis
 
 Gateway fills workspace-root cwd, runner-local environment defaults, time/output limits, PTY choice, and policy into the internal Runner request. Only `tty` is exposed as a terminal option today. Public calls do not accept arbitrary cwd/env/timeout overrides. See [operations](operations.md) for defaults and [Agent Loop integration](agent-integration.md) for result handling.
 
-A workspace mutation lease prevents simultaneous patch/exec mutations. Read and find remain available while a command runs, so filesystem I/O must reject symlink races at open time rather than rely on a prior path check. Runner file operations use `codespace-fs`; patch execution uses the separate patch helper.
+A workspace mutation lease prevents simultaneous patch/exec mutations. Read and find remain available while a command runs, so filesystem I/O must reject symlink races at open time rather than rely on a prior path check. Runner file operations use `codespace-fs`; patch execution uses the separate patch helper. `operation_status` exposes the recorded patch ledger (`kind` is `patch`); live commands stay on `process_id` and are not recovered through that lookup.
 
 UDS transport and Linux sandbox preparation have distinct protocols and failure boundaries. A partially delivered UDS mutation may yield an uncertain result; never retry it as a new mutation merely because the connection failed. The complete process and isolation rules belong in [runner isolation](runner-isolation.md).
 

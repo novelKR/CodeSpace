@@ -80,7 +80,13 @@ async fn partial_apply_rolls_back_and_is_not_applied() {
         )
         .await
         .expect("status");
-    assert_ne!(payload(&status_result)["status"], "applied");
+    let ledger = payload(&status_result);
+    assert_ne!(ledger["status"], "applied");
+    assert_eq!(ledger["kind"], "patch");
+    assert_eq!(ledger["workspace_id"], "demo");
+    assert!(ledger["finished_at"].as_i64().is_some());
+    assert_eq!(ledger["events"][0]["name"], "minted");
+    assert_eq!(ledger["events"][1]["name"], "finished");
 
     client.cancel().await.expect("cancel");
 }
@@ -150,6 +156,24 @@ async fn restart_does_not_reapply_unknown_operation() {
     assert_eq!(body["operation_id"], id.0);
     assert_eq!(body["status"], "unknown");
     assert!(!root.path().join("ws/boom.txt").exists());
+
+    let ledger = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_OPERATION_STATUS)
+                    .with_arguments(object!({ "operation_key": "restart-1" })),
+            )
+            .await
+            .expect("unfinished status"),
+    );
+    assert_eq!(ledger["kind"], "patch");
+    assert_eq!(ledger["status"], "unknown");
+    assert!(ledger["finished_at"].is_null());
+    assert_eq!(ledger["events"][0]["name"], "minted");
+    assert_eq!(ledger["events"].as_array().unwrap().len(), 1);
+    assert!(
+        ledger["changes"].is_null() || ledger["changes"].as_array().is_some_and(|c| c.is_empty())
+    );
 
     client.cancel().await.expect("cancel");
 }

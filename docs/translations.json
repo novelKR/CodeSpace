@@ -98,8 +98,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "4ce4d006b182119e3489f8055d70edccc08b8095bff0711b75cdcee7ace175cd",
-      "translation_sha256": "9e71ea5818103fc7a5bc3d5f2fa93ed21ec84068c41b5cc1b091725cada47990"
+      "source_sha256": "b02d9dc73657bafcebf7a13a29126570d3876fa4fa61f40e4da3bedb1b5146ca",
+      "translation_sha256": "8b1b6cd9fe4fd71247506e5b65598726154de486e70b7ccc1b98573979add0bf"
     },
     {
       "id": "operations",
@@ -297,8 +297,8 @@
         "정책과-실행-구현",
         "훅과-스킬"
       ],
-      "source_sha256": "43d646da27f7b60ea8ecf678a4fbcf181f8dbf0dd57f54c73715a0fe9fd29212",
-      "translation_sha256": "a3cf17570723de0cddda093e0cfecc5e4f86e3fef5593ecdae202021fbbc858d"
+      "source_sha256": "ff5359e03a5a5e5b612316ca7ba9401a2cdd275e3a1eac127d6a7afa12ade9ea",
+      "translation_sha256": "ba8ce538b22e3c79343548cdf8a0ffa67665e3f7a02d7767d350360c965df33a"
     },
     {
       "id": "protocol-compatibility",
@@ -362,8 +362,8 @@
         "패치-동작과-복구",
         "패치-요청-계약"
       ],
-      "source_sha256": "ea05b25bb3134778841806bcaf196443449adb1bfdf572b7968509ca671c89a4",
-      "translation_sha256": "e46f9465a7183244d758402f16849a54bbf335718793c45702b1686c6eb5829d"
+      "source_sha256": "8fccab8d541578521e114728c7775d9d9753cf948d7477c9f3e4b17cbecf58a7",
+      "translation_sha256": "d07978bf886453100b35f4856968b03302a2745776e22a4466d83c27656ed220"
     },
     {
       "id": "security-model",

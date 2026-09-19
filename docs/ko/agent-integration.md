@@ -152,7 +152,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-조회 ID는 하나만 지정합니다. `operation_status`는 패치 기록을 조회하며 명령 실행을 조회하지 않습니다. 요청 ID는 전송 메시지, `operation_id`는 기록된 패치, `process_id`는 관리 중인 프로세스를 가리킵니다. ID 자체는 권한을 부여하지 않습니다. 실행을 시작한 뒤 기록된 패치 거부 상태만으로 파일이 그대로라고 판단할 수는 없습니다. 적용 후 검증에 실패했다면 파일을 확인하세요.
+조회 ID는 하나만 지정합니다. `operation_status`는 기록된 패치 원장을 반환합니다. `kind`는 항상 `patch`이며 `workspace_id`, `created_at`, 선택적 `finished_at`, `files`, `changes`(경로·종류·확인 가능한 전후 해시), `minted`/`finished` 이벤트가 포함됩니다. 미완료 기록에는 `finished_at`이 없습니다. `finished` 이벤트의 `reason: "unknown"`은 확정 결과 없이 닫혔다는 뜻입니다. 조회는 패치를 다시 실행하지 않으며 `exec_command`를 추적하지 않습니다. 명령은 `process_id`로 다룹니다. 요청 ID는 전송 메시지, `operation_id`는 기록된 패치, `process_id`는 관리 중인 프로세스를 가리킵니다. ID 자체는 권한을 부여하지 않습니다. 실행을 시작한 뒤 기록된 패치 거부 상태만으로 파일이 그대로라고 판단할 수는 없습니다. 적용 후 검증에 실패했다면 파일을 확인하세요.
 
 ## 사용자 지시 처리와 완료
 
