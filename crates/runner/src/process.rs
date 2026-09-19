@@ -11,8 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use codespace_domain::{ErrorBody, ErrorCode, ProcessId, Profile};
-use codespace_linux_sandbox::{sandbox_exec_env, SandboxExecSpec, SandboxNetwork};
+use codespace_linux_sandbox_protocol::SandboxNetwork;
 use codespace_policy::{NetworkAxis, Workspace};
+
+use crate::linux_sandbox::{self, sandbox_exec_env};
 use codespace_pty::PtySession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
@@ -183,9 +185,9 @@ impl InProcessRunner {
             completed_at,
             process_id,
         } = ctx;
-        let (program, args, sandboxed) = exec_launch(ws, &req)?;
-        let mut child = Command::new(&program);
-        child.args(&args);
+        let launch = exec_launch(ws, &req)?;
+        let mut child = Command::new(&launch.program);
+        child.args(&launch.args);
         child
             .current_dir(&cwd)
             .env_clear()
@@ -193,10 +195,11 @@ impl InProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        for (key, value) in spawn_env(&cwd, &req, sandboxed) {
+        for (key, value) in spawn_env(&cwd, &req, launch.sandboxed) {
             child.env(key, value);
         }
         let mut spawned = child.spawn().map_err(|err| {
+            launch.abort_plan();
             ErrorBody::new(
                 ErrorCode::ProcessSpawnFailed,
                 format!("failed to spawn process: {err}"),
@@ -286,15 +289,22 @@ impl InProcessRunner {
             completed_at,
             process_id,
         } = ctx;
-        let (program, args, sandboxed) = exec_launch(ws, &req)?;
-        let mut env = spawn_env(&cwd, &req, sandboxed);
+        let launch = exec_launch(ws, &req)?;
+        let mut env = spawn_env(&cwd, &req, launch.sandboxed);
         if req.env.use_runner_defaults {
             env.insert("TERM".into(), "xterm".into());
         }
-        let (program, args) = utf8_launch(&program, &args)?;
+        let (program, args) = match utf8_launch(&launch.program, &launch.args) {
+            Ok(value) => value,
+            Err(err) => {
+                launch.abort_plan();
+                return Err(err);
+            }
+        };
         let mut session = codespace_pty::spawn(&program, &args, &cwd, &env)
             .await
             .map_err(|err| {
+                launch.abort_plan();
                 ErrorBody::new(
                     ErrorCode::ProcessSpawnFailed,
                     format!("failed to spawn process: {err}"),
@@ -557,32 +567,44 @@ fn missing(id: &str) -> ErrorBody {
     )
 }
 
-/// Wrap user argv with the Linux helper when [`probe`](codespace_linux_sandbox::probe)
-/// succeeded. Probe failure keeps direct user argv. Probe success never
-/// unsandboxes on a later setup/spawn error.
-fn exec_launch(
-    ws: &Workspace,
-    req: &RunnerExecRequest,
-) -> Result<(PathBuf, Vec<OsString>, bool), ErrorBody> {
-    if !codespace_linux_sandbox::probe() {
-        return Ok((
-            PathBuf::from(&req.argv[0]),
-            req.argv.iter().skip(1).map(OsString::from).collect(),
-            false,
-        ));
+struct ExecLaunch {
+    program: PathBuf,
+    args: Vec<OsString>,
+    sandboxed: bool,
+    plan_path: Option<PathBuf>,
+}
+
+impl ExecLaunch {
+    fn abort_plan(&self) {
+        if let Some(path) = &self.plan_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
-    let spec = SandboxExecSpec {
-        workspace_root: ws.root.clone(),
-        writable_workspace: matches!(req.policy.workspace_profile, Profile::WorkspaceWrite),
-        network: sandbox_network(req.policy.network)?,
-    };
-    let launch = codespace_linux_sandbox::prepare(&spec, &req.argv, &ws.root).map_err(|err| {
-        ErrorBody::new(
-            ErrorCode::ProcessSpawnFailed,
-            format!("linux sandbox setup failed: {err}"),
-        )
-    })?;
-    Ok((launch.program, launch.args, true))
+}
+
+/// Wrap user argv with the Linux helper when [`linux_sandbox::probe`]
+/// succeeded. Probe failure keeps direct user argv. Probe success never
+/// unsandboxes on a later setup/spawn error. Managed argv is
+/// `helper run --plan`; Codex translation happens inside that process.
+fn exec_launch(ws: &Workspace, req: &RunnerExecRequest) -> Result<ExecLaunch, ErrorBody> {
+    if !linux_sandbox::probe() {
+        return Ok(ExecLaunch {
+            program: PathBuf::from(&req.argv[0]),
+            args: req.argv.iter().skip(1).map(OsString::from).collect(),
+            sandboxed: false,
+            plan_path: None,
+        });
+    }
+    let network = sandbox_network(req.policy.network)?;
+    let writable_workspace = matches!(req.policy.workspace_profile, Profile::WorkspaceWrite);
+    let launch =
+        linux_sandbox::prepare_run(&ws.root, &ws.root, writable_workspace, network, &req.argv)?;
+    Ok(ExecLaunch {
+        program: launch.program,
+        args: launch.args,
+        sandboxed: true,
+        plan_path: Some(launch.plan_path),
+    })
 }
 
 fn sandbox_network(network: NetworkAxis) -> Result<SandboxNetwork, ErrorBody> {
@@ -688,7 +710,7 @@ mod tests {
 
     #[test]
     fn linux_ci_requires_sandbox_probe() {
-        if !codespace_linux_sandbox::require_linux_sandbox() {
+        if !linux_sandbox::require_linux_sandbox() {
             return;
         }
 

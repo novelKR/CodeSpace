@@ -4,8 +4,9 @@
 
 **Target** execution isolation OS is a Linux container. **Current**
 `exec_command` is a host process. When the Linux helper probe succeeds,
-pipe and PTY spawn wrap the same `codespace-linux-sandbox` argv
-(bubblewrap + `no_new_privs`/seccomp). When the probe fails (macOS, no
+pipe and PTY spawn the same `codespace-linux-sandbox run --plan` argv
+(bubblewrap + `no_new_privs`/seccomp; Codex translation stays inside
+that process). When the probe fails (macOS, no
 bwrap), spawn is unsandboxed and `workspace_info` advertises `none`.
 Gateway unit tests may run on macOS. That is not a
 claim that Linux isolation was verified on the development laptop.
@@ -65,7 +66,7 @@ disconnect or gateway shutdown kills the worker and host children;
 is same-connection only. That **transport** is implemented; it
 is opt-in (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`) on the
 **same host**. Linux command sandbox is a wrap of that same
-`InProcessRunner` spawn, not a second transport rewrite.
+`InProcessRunner` spawn (`helper probe` / `prepare` / `run --plan`), not a second transport rewrite.
 Prefer `codex-uds` as the socket primitive; the Runner RPC stays a
 CodeSpace contract.
 
@@ -75,7 +76,8 @@ homegrown stack. Prefer upstream execution subgraphs
 ([codex-reuse.md](codex-reuse.md)), staged
 process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
 network (filesystem is taken via `crates/file-system`; linux-sandbox
-via `crates/linux-sandbox`). `codex-linux-sandbox` can sit beside a
+via the `crates/linux-sandbox` binary and `crates/linux-sandbox-protocol`).
+`codex-linux-sandbox` can sit beside a
 container; keep its `codex-core` **dev-dep** out of the product graph.
 The next WP is network (`Enabled` + proxy). `codex-exec` stays
 rejected. `codex-exec-server` is a reference / future backend, not a

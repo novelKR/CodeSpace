@@ -43,11 +43,13 @@ CI: `policy-scan` job은 서브모듈 **없이** `scripts/check-no-model-deps.sh
 안 됩니다. 핵심 소스는 에이전트/모델 grep을 유지합니다. 격리된 어댑터
 매니페스트(`crates/patch`, `crates/codex-runtime`, `crates/pty`,
 `crates/file-system`, `crates/linux-sandbox`)는
-**허용 목록**을 사용합니다. `third_party/codex` 소스는 절대 스캔하지
+**허용 목록**을 사용합니다. `crates/linux-sandbox-protocol`은 루트
+워크스페이스 serde 크레이트입니다(`codex-` 키 없음). `third_party/codex` 소스는 절대 스캔하지
 않습니다. `SCAN_BASE`는 트리를 갱신 범위로 제한합니다. 범위를 모르면
 모든 핵심 크레이트와 어댑터 매니페스트를 스캔합니다. Clippy/시험은
 여전히 항상 실행됩니다. rust job은 fmt/clippy **전에** 핀 SHA를
-검사합니다(`PIN_ONLY=1`).
+검사하고(`PIN_ONLY=1`), `cargo tree -p codespace-runner`로
+sandbox-specific 그래프 edge도 검사합니다.
 
 ## 불변식
 
@@ -193,8 +195,10 @@ UDS 와이어를 클라이언트 계약에 넣지 마세요.
 `codex-uds`(전송 프리미티브, RPC는 CodeSpace)를 선호하세요. PathSandbox
 범위 아래 `codex-file-system`(`crates/file-system` → `LOCAL_FS`,
 no-follow I/O와 제한된 walk)을 가져왔습니다.
-`codex-linux-sandbox`는 `crates/linux-sandbox`로 가져왔습니다(dev-dep에
-`codex-core` 포함, 제품 그래프에서는 빼 둘 것). 네트워크 축이 생기면
+`codex-linux-sandbox`는 `crates/linux-sandbox` **바이너리**로
+가져왔습니다(dev-dep에 `codex-core` 포함, 제품 그래프에서는 빼 둘
+것). 러너는 `crates/linux-sandbox-protocol`로 `prepare` /
+`run --plan`을 말합니다. 네트워크 축이 생기면
 `codex-network-proxy`를 보세요. 컨테이너가 그 서브그래프를
 대체하지 않습니다.
 
@@ -293,7 +297,8 @@ Approval → policy + human, Attachment → artifact 리소스.
 자원 직렬화기(요청 vs 프로세스 소유), 선택적 `UdsRunner` +
 `codespace-codex-runtime`(process-hardening + UDS), 격리된
 `crates/pty` → `codex-utils-pty`, 격리된 `crates/file-system` →
-`LOCAL_FS`, 격리된 `crates/linux-sandbox` → `codex-linux-sandbox`.
+`LOCAL_FS`, 격리된 `crates/linux-sandbox` 바이너리 → `codex-linux-sandbox`
+(프로세스 경계).
 실제 MCP 도구 **이름**은 그대로입니다.
 `exec_command`에 선택적 `tty`(기본 false)가 있습니다.
 
@@ -302,7 +307,7 @@ Runner DTO의 exec 런타임 **형태**(완료), `crates/policy`의
 PermissionProfile 도메인(완료), Environment 도메인(운영자 등록, 도구
 인자 아님)(완료), 자원 직렬화기(완료), process-hardening + UDS를 받는
 전송(`UdsRunner`)(완료, 선택적), PTY I/O 백엔드(완료), PathSandbox 아래
-파일시스템 역학(완료), Linux command sandbox(완료: 헬퍼 wrap, Restricted
+파일시스템 역학(완료), Linux command sandbox(완료: 헬퍼 프로세스 경계, Restricted
 hard deny). 아직 밖: network(`Enabled` + proxy).
 
 **P1** — 작업 상태 기계 / diff 원장, 승인 폴백 도구, 내부 watch, 더

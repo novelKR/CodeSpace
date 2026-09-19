@@ -1,35 +1,97 @@
-//! Linux isolation checks against the helper binary. Non-Linux compiles
-//! this file but skips the runtime assertions.
+//! Linux isolation checks against the helper binary CLI (`probe` /
+//! `prepare` / `run`). Non-Linux compiles this file but skips the
+//! runtime assertions.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use codespace_linux_sandbox::{
-    prepare_from_helper, probe_helper, require_linux_sandbox, sandbox_exec_env, SandboxExecSpec,
-    SandboxLaunch, SandboxNetwork, REQUIRE_ENV,
-};
+const REQUIRE_ENV: &str = "CODESPACE_REQUIRE_LINUX_SANDBOX";
+const SANDBOX_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
 
 fn helper_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_codespace-linux-sandbox"))
 }
 
-fn spec(root: &Path) -> SandboxExecSpec {
-    SandboxExecSpec {
-        workspace_root: root.to_path_buf(),
-        writable_workspace: true,
-        network: SandboxNetwork::Restricted,
-    }
+fn require_linux_sandbox() -> bool {
+    std::env::var_os(REQUIRE_ENV).is_some_and(|value| value == "1")
 }
 
-fn launch(root: &Path, command: &[String]) -> SandboxLaunch {
-    prepare_from_helper(&helper_bin(), &spec(root), command, root).expect("prepare")
+fn probe_helper() -> bool {
+    Command::new(helper_bin())
+        .arg("probe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn sandbox_exec_env(home: &Path) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert("PATH".into(), SANDBOX_PATH.into());
+    env.insert("HOME".into(), home.display().to_string());
+    env.insert("LANG".into(), "C".into());
+    env.insert("TMPDIR".into(), "/tmp".into());
+    env
+}
+
+fn prepare_plan(root: &Path, command: &[String]) -> PathBuf {
+    let request = serde_json::json!({
+        "protocol": 1,
+        "workspace_root": root,
+        "command_cwd": root,
+        "writable_workspace": true,
+        "network": "restricted",
+        "argv": command,
+    });
+    let mut child = Command::new(helper_bin())
+        .arg("prepare")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn prepare");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(request.to_string().as_bytes())
+        .expect("write prepare request");
+    let output = child.wait_with_output().expect("wait prepare");
+    assert!(
+        output.status.success(),
+        "prepare status={} stderr={} stdout={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).expect("prepare json");
+    assert_eq!(response["type"], "prepared", "{response}");
+    PathBuf::from(response["plan_path"].as_str().expect("plan_path"))
+}
+
+fn launch(root: &Path, command: &[String]) -> (PathBuf, Vec<OsString>, PathBuf) {
+    let plan = prepare_plan(root, command);
+    (
+        helper_bin(),
+        vec![
+            OsString::from("run"),
+            OsString::from("--plan"),
+            plan.clone().into(),
+        ],
+        plan,
+    )
 }
 
 fn run_ok(root: &Path, command: &[String]) -> String {
-    let launch = launch(root, command);
-    let output = Command::new(&launch.program)
-        .args(&launch.args)
+    let (program, args, plan) = launch(root, command);
+    let output = Command::new(&program)
+        .args(&args)
         .current_dir(root)
         .env_clear()
         .envs(sandbox_exec_env(root))
@@ -43,13 +105,17 @@ fn run_ok(root: &Path, command: &[String]) -> String {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
+    assert!(
+        !plan.exists(),
+        "run --plan must unlink the opaque plan file"
+    );
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn run_status(root: &Path, command: &[String]) -> std::process::ExitStatus {
-    let launch = launch(root, command);
-    Command::new(&launch.program)
-        .args(&launch.args)
+    let (program, args, _) = launch(root, command);
+    Command::new(&program)
+        .args(&args)
         .current_dir(root)
         .env_clear()
         .envs(sandbox_exec_env(root))
@@ -61,7 +127,7 @@ fn run_status(root: &Path, command: &[String]) -> std::process::ExitStatus {
 }
 
 fn linux_ready() -> bool {
-    let ready = cfg!(target_os = "linux") && probe_helper(&helper_bin());
+    let ready = cfg!(target_os = "linux") && probe_helper();
     if require_linux_sandbox() {
         #[cfg(not(target_os = "linux"))]
         panic!("{REQUIRE_ENV}=1 is Linux CI only");
@@ -85,7 +151,7 @@ fn python3() -> Option<&'static Path> {
 /// Spawn the helper on a PTY (same argv as pipe). Used for isatty + stdin.
 fn run_pty(root: &Path, command: &[String], stdin: Option<&str>) -> String {
     let python = python3().expect("python3 for PTY checks");
-    let launch = launch(root, command);
+    let (program, args, _) = launch(root, command);
     let env_json = serde_json::to_string(&sandbox_exec_env(root)).expect("env json");
     let script = r#"
 import json, os, pty, select, sys, time
@@ -137,8 +203,8 @@ sys.stdout.buffer.write(data)
     let output = Command::new(python)
         .arg("-c")
         .arg(script)
-        .arg(&launch.program)
-        .args(&launch.args)
+        .arg(&program)
+        .args(&args)
         .current_dir(root)
         .env("CODESPACE_SANDBOX_ENV", env_json)
         .env("CODESPACE_PTY_STDIN", stdin.unwrap_or(""))
@@ -161,11 +227,11 @@ fn helper_probe_matches_platform() {
         return;
     }
     if cfg!(target_os = "linux") {
-        if !probe_helper(&helper_bin()) {
+        if !probe_helper() {
             eprintln!("skip: bubblewrap/userns/seccomp probe failed");
         }
     } else {
-        assert!(!probe_helper(&helper_bin()));
+        assert!(!probe_helper());
     }
 }
 
@@ -273,9 +339,9 @@ fn terminate_kills_sandbox_tree() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let launch = launch(dir.path(), &["/bin/sleep".into(), "30".into()]);
-    let mut child = Command::new(&launch.program)
-        .args(&launch.args)
+    let (program, args, _) = launch(dir.path(), &["/bin/sleep".into(), "30".into()]);
+    let mut child = Command::new(&program)
+        .args(&args)
         .current_dir(dir.path())
         .env_clear()
         .envs(sandbox_exec_env(dir.path()))

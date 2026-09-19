@@ -53,8 +53,9 @@ CodeSpace Core          ← only authorization authority
           │    interactive spawn; no Codex types on the runner API
           │  crates/file-system (codespace-fs)
           │    no-follow I/O + bounded walk; PathSandbox authorizes, adapter I/O is the safety boundary
-          │  crates/linux-sandbox (codespace-linux-sandbox)
-          │    helper wrap of user argv; Restricted net hard deny; no Codex types on Runner
+          │  crates/linux-sandbox-protocol (serde handshake; SANDBOX_HELPER_PROTOCOL=1)
+          │  crates/linux-sandbox (codespace-linux-sandbox binary)
+          │    process boundary: prepare / opaque plan / run exec; Restricted net hard deny
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -102,10 +103,16 @@ CodeSpace core
 
 isolated adapter (crates/patch today;
 crates/codex-runtime today; crates/pty today;
-crates/file-system today; crates/linux-sandbox today)
+crates/file-system today; crates/linux-sandbox today,
+binary-only)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
+
+crates/linux-sandbox-protocol (root workspace)
+  ──────────────────────────────────────────
+  serde / serde_json only; no Codex types
+  SANDBOX_HELPER_PROTOCOL = 1 (not UDS / WIRE_PROTOCOL)
 
 
 adapter boundary
@@ -149,7 +156,9 @@ runtime adapter:
   root. Today: `crates/patch`, `crates/codex-runtime`
   (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`),
   `crates/file-system` (`codespace-fs`), and `crates/linux-sandbox`
-  (`codespace-linux-sandbox`).
+  (`codespace-linux-sandbox` binary). The runner talks to that helper
+  through `crates/linux-sandbox-protocol` (serde only; root workspace
+  member).
 - NOTICE + Apache-2.0 attribution.
 - Product policy stays in front of and behind the subgraph.
 - Do not file-copy a crate out of the Codex workspace.
@@ -171,6 +180,7 @@ checkout and cargo, not this grep.
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
 | adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system`; `crates/linux-sandbox` | tiny | adapter in the update range; allowlist only |
+| protocol crate | `crates/linux-sandbox-protocol` | tiny | no `codex-` keys; runner must not path-dep the helper library |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 Update range is `SCAN_BASE` (PR base / previous `main`). Unknown range
@@ -191,12 +201,18 @@ graph, `codex-utils-path-uri`, `codex-process-hardening`;
 `codex-app-server`, `async-openai`). Comments that mention a crate
 name are not cargo deps.
 
-The linux-sandbox adapter also pins the Rama **0.3.0-alpha.4** leaf
+The linux-sandbox **helper lock** pins the Rama **0.3.0-alpha.4** leaf
 crates (`rama-error`, `rama-macros`, `rama-utils`) as resolver guards.
 Codex pin `6b9826e` is validated against that train. A fresh resolve can
 otherwise pick stable `0.3.0` for those leaves while `rama-core` stays
-alpha.4. The guards apply to both the isolated helper lock and the root
-lock (path dependency). CI `cargo clippy` / `cargo test` use `--locked`.
+alpha.4. The runner does **not** path-depend the helper crate, so those
+guards do not enter the root lock via sandbox. Root may still see Rama
+through `codespace-fs`. Helper CI `cargo clippy` / `cargo test` use
+`--locked`. The rust job also checks `cargo tree -p codespace-runner`
+for helper-package edges (`codespace-linux-sandbox`,
+`codex-linux-sandbox`). `codex-sandboxing` / `landlock` / `seccompiler`
+may still appear via `codespace-fs` → `codex-protocol`; that is not the
+sandbox helper graph.
 
 Do **not** wrap the standalone `apply_patch` binary as a security
 boundary. Do **not** wrap Codex App Server as an internal backend.
@@ -218,7 +234,8 @@ rejected.
 Documented order. **Taken in code this WP:** process-hardening, UDS, PTY
 (`crates/pty` → `codex-utils-pty`), filesystem (`crates/file-system`
 → `LOCAL_FS` / `ExecutorFileSystem`), and linux-sandbox
-(`crates/linux-sandbox` → helper wrap, Restricted hard deny). **Not
+(`crates/linux-sandbox` binary → prepare / opaque plan / `run --plan`
+exec, Restricted hard deny). **Not
 taken:** network (`Enabled` + proxy).
 
 ```text
@@ -261,16 +278,20 @@ and typed errors (`SymlinkRejected`, `NotRegularFile`). MCP `read` /
 `find` stay workspace-relative.
 
 **`codex-linux-sandbox`** via `crates/linux-sandbox`
-(`codespace-linux-sandbox`).
+(`codespace-linux-sandbox` binary).
 ([`codex-rs/linux-sandbox/Cargo.toml`](../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
 
-Helper wrap of user argv (`spawn_pipe` / `spawn_pty`). Restricted
-network is `--unshare-net` plus Restricted seccomp. Direct proxy flags
+Process boundary, not a library adapter. The runner sends
+`SandboxPrepareRequest` JSON (`SANDBOX_HELPER_PROTOCOL = 1`) to
+`prepare`, gets a plan **pathname** only, then spawns managed
+`run --plan`. The helper unlinks the 0600 plan and `exec`s itself with
+Codex argv (same PID). `WIRE_PROTOCOL` stays `3`. Restricted network is
+`--unshare-net` plus Restricted seccomp. Direct proxy flags
 (`--allow-network-for-proxy`, `--proxy-route-spec`) are unused; that is
 the next WP. Runtime deps do not include `codex-core`; **dev-dependencies
 do** — adapter tests must not pull that graph into the product binary.
-Public types stay CodeSpace (`SandboxExecSpec` / `SandboxLaunch`).
-`codex_protocol::PermissionProfile` stays inside the crate.
+`codex_protocol::PermissionProfile` stays inside the helper.
+`codespace-runner` depends on `codespace-linux-sandbox-protocol` only.
 
 **Transitive (allowed in the adapter):** `codex-sandboxing`,
 `codex-network-proxy`, `codex-protocol`. Direct use of the proxy is for
@@ -365,9 +386,9 @@ second authorizer.
 - Host/in-process process supervisor as the default; UDS worker is opt-in.
 - Container lifecycle and workspace bind-mount **policy**.
 - Isolated adapter workspaces (`crates/patch`,
-  `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
-  `codespace-pty`, `crates/file-system` / `codespace-fs`,
-  `crates/linux-sandbox` / `codespace-linux-sandbox`).
+  `crates/codex-runtime` / `codespace-codex-runtime`,   `crates/file-system` / `codespace-fs`,
+  `crates/linux-sandbox` / `codespace-linux-sandbox` binary).
+  Handshake types live in `crates/linux-sandbox-protocol`.
 
 ## Next implementation WP
 
