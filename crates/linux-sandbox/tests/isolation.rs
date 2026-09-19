@@ -40,10 +40,6 @@ fn sandbox_exec_env(home: &Path) -> BTreeMap<String, String> {
     env
 }
 
-fn prepare_plan(root: &Path, command: &[String]) -> PathBuf {
-    prepare_plan_network(root, command, "restricted")
-}
-
 fn prepare_plan_network(root: &Path, command: &[String], network: &str) -> PathBuf {
     let request = serde_json::json!({
         "protocol": 1,
@@ -414,7 +410,10 @@ fn enabled_http_reaches_host_loopback_only_through_proxy() {
             python.display().to_string(),
             "-c".into(),
             format!(
-                "import urllib.request; print(urllib.request.urlopen({target:?}, timeout=4).read().decode())"
+                "import os, urllib.request\n\
+assert not os.environ.get('NO_PROXY')\n\
+assert not os.environ.get('no_proxy')\n\
+print(urllib.request.urlopen({target:?}, timeout=4).read().decode())"
             ),
         ],
         "enabled",
