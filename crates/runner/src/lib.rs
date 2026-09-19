@@ -2,7 +2,8 @@
 //! `UdsRunner`. Path sandbox, one patch transaction, host process
 //! supervisor, and isolation-fixture checks. Linux containers are the
 //! **target** execution OS. When the Linux helper probe succeeds, command
-//! spawn is wrapped by `codespace-linux-sandbox`. macOS hosts may run the
+//! spawn is wrapped by the `codespace-linux-sandbox` helper process.
+//! macOS hosts may run the
 //! path sandbox for unit tests; that does **not** verify Linux isolation.
 //! `exec_command` is not dispatched into compose. Default backend remains
 //! in-process. Host + `UdsRunner` is the same host over UDS, not a Linux
@@ -101,6 +102,7 @@ fn reject_symlink_ancestors(root: &Path, dest: &Path) -> Result<(), ErrorBody> {
 mod api;
 mod apply;
 mod files;
+mod linux_sandbox;
 mod patch_helper;
 mod patch_verify;
 mod process;
@@ -125,7 +127,7 @@ pub use process::{
 /// True when this process probed a working Linux sandbox helper.
 /// Advertisement and spawn must agree on this value.
 pub fn linux_sandbox_available() -> bool {
-    codespace_linux_sandbox::probe()
+    linux_sandbox::probe()
 }
 
 pub use socket::{

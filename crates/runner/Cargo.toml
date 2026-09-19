@@ -12,11 +12,12 @@ codespace-domain = { path = "../domain" }
 codespace-policy = { path = "../policy" }
 codespace-pty = { path = "../pty" }
 codespace-fs = { path = "../file-system" }
-codespace-linux-sandbox = { path = "../linux-sandbox" }
+codespace-linux-sandbox-protocol = { path = "../linux-sandbox-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
+libc = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "net", "sync"] }
 
 [dev-dependencies]

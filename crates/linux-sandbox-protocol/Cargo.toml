@@ -1,0 +1,12 @@
+[package]
+name = "codespace-linux-sandbox-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "CodeSpace Linux sandbox helper handshake (serde only; no Codex types)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

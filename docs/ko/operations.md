@@ -53,7 +53,8 @@ cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 강화입니다(`main` 첫 줄 `pre_main_hardening()`, `ctor` 없음). command
 sandbox가 아닙니다. 기본 `exec_command`는 여전히 프로세스 내부 호스트
 spawn입니다. Linux에서 `CODESPACE_LINUX_SANDBOX_BIN`(또는 게이트웨이 옆
-`codespace-linux-sandbox`) probe가 성공하면 그 spawn을 헬퍼가 감쌉니다.
+`codespace-linux-sandbox`) probe가 성공하면 그 spawn은 짧은 `prepare`
+다음 `helper run --plan`입니다. Codex argv는 러너에 들어오지 않습니다.
 `workspace_info.execution.isolation.command_sandbox`는 그때만
 `linux-sandbox`이고, 아니면 `none`입니다. Restricted 네트워크는 그때
 OS에서 강제됩니다(`network.enforcement=enforced`).

@@ -4,8 +4,11 @@
 
 **목표** 실행 격리 OS는 Linux 컨테이너입니다. **현재** `exec_command`는
 호스트 프로세스입니다. Linux 헬퍼 probe가 성공하면 pipe와 PTY spawn이
-같은 `codespace-linux-sandbox` argv를 감쌉니다(bubblewrap +
-`no_new_privs`/seccomp). probe가 실패하면(macOS, bwrap 없음) 샌드박스
+같은 `codespace-linux-sandbox run --plan` argv를 씁니다(bubblewrap +
+`no_new_privs`/seccomp; Codex 변환은 그 프로세스 안). prepare /
+protocol / helper OS spawn 실패는 `PROCESS_SPAWN_FAILED`입니다.
+managed helper가 spawn된 뒤 `run --plan` load, self-exec, inner
+sandbox 실패는 managed process exit입니다. probe가 실패하면(macOS, bwrap 없음) 샌드박스
 없이 실행하고 `workspace_info`는 `none`을 광고합니다.
 게이트웨이 단위 시험은 macOS에서 실행할 수 있습니다. 그것은
 개발 노트북에서 Linux 격리를 검증했다는 주장이 아닙니다.
@@ -64,7 +67,8 @@ P0 UDS는 1:1입니다. 게이트웨이가 워커 자식을 소유합니다(`kil
 연결에서만 동작합니다. 그 **전송**은 구현되어 있으며 선택적입니다
 (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). **같은 호스트**이며
 Linux 격리를 주장하지 않습니다. Linux command sandbox는 그 같은
-`InProcessRunner` spawn의 wrap이며 두 번째 전송 재작성이 아닙니다. 소켓
+`InProcessRunner` spawn(`helper probe` / `prepare` / `run --plan`)이며
+두 번째 전송 재작성이 아닙니다. 소켓
 프리미티브로 `codex-uds`를 선호하세요. Runner RPC는 CodeSpace 계약으로
 남습니다.
 
@@ -74,7 +78,8 @@ Linux 격리는 여전히 목표 OS입니다. Landlock, seccomp, PTY 헬퍼, UDS
 ([codex-reuse.md](codex-reuse.md)). 단계:
 process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
 network (filesystem은 `crates/file-system`, linux-sandbox는
-`crates/linux-sandbox`). `codex-linux-sandbox`는 컨테이너 옆에 둘 수
+`crates/linux-sandbox` 바이너리와 `crates/linux-sandbox-protocol`).
+`codex-linux-sandbox`는 컨테이너 옆에 둘 수
 있습니다. 그 `codex-core` **dev-dep**는 제품 그래프에서 빼 두세요.
 다음 WP는 network(`Enabled` + proxy)입니다. `codex-exec`는
 거절된 채로 남습니다. `codex-exec-server`는 참고 / 이후 백엔드이며

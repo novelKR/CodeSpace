@@ -51,8 +51,9 @@ CodeSpace Core          ← only authorization authority
           │    interactive spawn; runner API에 Codex 타입 없음
           │  crates/file-system (codespace-fs)
           │    no-follow I/O + 제한된 walk; PathSandbox가 인가, I/O 안전은 어댑터
-          │  crates/linux-sandbox (codespace-linux-sandbox)
-          │    사용자 argv 헬퍼 wrap; Restricted 네트워크 hard deny; Runner에 Codex 타입 없음
+          │  crates/linux-sandbox-protocol (serde 핸드셰이크; SANDBOX_HELPER_PROTOCOL=1)
+          │  crates/linux-sandbox (codespace-linux-sandbox 바이너리)
+          │    프로세스 경계: prepare / opaque plan / run exec; Restricted 네트워크 hard deny
           ▼
    Codex execution subgraph (pinned) → OS
 ```
@@ -100,10 +101,16 @@ CodeSpace core
 
 isolated adapter (crates/patch today;
 crates/codex-runtime today; crates/pty today;
-crates/file-system today; crates/linux-sandbox today)
+crates/file-system today; crates/linux-sandbox today,
+binary-only)
   ──────────────────────────────────────────
   approved execution subgraph allowed
   including transitive codex-protocol
+
+crates/linux-sandbox-protocol (root workspace)
+  ──────────────────────────────────────────
+  serde / serde_json only; no Codex types
+  SANDBOX_HELPER_PROTOCOL = 1 (not UDS / WIRE_PROTOCOL)
 
 
 adapter boundary
@@ -148,7 +155,9 @@ Runner helper
   아닙니다. 오늘: `crates/patch`, `crates/codex-runtime`
   (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`),
   `crates/file-system` (`codespace-fs`), `crates/linux-sandbox`
-  (`codespace-linux-sandbox`).
+  (`codespace-linux-sandbox` 바이너리). 러너는
+  `crates/linux-sandbox-protocol`(serde만, 루트 워크스페이스 멤버)로
+  그 헬퍼와 대화합니다.
 - NOTICE + Apache-2.0 귀속.
 - 제품 정책은 서브그래프 앞과 뒤에 남습니다.
 - Codex 워크스페이스에서 크레이트를 파일 복사하지 마세요.
@@ -170,6 +179,7 @@ checkout과 cargo가 지배합니다.
 | core sources | those crates’ trees | low | same |
 | server tests | `tests/` | low | `crates/server` or `tests/` changed |
 | adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system`; `crates/linux-sandbox` | tiny | adapter in the update range; allowlist only |
+| protocol crate | `crates/linux-sandbox-protocol` | tiny | `codex-` 키 없음; runner는 helper 라이브러리 path dep 금지 |
 | upstream | `third_party/codex` | huge / false positives | never |
 
 갱신 범위는 `SCAN_BASE`(PR base / 이전 `main`)입니다. 범위를 모르면
@@ -190,13 +200,21 @@ checkout과 cargo가 지배합니다.
 `codex-core`, `codex-app-server`, `async-openai`). 크레이트 이름을
 언급하는 주석은 cargo 의존성이 아닙니다.
 
-linux-sandbox 어댑터는 Rama **0.3.0-alpha.4** leaf
+linux-sandbox **helper lock**은 Rama **0.3.0-alpha.4** leaf
 크레이트(`rama-error`, `rama-macros`, `rama-utils`)를 resolver
-가드로도 고정합니다. Codex 핀 `6b9826e`는 그 train으로 검증되어
-있습니다. 새로 resolve하면 `rama-core`는 alpha.4인데 leaf만
-stable `0.3.0`이 될 수 있습니다. 가드는 격리 helper lock과 root lock
-(path 의존) 모두에 적용됩니다. CI `cargo clippy` / `cargo test`는
-`--locked`입니다.
+가드로 고정합니다. **file-system lock**(`crates/file-system`)도 같은
+leaf를 고정합니다. root가 `codespace-fs` → `codex-exec-server` /
+`codex-protocol`로 Rama를 보기 때문입니다. Codex 핀 `6b9826e`는 그
+train으로 검증되어 있습니다. 새로 resolve하면 `rama-core`는
+alpha.4인데 leaf만 stable `0.3.0`이 될 수 있습니다. 러너는 helper
+크레이트를 path 의존하지 **않으므로** helper 가드가 sandbox를 통해
+root lock에 들어오지 않습니다. helper와 file-system CI
+`cargo clippy` / `cargo test`는 `--locked`입니다. rust job은
+`cargo tree -p codespace-runner`에서 helper-package
+edge(`codespace-linux-sandbox`, `codex-linux-sandbox`)를 검사합니다.
+`codex-sandboxing` / `landlock` / `seccompiler`는 `codespace-fs` →
+`codex-protocol`로 남을 수 있으며, 그건 sandbox helper 그래프가
+아닙니다.
 
 독립 `apply_patch` 바이너리를 보안 경계로 감싸지 **마세요**. Codex App
 Server를 내부 백엔드로 감싸지 **마세요**.
@@ -218,7 +236,8 @@ login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전�
 문서화된 순서입니다. **이 WP에서 코드로 가져옴:** process-hardening, UDS,
 PTY(`crates/pty` → `codex-utils-pty`), filesystem(`crates/file-system`
 → `LOCAL_FS` / `ExecutorFileSystem`), linux-sandbox
-(`crates/linux-sandbox` → 헬퍼 wrap, Restricted hard deny). **아직 안
+(`crates/linux-sandbox` 바이너리 → prepare / opaque plan / `run --plan`
+exec, Restricted hard deny). **아직 안
 가져옴:** network(`Enabled` + proxy).
 
 ```text
@@ -261,17 +280,21 @@ open/read/write/remove/walk와 typed error(`SymlinkRejected`,
 상대로 남습니다.
 
 **`codex-linux-sandbox`** via `crates/linux-sandbox`
-(`codespace-linux-sandbox`).
+(`codespace-linux-sandbox` 바이너리).
 ([`codex-rs/linux-sandbox/Cargo.toml`](../../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
 
-사용자 argv를 `spawn_pipe` / `spawn_pty`에서 헬퍼로 감쌉니다.
-Restricted 네트워크는 `--unshare-net`과 Restricted seccomp입니다. 직접
+라이브러리 어댑터가 아니라 **프로세스 경계**입니다. 러너는
+`SandboxPrepareRequest` JSON(`SANDBOX_HELPER_PROTOCOL = 1`)을
+`prepare`에 보내고 plan **경로만** 받은 뒤 managed `run --plan`을
+spawn합니다. 헬퍼는 0600 plan을 unlink하고 같은 PID에서 Codex argv로
+`exec`합니다. `WIRE_PROTOCOL`은 `3`으로 남습니다. Restricted
+네트워크는 `--unshare-net`과 Restricted seccomp입니다. 직접
 프록시 플래그(`--allow-network-for-proxy`, `--proxy-route-spec`)는
 쓰지 않습니다. 그건 다음 WP입니다. 런타임 의존성에는 `codex-core`가
 없습니다. **dev-dependencies에는 있습니다** — 어댑터 시험이 그
-그래프를 제품 바이너리로 끌어오면 안 됩니다. 공개 타입은
-CodeSpace(`SandboxExecSpec` / `SandboxLaunch`)만.
-`codex_protocol::PermissionProfile`은 이 크레이트 안에 남습니다.
+그래프를 제품 바이너리로 끌어오면 안 됩니다.
+`codex_protocol::PermissionProfile`은 헬퍼 안에 남습니다.
+`codespace-runner`는 `codespace-linux-sandbox-protocol`만 의존합니다.
 
 **전이(어댑터에서 허용):** `codex-sandboxing`, `codex-network-proxy`,
 `codex-protocol`. 프록시의 직접 사용은 PermissionProfile **네트워크**
@@ -367,8 +390,9 @@ rollout, history. 제품 exec 흐름이지 `spawn`이 아닙니다.
 - 컨테이너 수명주기와 워크스페이스 바인드 마운트 **정책**.
 - 격리된 어댑터 워크스페이스(`crates/patch`,
   `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
-  `codespace-pty`, `crates/file-system` / `codespace-fs`,
-  `crates/linux-sandbox` / `codespace-linux-sandbox`).
+  `codespace-pty`,   `crates/file-system` / `codespace-fs`,
+  `crates/linux-sandbox` / `codespace-linux-sandbox` 바이너리).
+  핸드셰이크 타입은 `crates/linux-sandbox-protocol`에 있습니다.
 
 ## 다음 구현 WP
 

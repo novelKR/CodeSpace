@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "9ad4c4694803215a80725d4c378bfe5b47e560e24423012a40cb04727aa1d555",
-      "translation_sha256": "c237539880cd54c7c935f209026391d723078fdab7bc252c347bbceb56b2997d"
+      "source_sha256": "6d1fac0a089fe40ed1e8bcea563cb860452c5551d038379e50caa0d5295a6d62",
+      "translation_sha256": "c6650e783e2ab7b98039c21599773cf27b9d15a5b101892d34f07ec52cb2ceaa"
     },
     {
       "id": "chatgpt-connector",
@@ -179,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "0d9ad287e0278ffefa606404a16845f31fc7759d2a8a80f0db04873651cab54a",
-      "translation_sha256": "daab7c0bc7e025987e6bc5177eb11b028c28ac0f2b62c7aa579c561354a40fe4"
+      "source_sha256": "6757811d90483be000c2256e830d342b7404f652bf40f72c2803c5ad77212a0d",
+      "translation_sha256": "8cd2af2c4e0479dacc1b3f9acdcfdbb6ba7f6374b79a5d6bca7b9de1a411af69"
     },
     {
       "id": "protocol-compatibility",
@@ -274,8 +274,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "12bc3c8860a7309d0f194e62d77d155192e3aa978d78e9d98bdc43d2eafc45b8",
-      "translation_sha256": "ebeae315a0231a98d904985a8f3987672274a273e958fc23e2ab774dd68011d7"
+      "source_sha256": "add1bfda569c8a4964ee22d1000b6e39802023e69967d7436a6d333cb4a69a70",
+      "translation_sha256": "423a9a798d00d71eb05075e5549d010dd6f43a225b4a9c5408b4600909651da8"
     },
     {
       "id": "error-codes",
@@ -292,8 +292,8 @@
         "오류-코드와-전송-대-실행",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "938d76381e8d66fe50bf0f368c4cab54158dce6502fe6865ad3a2d549c9bfeec",
-      "translation_sha256": "4e8eaea37cb09b6d9a92012525ccd4dbfa01f76eafea5b4eae91aed154966f99"
+      "source_sha256": "053b227c025872519616b8273715dc50b429407419a2b001974ea82099bec6e4",
+      "translation_sha256": "31027ef820cd05441d3fe534fd5367b6b0ef4b0f9d14b17799b5abcf4e98aceb"
     },
     {
       "id": "codex-reuse",
@@ -342,8 +342,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "297049584fa4f28463c61b3192c914ca6e521a293b2a4dc271a9dd6c92d78aa4",
-      "translation_sha256": "8c5c56114cf330ef5bf1da6ecb6ae89d0837c091b1c0b4e7263d2dcb279a5cbb"
+      "source_sha256": "85c3e5efaa2dcc4c540ee9aa5ca911cdaad8bbe08e914aabd3a8c3357c3ae4c5",
+      "translation_sha256": "5ca737d630bcfcb6e5089307da53d495865852de597bf9352c54df33e16f6832"
     },
     {
       "id": "upstream-lock",

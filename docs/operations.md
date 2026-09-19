@@ -54,7 +54,8 @@ process** hardening (`pre_main_hardening()` as the first line of
 `main`; no `ctor`), not a command sandbox. Default `exec_command` still
 uses in-process host spawn. On Linux, when
 `CODESPACE_LINUX_SANDBOX_BIN` (or `codespace-linux-sandbox` next to the
-gateway) probes successfully, that spawn is wrapped by the helper.
+gateway) probes successfully, that spawn is `helper run --plan` after a
+short `prepare`. Codex argv never enters the runner.
 `workspace_info.execution.isolation.command_sandbox` is `linux-sandbox`
 only then; otherwise `none`. Restricted network is OS-enforced in that
 case (`network.enforcement=enforced`). `exec_command.tty` defaults to false (pipes).

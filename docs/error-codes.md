@@ -84,7 +84,11 @@ containment held and the operation itself failed.
 before minting a `process_id` or taking a mutation lease. The runner
 repeats the same check. `PROCESS_SPAWN_FAILED` means the backend
 **confirmed** that no managed process was established; the gateway
-releases any lease. Neither code is `dispatch_status=unknown`.
+releases any lease. Linux helper `prepare` / protocol / helper OS-spawn
+failure is this code. After a managed helper spawn succeeds, `run --plan`
+load, self-exec, or inner sandbox failure is a process exit, not this
+code. Neither `INVALID_COMMAND` nor `PROCESS_SPAWN_FAILED` is
+`dispatch_status=unknown`.
 
 After `begin` mints an `operation_id`, tool errors include that id on
 `ErrorBody.operation_id`. Policy / lock / key-conflict refusals before

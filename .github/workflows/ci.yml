@@ -47,7 +47,18 @@ jobs:
       matrix:
         include:
           - name: root
-            command: cargo clippy --locked --all-targets -- -D warnings
+            command: |
+              set -euo pipefail
+              cargo clippy --locked --all-targets -- -D warnings
+              fail=0
+              for pkg in codespace-linux-sandbox codex-linux-sandbox; do
+                if cargo tree -p codespace-runner --locked --edges normal -i "$pkg" --prefix none >/dev/null 2>&1; then
+                  echo "codespace-runner graph must not include $pkg" >&2
+                  cargo tree -p codespace-runner --locked --edges normal -i "$pkg" --prefix none >&2 || true
+                  fail=1
+                fi
+              done
+              test "$fail" -eq 0
           - name: adapters
             command: |
               cargo clippy --locked --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings
@@ -89,8 +100,10 @@ jobs:
             command: cargo test --locked --manifest-path crates/pty/Cargo.toml
           - name: file-system
             command: cargo test --locked --manifest-path crates/file-system/Cargo.toml
+          - name: linux-sandbox-protocol
+            command: cargo test --locked -p codespace-linux-sandbox-protocol
           - name: linux-sandbox
-            command: cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --lib
+            command: cargo test --locked --manifest-path crates/linux-sandbox/Cargo.toml --bins --test cli
     steps:
       - uses: actions/checkout@v4
         with:

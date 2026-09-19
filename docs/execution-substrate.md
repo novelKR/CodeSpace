@@ -43,10 +43,12 @@ submodules, in parallel with `rust`. Core manifests may not declare
 `codex-*` deps. Core sources keep the agent/model grep. Isolated
 adapter manifests (`crates/patch`, `crates/codex-runtime`, `crates/pty`,
 `crates/file-system`, `crates/linux-sandbox`) use an
-**allowlist**; `third_party/codex` sources are never scanned.
+**allowlist**; `crates/linux-sandbox-protocol` is a root-workspace
+serde crate (no `codex-` keys). `third_party/codex` sources are never scanned.
 `SCAN_BASE` limits the tree to the update range; unknown range scans
 all core crates and adapter manifests. Clippy/tests still always run.
-The rust job checks the pin SHA (`PIN_ONLY=1`) **before** fmt/clippy.
+The rust job checks the pin SHA (`PIN_ONLY=1`) **before** fmt/clippy,
+and `cargo tree -p codespace-runner` for sandbox-specific graph edges.
 
 ## Invariant
 
@@ -194,8 +196,10 @@ request onto runner DTOs. Prefer `codex-process-hardening`,
 `codex-utils-pty`, `codex-uds` (transport primitive; RPC stays
 CodeSpace), and `codex-file-system` under PathSandbox scope
 (`crates/file-system` → `LOCAL_FS`, no-follow I/O and bounded walk).
-`codex-linux-sandbox` is taken via `crates/linux-sandbox` (dev-dep
-includes `codex-core`; keep that out of the product graph). Plus
+`codex-linux-sandbox` is taken via the `crates/linux-sandbox` **binary**
+(dev-dep includes `codex-core`; keep that out of the product graph).
+The runner talks `prepare` / `run --plan` through
+`crates/linux-sandbox-protocol`. Plus
 `codex-network-proxy` when a network axis exists. A container does not
 replace that subgraph.
 
@@ -300,7 +304,8 @@ P0 code for this substrate is in: Runner exec DTO **shape**
 resource serializer (request vs process owners), opt-in `UdsRunner` +
 `codespace-codex-runtime` (process-hardening + UDS), isolated
 `crates/pty` → `codex-utils-pty`, isolated `crates/file-system` →
-`LOCAL_FS`, isolated `crates/linux-sandbox` → `codex-linux-sandbox`.
+`LOCAL_FS`, isolated `crates/linux-sandbox` binary → `codex-linux-sandbox`
+(process boundary).
 Live MCP tool **names** stay frozen;
 `exec_command` has optional `tty` (default false).
 
@@ -310,7 +315,7 @@ runtime **shape** on Runner DTOs (done), PermissionProfile domain in
 tool arg) (done), resource serializer (done), transport
 (`UdsRunner`) with process-hardening + UDS (done, opt-in), PTY I/O
 backend (done), filesystem mechanics under PathSandbox (done), Linux
-command sandbox (done: helper wrap, Restricted hard deny). Still
+command sandbox (done: helper process boundary, Restricted hard deny). Still
 out: network (`Enabled` + proxy).
 
 **P1** — operation state machine / diff ledger, approval fallback

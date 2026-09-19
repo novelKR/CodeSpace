@@ -95,6 +95,7 @@ scan_runtime=0
 scan_pty=0
 scan_fs=0
 scan_linux_sandbox=0
+scan_protocol=0
 scan_all=0
 
 is_zero_sha() {
@@ -122,6 +123,9 @@ want_all() {
   fi
   if [[ -d crates/linux-sandbox ]]; then
     scan_linux_sandbox=1
+  fi
+  if [[ -d crates/linux-sandbox-protocol ]]; then
+    scan_protocol=1
   fi
 }
 
@@ -177,6 +181,11 @@ else
             scan_linux_sandbox=1
           fi
           ;;
+        crates/linux-sandbox-protocol|crates/linux-sandbox-protocol/*)
+          if [[ -d crates/linux-sandbox-protocol ]]; then
+            scan_protocol=1
+          fi
+          ;;
       esac
     done < <(git diff --name-only "$merge_base"...HEAD)
   else
@@ -196,7 +205,8 @@ if [[ "$scan_all" -eq 0 &&
       "$scan_runtime" -eq 0 &&
       "$scan_pty" -eq 0 &&
       "$scan_fs" -eq 0 &&
-      "$scan_linux_sandbox" -eq 0 ]]; then
+      "$scan_linux_sandbox" -eq 0 &&
+      "$scan_protocol" -eq 0 ]]; then
   echo "policy-scan skipped (no core crate or adapter changes)"
   exit 0
 fi
@@ -208,7 +218,7 @@ selected=()
 [[ "$scan_store" -eq 1 ]] && selected+=("store")
 [[ "$scan_server" -eq 1 ]] && selected+=("server")
 
-echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime pty=$scan_pty fs=$scan_fs linux-sandbox=$scan_linux_sandbox"
+echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime pty=$scan_pty fs=$scan_fs linux-sandbox=$scan_linux_sandbox protocol=$scan_protocol"
 
 scan_manifest() {
   local file="$1"
@@ -289,6 +299,29 @@ scan_source() {
   fi
 }
 
+# Runner/core must not take the helper as a path library. The protocol
+# crate name does not match this pattern (`-protocol` is not whitespace).
+scan_no_helper_lib() {
+  local file="$1"
+  local outfile="$2"
+  [[ -f "$file" ]] || return 0
+  local out
+  out="$(grep -nE '^[[:space:]]*codespace-linux-sandbox[[:space:]]*=' "$file" || true)"
+  if [[ -n "$out" ]]; then
+    {
+      echo "forbidden (codespace-linux-sandbox library path dep) in $file:"
+      echo "$out"
+    } >"$outfile"
+  fi
+}
+
+scan_helper_binary_only() {
+  local outfile="$1"
+  if [[ -f crates/linux-sandbox/src/lib.rs ]]; then
+    echo "forbidden: crates/linux-sandbox must be binary-only (src/lib.rs present)" >"$outfile"
+  fi
+}
+
 pids=()
 n=0
 
@@ -305,6 +338,7 @@ fi
 
 for crate in "${selected[@]+"${selected[@]}"}"; do
   launch scan_manifest "crates/${crate}/Cargo.toml"
+  launch scan_no_helper_lib "crates/${crate}/Cargo.toml"
 done
 
 for crate in "${selected[@]+"${selected[@]}"}"; do
@@ -341,6 +375,12 @@ fi
 
 if [[ "$scan_linux_sandbox" -eq 1 ]]; then
   launch scan_adapter_manifest crates/linux-sandbox/Cargo.toml linux-sandbox
+  launch scan_helper_binary_only
+fi
+
+if [[ "$scan_protocol" -eq 1 ]]; then
+  launch scan_manifest crates/linux-sandbox-protocol/Cargo.toml
+  launch scan_no_helper_lib crates/linux-sandbox-protocol/Cargo.toml
 fi
 
 for pid in "${pids[@]+"${pids[@]}"}"; do

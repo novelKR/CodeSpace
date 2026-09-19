@@ -609,15 +609,26 @@ dependencies = [
 name = "codespace-linux-sandbox"
 version = "0.6.0"
 dependencies = [
+ "codespace-linux-sandbox-protocol",
  "codex-linux-sandbox",
  "codex-protocol",
  "codex-sandboxing",
  "codex-utils-path-uri",
+ "libc",
  "rama-error",
  "rama-macros",
  "rama-utils",
+ "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "codespace-linux-sandbox-protocol"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

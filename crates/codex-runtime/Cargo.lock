@@ -786,21 +786,19 @@ dependencies = [
  "codex-file-system",
  "codex-utils-path-uri",
  "libc",
+ "rama-error",
+ "rama-macros",
+ "rama-utils",
  "rustix",
  "tokio",
 ]
 
 [[package]]
-name = "codespace-linux-sandbox"
+name = "codespace-linux-sandbox-protocol"
 version = "0.6.0"
 dependencies = [
- "codex-linux-sandbox",
- "codex-protocol",
- "codex-sandboxing",
- "codex-utils-path-uri",
- "rama-error",
- "rama-macros",
- "rama-utils",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -826,10 +824,11 @@ version = "0.6.0"
 dependencies = [
  "codespace-domain",
  "codespace-fs",
- "codespace-linux-sandbox",
+ "codespace-linux-sandbox-protocol",
  "codespace-policy",
  "codespace-pty",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
@@ -1114,28 +1113,6 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "codex-linux-sandbox"
-version = "0.154.0"
-dependencies = [
- "clap",
- "codex-install-context",
- "codex-network-proxy",
- "codex-process-hardening",
- "codex-protocol",
- "codex-sandboxing",
- "codex-utils-absolute-path",
- "globset",
- "landlock",
- "libc",
- "rustix",
- "seccompiler",
- "serde",
- "serde_json",
- "sha2",
- "url",
 ]
 
 [[package]]

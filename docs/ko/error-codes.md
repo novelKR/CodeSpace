@@ -86,7 +86,11 @@ operation 자체가 실패한 것입니다.
 `process_id` 발급과 mutation lease 전에 거절합니다. 러너도 같은 검사를
 반복합니다. `PROCESS_SPAWN_FAILED`는 백엔드가 managed process가
 **만들어지지 않았음을 확정**한 것입니다. 게이트웨이는 잡은 lease를
-해제합니다. 두 코드 모두 `dispatch_status=unknown`이 아닙니다.
+해제합니다. Linux helper `prepare` / protocol / helper OS spawn 실패가
+이 코드입니다. managed helper spawn이 성공한 뒤 `run --plan` load,
+self-exec, inner sandbox 실패는 process exit이며 이 코드가 아닙니다.
+`INVALID_COMMAND`와 `PROCESS_SPAWN_FAILED` 모두
+`dispatch_status=unknown`이 아닙니다.
 
 `begin`이 `operation_id`를 발급한 뒤, 도구 오류는 그 id를
 `ErrorBody.operation_id`에 포함합니다. `begin` 전의 정책 / 잠금 /
