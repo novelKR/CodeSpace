@@ -57,7 +57,9 @@ spawn입니다. Linux에서 `CODESPACE_LINUX_SANDBOX_BIN`(또는 게이트웨이
 다음 `helper run --plan`입니다. Codex argv는 러너에 들어오지 않습니다.
 `workspace_info.execution.isolation.command_sandbox`는 그때만
 `linux-sandbox`이고, 아니면 `none`입니다. Restricted 네트워크는 그때
-OS에서 강제됩니다(`network.enforcement=enforced`).
+OS에서 강제됩니다(`network.enforcement=enforced`). Enabled도 같은
+enforcement이며 헬퍼 안의 관리 HTTP 프록시를 씁니다. 헬퍼가 없으면
+`PROCESS_SPAWN_FAILED`이지 호스트 FullAccess가 아닙니다.
 `exec_command.tty` 기본값은 false(파이프)입니다.
 `tty: true`는 24x80 PTY를 붙입니다. Exec DTO cwd는 `WorkspaceRoot`이며
 `PATH` / `HOME` / `LANG`은 러너 프로세스에서 적용합니다(PTY일 때
@@ -74,14 +76,18 @@ OS에서 강제됩니다(`network.enforcement=enforced`).
   "workspaces": {
     "demo": {
       "root": "/absolute/path/to/your/project",
-      "profile": "workspace-write"
+      "profile": "workspace-write",
+      "network": "restricted"
     }
   }
 }
 ```
 
 프로필: `read-only`(기본 의도) 또는 `workspace-write`. `host-admin`은
-제품 프로필이 아닙니다. 선택적 운영자 `environments`는 `host` 또는
+제품 프로필이 아닙니다. 선택적 운영자 `network`는 `restricted`(기본)
+또는 `enabled`이며 `environment`처럼 워크스페이스 JSON이지 도구 인자나
+`{ "network": true }`가 아닙니다. Enabled는 Linux 헬퍼가 필요합니다.
+선택적 운영자 `environments`는 `host` 또는
 `linux-container`를 등록할 수 있습니다. 생략하면 암시적 로컬 호스트입니다.
 `linux-container`는 exec 경로가 아닙니다. 도구와 `workspace_info`에는
 `environment_id`가 없습니다. `workspace_id`로 `workspace_info`를 호출하면
@@ -91,8 +97,8 @@ occupancy 아님 — `exec_command`나 `apply_patch`는 여전히
 `WORKSPACE_BUSY`일 수 있음; 도구 존재는 `tools_exposed`), process가
 가능할 때 resize 없는 고정 24x80 PTY, mutation lease /
 `WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대 광고된 Linux command
-sandbox, 헬퍼 probe가 성공하면 OS가 강제하는 restricted 네트워크
-정책입니다.
+sandbox, 헬퍼 probe가 성공하면 OS가 강제하는 `network.policy`
+(`restricted` 또는 `enabled`)입니다.
 `output_combined=true`는 `read_process`가 하나의 combined stream만
 노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
 `exec_command`는 `dispatch_status`(`confirmed` 또는

@@ -588,6 +588,12 @@ impl ExecLaunch {
 /// `helper run --plan`; Codex translation happens inside that process.
 fn exec_launch(ws: &Workspace, req: &RunnerExecRequest) -> Result<ExecLaunch, ErrorBody> {
     if !linux_sandbox::probe() {
+        if matches!(req.policy.network, NetworkAxis::Enabled) {
+            return Err(ErrorBody::new(
+                ErrorCode::ProcessSpawnFailed,
+                "Enabled network requires the Linux command sandbox helper",
+            ));
+        }
         return Ok(ExecLaunch {
             program: PathBuf::from(&req.argv[0]),
             args: req.argv.iter().skip(1).map(OsString::from).collect(),
@@ -595,7 +601,7 @@ fn exec_launch(ws: &Workspace, req: &RunnerExecRequest) -> Result<ExecLaunch, Er
             plan_path: None,
         });
     }
-    let network = sandbox_network(req.policy.network)?;
+    let network = sandbox_network(req.policy.network);
     let writable_workspace = matches!(req.policy.workspace_profile, Profile::WorkspaceWrite);
     let launch =
         linux_sandbox::prepare_run(&ws.root, &ws.root, writable_workspace, network, &req.argv)?;
@@ -607,13 +613,10 @@ fn exec_launch(ws: &Workspace, req: &RunnerExecRequest) -> Result<ExecLaunch, Er
     })
 }
 
-fn sandbox_network(network: NetworkAxis) -> Result<SandboxNetwork, ErrorBody> {
+fn sandbox_network(network: NetworkAxis) -> SandboxNetwork {
     match network {
-        NetworkAxis::Restricted => Ok(SandboxNetwork::Restricted),
-        NetworkAxis::Enabled => Err(ErrorBody::new(
-            ErrorCode::ProcessSpawnFailed,
-            "linux command sandbox does not support Enabled network yet",
-        )),
+        NetworkAxis::Restricted => SandboxNetwork::Restricted,
+        NetworkAxis::Enabled => SandboxNetwork::Enabled,
     }
 }
 
@@ -709,13 +712,59 @@ mod tests {
         assert!(!require_linux_sandbox());
     }
 
-    #[test]
-    fn enabled_network_is_not_silently_restricted() {
-        let err = sandbox_network(NetworkAxis::Enabled).unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
+    #[tokio::test]
+    async fn enabled_network_is_not_silently_restricted() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let process_id = ProcessId("proc-enabled-net".into());
+        let mut req = RunnerExecRequest::for_host(
+            vec!["/bin/echo".into(), "ok".into()],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.policy.network = NetworkAxis::Enabled;
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        if !crate::linux_sandbox_available() {
+            let err = runner.exec(&ws, req).await.unwrap_err();
+            assert_eq!(
+                err.as_execution().map(|body| body.code),
+                Some(ErrorCode::ProcessSpawnFailed)
+            );
+            let restricted = exec_launch(
+                &ws,
+                &RunnerExecRequest::for_host(
+                    vec!["/bin/true".into()],
+                    ProcessId("proc-restricted-fallback".into()),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .unwrap();
+            assert!(!restricted.sandboxed);
+            return;
+        }
+        runner.exec(&ws, req).await.unwrap();
+        let mut chunk = String::new();
+        for _ in 0..200 {
+            let result = runner
+                .read_process(RunnerReadProcess {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                })
+                .await
+                .unwrap();
+            chunk = result.chunk;
+            if result.eof || chunk.contains("ok") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            chunk.contains("ok"),
+            "Enabled network must spawn through the helper, got {chunk:?}"
+        );
         assert_eq!(
-            sandbox_network(NetworkAxis::Restricted).unwrap(),
-            SandboxNetwork::Restricted
+            sandbox_network(NetworkAxis::Enabled),
+            SandboxNetwork::Enabled
         );
     }
 

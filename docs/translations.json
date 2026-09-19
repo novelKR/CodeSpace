@@ -91,8 +91,8 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것"
       ],
-      "source_sha256": "6d1fac0a089fe40ed1e8bcea563cb860452c5551d038379e50caa0d5295a6d62",
-      "translation_sha256": "c6650e783e2ab7b98039c21599773cf27b9d15a5b101892d34f07ec52cb2ceaa"
+      "source_sha256": "c296a1052686a33c4ef7e5e22696c62d4ba58adf622833b61db4375e811faa82",
+      "translation_sha256": "bbc4baab8e867b940f837982056c7ddfff667c8901289665b807c4dc31b0a234"
     },
     {
       "id": "chatgpt-connector",
@@ -179,8 +179,8 @@
         "실행-기반",
         "훅과-스킬"
       ],
-      "source_sha256": "6757811d90483be000c2256e830d342b7404f652bf40f72c2803c5ad77212a0d",
-      "translation_sha256": "8cd2af2c4e0479dacc1b3f9acdcfdbb6ba7f6374b79a5d6bca7b9de1a411af69"
+      "source_sha256": "42159d3e4611f04f9cf4743892f7eb089226d9350163152c9386bf82f49908cb",
+      "translation_sha256": "f8e9397b4b24125ed69061288f0b9de843986a807f1e1e229c767bde5fb08748"
     },
     {
       "id": "protocol-compatibility",
@@ -274,8 +274,8 @@
         "러너-격리",
         "이후-프로세스-분리"
       ],
-      "source_sha256": "add1bfda569c8a4964ee22d1000b6e39802023e69967d7436a6d333cb4a69a70",
-      "translation_sha256": "423a9a798d00d71eb05075e5549d010dd6f43a225b4a9c5408b4600909651da8"
+      "source_sha256": "feaebeb6072559c48dc356f3810c0563303d4e5b89013d3ac2930613062a8ac4",
+      "translation_sha256": "b4f54f498e03852ea2a46c812988397bb72679fe68ab91220cdf72c03e0c2cfd"
     },
     {
       "id": "error-codes",
@@ -342,8 +342,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "85c3e5efaa2dcc4c540ee9aa5ca911cdaad8bbe08e914aabd3a8c3357c3ae4c5",
-      "translation_sha256": "5ca737d630bcfcb6e5089307da53d495865852de597bf9352c54df33e16f6832"
+      "source_sha256": "d22a450bcaa323390adc8a49ccbe99f8876e3fc73dab9e134838d45fa05bc7e6",
+      "translation_sha256": "4cca24552254c99cb127614837fb9963083c9a289363317601929aad4a9648de"
     },
     {
       "id": "upstream-lock",

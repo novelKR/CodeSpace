@@ -26,9 +26,10 @@ pub struct PathRule {
 }
 
 /// Network axis is recorded only. It is not an allow engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetworkAxis {
+    #[default]
     Restricted,
     Enabled,
 }

@@ -1,7 +1,7 @@
 //! Linux `codex_linux_sandbox::run_main`. Non-Linux compiles this module
-//! but must not call the upstream entry (it panics). After `run --plan`,
-//! this process `exec`s itself with Codex argv so the managed PID is
-//! unchanged.
+//! but must not call the upstream entry (it panics). Restricted
+//! `run --plan` `exec`s this process with Codex argv so the managed PID
+//! is unchanged. Enabled spawn+waits instead so `NetworkProxy` can live.
 
 use std::path::PathBuf;
 
@@ -18,7 +18,8 @@ pub fn run_main() {
 }
 
 /// Replace this process with the same binary and `argv` (Codex flags).
-/// Does not spawn an extra child. Inherits the env the runner applied.
+/// Restricted `run --plan` uses this so the managed PID stays the helper.
+/// Enabled starts `NetworkProxy` in the helper and spawn+waits instead.
 pub fn exec_self(argv: &[String]) -> ! {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codespace-linux-sandbox"));
     #[cfg(unix)]

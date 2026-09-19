@@ -67,7 +67,12 @@ Exec axis (`read-only` denies, `workspace-write` allows). Path globs are
 **domain only**; live enforcement stays coarse `allow(Write|Exec)` plus
 PathSandbox. Restricted network is OS-enforced when the Linux helper
 probe succeeds (`workspace_info.execution.network.enforcement=enforced`).
-`Enabled` / proxy is later. The axis never grants. This is not an
+`Enabled` is isolated netns plus a helper-owned managed proxy, not host
+FullAccess. Without the helper, Enabled is `PROCESS_SPAWN_FAILED` (not
+silent allow). Operators may set workspace JSON `network` to
+`restricted` (default) or `enabled`; MCP profiles stay
+`read-only` / `workspace-write` and `{ "network": true }` is not a
+grant. The axis never grants. This is not an
 import of Codex user config.
 
 ## Four axes (target domain)
@@ -315,8 +320,8 @@ runtime **shape** on Runner DTOs (done), PermissionProfile domain in
 tool arg) (done), resource serializer (done), transport
 (`UdsRunner`) with process-hardening + UDS (done, opt-in), PTY I/O
 backend (done), filesystem mechanics under PathSandbox (done), Linux
-command sandbox (done: helper process boundary, Restricted hard deny). Still
-out: network (`Enabled` + proxy).
+command sandbox (done: helper process boundary, Restricted hard deny,
+Enabled managed proxy). P0 execution subgraph is complete.
 
 **P1** — operation state machine / diff ledger, approval fallback
 tools, internal watch, richer process handles (resize, caps),
@@ -327,7 +332,7 @@ MCP contract, deterministic hooks, skills as resources or prompts.
 
 **P3** — remote environment, MCP federation, artifact registry.
 
-The next **code** WPs are remaining execution subgraph crates behind
-the existing trait, without splitting `apply_patch` into gateway RPCs.
-Start at network. Sandbox / network are not a default homegrown OS
+The next **code** WPs are P1 (operation state machine / diff ledger)
+behind the existing trait, without splitting `apply_patch` into gateway RPCs.
+Sandbox / network are not a default homegrown OS
 stack ([codex-reuse.md](codex-reuse.md)).

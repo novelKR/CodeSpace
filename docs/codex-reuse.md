@@ -236,8 +236,8 @@ Documented order. **Taken in code this WP:** process-hardening, UDS, PTY
 (`crates/pty` → `codex-utils-pty`), filesystem (`crates/file-system`
 → `LOCAL_FS` / `ExecutorFileSystem`), and linux-sandbox
 (`crates/linux-sandbox` binary → prepare / opaque plan / `run --plan`
-exec, Restricted hard deny). **Not
-taken:** network (`Enabled` + proxy).
+Restricted `exec` / Enabled managed proxy). **Taken:**
+network (`Enabled` + proxy).
 
 ```text
 process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
@@ -285,18 +285,21 @@ and typed errors (`SymlinkRejected`, `NotRegularFile`). MCP `read` /
 Process boundary, not a library adapter. The runner sends
 `SandboxPrepareRequest` JSON (`SANDBOX_HELPER_PROTOCOL = 1`) to
 `prepare`, gets a plan **pathname** only, then spawns managed
-`run --plan`. The helper unlinks the 0600 plan and `exec`s itself with
-Codex argv (same PID). `WIRE_PROTOCOL` stays `3`. Restricted network is
-`--unshare-net` plus Restricted seccomp. Direct proxy flags
-(`--allow-network-for-proxy`, `--proxy-route-spec`) are unused; that is
-the next WP. Runtime deps do not include `codex-core`; **dev-dependencies
+`run --plan`. Restricted unlinks the 0600 plan and `exec`s itself with
+Codex argv (same PID). Enabled starts `NetworkProxy` in the helper, sets
+`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, then spawn+waits the Codex
+argv child (`--allow-network-for-proxy`; `--proxy-route-spec` is attached
+by the Codex outer at runtime, not stored in the plan). `WIRE_PROTOCOL`
+stays `3`. Restricted network is `--unshare-net` plus Restricted
+seccomp. Enabled is isolated netns plus that managed proxy, not Codex
+FullAccess host network. Runtime deps do not include `codex-core`; **dev-dependencies
 do** — adapter tests must not pull that graph into the product binary.
 `codex_protocol::PermissionProfile` stays inside the helper.
 `codespace-runner` depends on `codespace-linux-sandbox-protocol` only.
 
-**Transitive (allowed in the adapter):** `codex-sandboxing`,
-`codex-network-proxy`, `codex-protocol`. Direct use of the proxy is for
-when a PermissionProfile **network** axis exists. Not an allow engine.
+**Direct in the helper:** `codex-network-proxy` (`NetworkProxy` lifetime
+for Enabled `run --plan`). **Transitive (allowed in the adapter):**
+`codex-sandboxing`, `codex-protocol`. Not an allow engine.
 Not a root-workspace dep.
 
 ### Prefer reuse (when that WP)

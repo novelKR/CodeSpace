@@ -67,9 +67,13 @@ sandbox-specific 그래프 edge도 검사합니다.
 (`read-only`는 거부, `workspace-write`는 허용). 경로 glob은 **표현만**
 있고 live enforcement는 기존 coarse `allow(Write|Exec)` + PathSandbox입니다.
 Restricted 네트워크는 Linux 헬퍼 probe가 성공하면 OS에서 강제합니다
-(`workspace_info.execution.network.enforcement=enforced`). `Enabled` /
-proxy는 이후입니다. 축이 허용을 올리지는 않습니다. Codex 사용자 설정을
-가져오는 것이 아닙니다.
+(`workspace_info.execution.network.enforcement=enforced`). `Enabled`는
+호스트 FullAccess가 아니라 격리 netns + 헬퍼 소유 관리 프록시입니다.
+헬퍼가 없으면 Enabled는 `PROCESS_SPAWN_FAILED`이며 조용한 허용이
+아닙니다. 운영자 워크스페이스 JSON `network`는 `restricted`(기본) 또는
+`enabled`입니다. MCP 프로필은 `read-only` / `workspace-write`로 남고
+`{ "network": true }`는 부여가 아닙니다. 축이 허용을 올리지는 않습니다.
+Codex 사용자 설정을 가져오는 것이 아닙니다.
 
 ## 네 축 (목표 도메인)
 
@@ -308,7 +312,7 @@ PermissionProfile 도메인(완료), Environment 도메인(운영자 등록, 도
 인자 아님)(완료), 자원 직렬화기(완료), process-hardening + UDS를 받는
 전송(`UdsRunner`)(완료, 선택적), PTY I/O 백엔드(완료), PathSandbox 아래
 파일시스템 역학(완료), Linux command sandbox(완료: 헬퍼 프로세스 경계, Restricted
-hard deny). 아직 밖: network(`Enabled` + proxy).
+hard deny, Enabled 관리 프록시). P0 실행 서브그래프는 완료입니다.
 
 **P1** — 작업 상태 기계 / diff 원장, 승인 폴백 도구, 내부 watch, 더
 풍부한 프로세스 핸들(resize, caps), 연결 끊김 정책.
@@ -318,7 +322,6 @@ hard deny). 아직 밖: network(`Enabled` + proxy).
 
 **P3** — 원격 환경, MCP 연합, 아티팩트 레지스트리.
 
-다음 **코드** WP는 기존 트레이트 뒤의 남은 실행 서브그래프이며,
-`apply_patch`를 게이트웨이 RPC로 쪼개지 않습니다. network부터
-시작합니다. Sandbox / network는 기본 자체 OS 스택이 아닙니다
+다음 **코드** WP는 기존 트레이트 뒤의 P1(작업 상태 기계 / diff 원장)이며,
+`apply_patch`를 게이트웨이 RPC로 쪼개지 않습니다. Sandbox / network는 기본 자체 OS 스택이 아닙니다
 ([codex-reuse.md](codex-reuse.md)).

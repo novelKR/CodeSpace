@@ -218,14 +218,12 @@ impl WorkspaceExecutionInfo {
         }
     }
 
-    /// Overlay after a successful Linux helper probe. Restricted network
-    /// advertises OS enforcement; Enabled stays unenforced in this WP.
-    pub fn with_linux_command_sandbox(mut self, network_restricted: bool) -> Self {
+    /// Overlay after a successful Linux helper probe. Restricted deny and
+    /// Enabled managed-proxy both advertise OS enforcement.
+    pub fn with_linux_command_sandbox(mut self) -> Self {
         self.isolation.command_sandbox = CommandSandboxState::LinuxSandbox;
-        if network_restricted {
-            self.network.enforcement = NetworkEnforcementState::Enforced;
-            self.network.client_may_escalate = false;
-        }
+        self.network.enforcement = NetworkEnforcementState::Enforced;
+        self.network.client_may_escalate = false;
         self
     }
 }
@@ -335,7 +333,7 @@ mod tests {
                 exec: true,
             },
         )
-        .with_linux_command_sandbox(true);
+        .with_linux_command_sandbox();
         assert_eq!(
             exec.isolation.command_sandbox,
             CommandSandboxState::LinuxSandbox
@@ -345,6 +343,23 @@ mod tests {
         let json = serde_json::to_value(&exec).unwrap();
         assert_eq!(json["isolation"]["command_sandbox"], "linux-sandbox");
         assert_eq!(json["network"]["enforcement"], "enforced");
+    }
+
+    #[test]
+    fn linux_sandbox_overlay_enforces_enabled_network() {
+        let exec = WorkspaceExecutionInfo::from_effective(
+            environment(ClientEnvironmentKind::Host, true, true, true),
+            EffectivePermissionInfo {
+                read: true,
+                write: true,
+                exec: true,
+            },
+            NetworkPolicyState::Enabled,
+        )
+        .with_linux_command_sandbox();
+        assert_eq!(exec.network.policy, NetworkPolicyState::Enabled);
+        assert_eq!(exec.network.enforcement, NetworkEnforcementState::Enforced);
+        assert!(!exec.network.client_may_escalate);
     }
 
     #[test]
