@@ -26,8 +26,8 @@ pub use ids::{IntentId, OperationId, OperationKey, ProcessId, WorkId, WorkspaceI
 pub use info::{workspace_info, WorkspaceInfo, WorkspaceInfoParams};
 pub use intent::{DeliveryPolicy, IntentKind, IntentState, UserIntent};
 pub use patch::{
-    ApplyPatchParams, ApplyPatchResult, FileChange, FileChangeKind, OperationStatusParams,
-    OperationStatusResult, PatchStatus,
+    ApplyPatchParams, ApplyPatchResult, FileChange, FileChangeKind, OperationEvent,
+    OperationEventName, OperationKind, OperationStatusParams, OperationStatusResult, PatchStatus,
 };
 pub use process::{
     ExecCommandParams, ExecCommandResult, ExecDispatchStatus, ReadProcessParams, ReadProcessResult,

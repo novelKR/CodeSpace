@@ -195,7 +195,7 @@ impl CodeSpace {
 
     #[tool(
         name = "operation_status",
-        description = "Look up an operation by exactly one of operation_id or operation_key. Does not re-run the operation. Distinct from HTTP request ids."
+        description = "Look up a recorded patch by exactly one of operation_id or operation_key. Returns kind=patch, files/changes hashes, and minted/finished events. Does not re-run the operation or track exec_command. Distinct from HTTP request ids and process_id."
     )]
     async fn operation_status(
         &self,
@@ -912,6 +912,12 @@ mod tests {
         let stored = store.get(&result.operation_id).unwrap();
         assert_eq!(stored.status, PatchStatus::Unknown);
         assert_ne!(stored.status, PatchStatus::Rejected);
+        assert!(stored.finished_at.is_some());
+        assert!(stored.events.iter().any(|event| {
+            event.name == codespace_domain::OperationEventName::Finished
+                && event.reason.as_deref() == Some("unknown")
+        }));
+        assert!(stored.result.changes.is_empty());
         assert!(!dir.path().join("ws/lost.txt").exists());
     }
 

@@ -121,6 +121,16 @@ async fn operation_key_replays_and_conflicts_without_rewriting() {
     let status_body = payload(&status);
     assert_eq!(status_body["status"], "applied");
     assert_eq!(status_body["replayed"], false);
+    assert_eq!(status_body["kind"], "patch");
+    assert_eq!(status_body["workspace_id"], "demo");
+    assert!(status_body["finished_at"].as_i64().is_some());
+    assert_eq!(status_body["events"][0]["name"], "minted");
+    assert_eq!(status_body["events"][1]["name"], "finished");
+    assert_eq!(status_body["events"][1]["status"], "applied");
+    let files = status_body["files"].as_array().expect("files");
+    assert!(files.iter().any(|path| path == "new.txt"));
+    let changes = status_body["changes"].as_array().expect("changes");
+    assert!(changes.iter().any(|change| change["path"] == "new.txt"));
 
     let by_key = client
         .call_tool(

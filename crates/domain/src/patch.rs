@@ -79,6 +79,53 @@ impl ApplyPatchResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    #[default]
+    Patch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationEventName {
+    Minted,
+    Finished,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OperationEvent {
+    pub at: i64,
+    pub name: OperationEventName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<PatchStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl OperationEvent {
+    pub fn minted(at: i64) -> Self {
+        Self {
+            at,
+            name: OperationEventName::Minted,
+            status: None,
+            reason: None,
+        }
+    }
+
+    pub fn finished(at: i64, status: PatchStatus) -> Self {
+        Self {
+            at,
+            name: OperationEventName::Finished,
+            status: Some(status),
+            reason: match status {
+                PatchStatus::Unknown => Some("unknown".into()),
+                _ => None,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OperationStatusParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,4 +139,16 @@ pub struct OperationStatusResult {
     pub operation_id: OperationId,
     pub status: PatchStatus,
     pub replayed: bool,
+    #[serde(default)]
+    pub kind: OperationKind,
+    pub workspace_id: WorkspaceId,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FileChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<OperationEvent>,
 }

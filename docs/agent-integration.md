@@ -152,7 +152,7 @@ A live command occupies the workspace. Wait for it to end or terminate it before
 }
 ```
 
-Use exactly one lookup identifier. `operation_status` tracks patches, not commands. A request ID identifies a transport message; `operation_id` identifies a recorded patch; `process_id` identifies a managed process. None of these IDs grants authority. A recorded patch refusal after dispatch does not prove that disk contents are unchanged; inspect files when verification failed after application.
+Use exactly one lookup identifier. `operation_status` returns the recorded patch ledger: `kind` is always `patch`, plus `workspace_id`, `created_at`, optional `finished_at`, `files`, `changes` (path, kind, and available before/after hashes), and `minted`/`finished` events. An unfinished record has no `finished_at`. A `finished` event with `reason: "unknown"` means the gateway closed the record without a confirmed result. The lookup does not re-run the patch and does not track `exec_command`; commands stay on `process_id`. A request ID identifies a transport message; `operation_id` identifies a recorded patch; `process_id` identifies a managed process. None of these IDs grants authority. A recorded patch refusal after dispatch does not prove that disk contents are unchanged; inspect files when verification failed after application.
 
 ## Handle user instructions and finish
 

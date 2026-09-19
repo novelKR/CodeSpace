@@ -32,7 +32,7 @@ Use relative paths and versions returned by `read`. The version `absent` means t
 
 The Runner snapshots affected files and restores them if the helper apply call fails. An error while verifying a successful helper response currently returns before restoration. The gateway can record that error as `rejected` even though files may have changed. Do not interpret every rejected result as proof of no writes. Crash recovery also does not automatically restore snapshots or replay work. No `git reset --hard` is used.
 
-A successful result includes affected `files` and `changes` with kind and available before/after hashes. Those hashes describe the observed files, not a repository commit or a successful build.
+A successful result includes affected `files` and `changes` with kind and available before/after hashes. Those hashes describe the observed files, not a repository commit or a successful build. The same `files` and `changes` are stored on the patch ledger and returned by `operation_status`, together with `kind: "patch"` and `minted`/`finished` events. Commands are not recorded there.
 
 <a id="write-lock"></a>
 <a id="transport"></a>

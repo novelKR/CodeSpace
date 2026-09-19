@@ -7,8 +7,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use codespace_domain::{
-    ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, OperationId, OperationKey,
-    OperationStatusResult, PatchStatus,
+    ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, OperationEvent, OperationEventName,
+    OperationId, OperationKey, OperationKind, OperationStatusResult, PatchStatus, WorkspaceId,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -21,12 +21,16 @@ pub struct StoredOperation {
     pub status: PatchStatus,
     pub replayed: bool,
     pub result: ApplyPatchResult,
+    pub workspace_id: WorkspaceId,
+    pub created_at: i64,
+    pub finished_at: Option<i64>,
+    pub events: Vec<OperationEvent>,
 }
 
 #[derive(Debug)]
 pub enum Begin {
     Fresh(OperationId),
-    Replayed(StoredOperation),
+    Replayed(Box<StoredOperation>),
 }
 
 pub struct Store {
@@ -66,7 +70,9 @@ impl Store {
                 fingerprint TEXT NOT NULL,
                 status TEXT NOT NULL,
                 result_json TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                events_json TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_key
                 ON operations(operation_key)
@@ -103,6 +109,7 @@ impl Store {
                 WHERE work_id IS NULL;",
         )
         .map_err(|e| e.to_string())?;
+        migrate_operations(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             locks: Mutex::new(resource::ResourceSerializer::default()),
@@ -204,7 +211,7 @@ impl Store {
                         "operation_key reused with a different request",
                     ));
                 }
-                return Ok(Begin::Replayed(row.into_stored(true)));
+                return Ok(Begin::Replayed(Box::new(row.into_stored(true))));
             }
         }
 
@@ -212,10 +219,12 @@ impl Store {
         let pending = ApplyPatchResult::new(PatchStatus::Unknown, operation_id.clone());
         let result_json = serde_json::to_string(&pending).map_err(ser_err)?;
         let now = now_secs();
+        let events = vec![OperationEvent::minted(now)];
+        let events_json = serde_json::to_string(&events).map_err(ser_err)?;
         conn.execute(
             "INSERT INTO operations
-                (operation_id, operation_key, workspace_id, fingerprint, status, result_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (operation_id, operation_key, workspace_id, fingerprint, status, result_json, created_at, finished_at, events_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
             params![
                 operation_id.0,
                 operation_key.map(|k| k.0.as_str()),
@@ -224,6 +233,7 @@ impl Store {
                 status_str(PatchStatus::Unknown),
                 result_json,
                 now,
+                events_json,
             ],
         )
         .map_err(sql_err)?;
@@ -236,19 +246,36 @@ impl Store {
         result: &ApplyPatchResult,
     ) -> Result<(), ErrorBody> {
         let conn = self.conn.lock().expect("sqlite mutex");
-        let json = serde_json::to_string(result).map_err(ser_err)?;
-        let n = conn
-            .execute(
-                "UPDATE operations SET status = ?1, result_json = ?2 WHERE operation_id = ?3",
-                params![status_str(result.status), json, operation_id.0],
-            )
-            .map_err(sql_err)?;
-        if n == 0 {
+        let Some(row) = load_by_id(&conn, &operation_id.0)? else {
             return Err(ErrorBody::new(
                 ErrorCode::OperationNotFound,
                 "unknown operation_id",
             ));
+        };
+        let now = now_secs();
+        let mut events = row.events();
+        if !events
+            .iter()
+            .any(|event| event.name == OperationEventName::Minted)
+        {
+            events.insert(0, OperationEvent::minted(row.created_at));
         }
+        events.push(OperationEvent::finished(now, result.status));
+        let events_json = serde_json::to_string(&events).map_err(ser_err)?;
+        let json = serde_json::to_string(result).map_err(ser_err)?;
+        conn.execute(
+            "UPDATE operations
+             SET status = ?1, result_json = ?2, finished_at = ?3, events_json = ?4
+             WHERE operation_id = ?5",
+            params![
+                status_str(result.status),
+                json,
+                now,
+                events_json,
+                operation_id.0
+            ],
+        )
+        .map_err(sql_err)?;
         Ok(())
     }
 
@@ -295,6 +322,13 @@ fn to_status(stored: StoredOperation) -> OperationStatusResult {
         operation_id: stored.operation_id,
         status: stored.status,
         replayed: false,
+        kind: OperationKind::Patch,
+        workspace_id: stored.workspace_id,
+        created_at: stored.created_at,
+        finished_at: stored.finished_at,
+        files: stored.result.files,
+        changes: stored.result.changes,
+        events: stored.events,
     }
 }
 
@@ -302,34 +336,59 @@ struct Row {
     operation_id: String,
     fingerprint: String,
     result_json: String,
+    workspace_id: String,
+    created_at: i64,
+    finished_at: Option<i64>,
+    events_json: Option<String>,
 }
 
 impl Row {
+    fn events(&self) -> Vec<OperationEvent> {
+        self.events_json
+            .as_deref()
+            .filter(|raw| !raw.is_empty())
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default()
+    }
+
     fn into_stored(self, replayed: bool) -> StoredOperation {
         let mut result: ApplyPatchResult = serde_json::from_str(&self.result_json).unwrap_or(
             ApplyPatchResult::new(PatchStatus::Unknown, OperationId(self.operation_id.clone())),
         );
         result.replayed = replayed;
+        let events = self.events();
         StoredOperation {
             operation_id: OperationId(self.operation_id),
             status: result.status,
             replayed,
             result,
+            workspace_id: WorkspaceId(self.workspace_id),
+            created_at: self.created_at,
+            finished_at: self.finished_at,
+            events,
         }
     }
 }
 
+const OPERATION_SELECT: &str = "SELECT operation_id, fingerprint, result_json, workspace_id, created_at, finished_at, events_json FROM operations";
+
+fn map_operation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
+    Ok(Row {
+        operation_id: row.get(0)?,
+        fingerprint: row.get(1)?,
+        result_json: row.get(2)?,
+        workspace_id: row.get(3)?,
+        created_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        events_json: row.get(6)?,
+    })
+}
+
 fn load_by_key(conn: &Connection, key: &str) -> Result<Option<Row>, ErrorBody> {
     conn.query_row(
-        "SELECT operation_id, fingerprint, result_json FROM operations WHERE operation_key = ?1",
+        &format!("{OPERATION_SELECT} WHERE operation_key = ?1"),
         params![key],
-        |row| {
-            Ok(Row {
-                operation_id: row.get(0)?,
-                fingerprint: row.get(1)?,
-                result_json: row.get(2)?,
-            })
-        },
+        map_operation_row,
     )
     .optional()
     .map_err(sql_err)
@@ -337,18 +396,37 @@ fn load_by_key(conn: &Connection, key: &str) -> Result<Option<Row>, ErrorBody> {
 
 fn load_by_id(conn: &Connection, id: &str) -> Result<Option<Row>, ErrorBody> {
     conn.query_row(
-        "SELECT operation_id, fingerprint, result_json FROM operations WHERE operation_id = ?1",
+        &format!("{OPERATION_SELECT} WHERE operation_id = ?1"),
         params![id],
-        |row| {
-            Ok(Row {
-                operation_id: row.get(0)?,
-                fingerprint: row.get(1)?,
-                result_json: row.get(2)?,
-            })
-        },
+        map_operation_row,
     )
     .optional()
     .map_err(sql_err)
+}
+
+fn migrate_operations(conn: &Connection) -> Result<(), String> {
+    let columns = operation_columns(conn)?;
+    if !columns.iter().any(|name| name == "finished_at") {
+        conn.execute("ALTER TABLE operations ADD COLUMN finished_at INTEGER", [])
+            .map_err(|err| err.to_string())?;
+    }
+    if !columns.iter().any(|name| name == "events_json") {
+        conn.execute("ALTER TABLE operations ADD COLUMN events_json TEXT", [])
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn operation_columns(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(operations)")
+        .map_err(|err| err.to_string())?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    Ok(columns)
 }
 
 fn status_str(status: PatchStatus) -> &'static str {
@@ -384,7 +462,9 @@ pub use coord::CreateIntent;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codespace_domain::WorkspaceId;
+    use codespace_domain::{
+        FileChange, FileChangeKind, OperationEventName, OperationKind, WorkspaceId,
+    };
     use std::collections::BTreeMap;
 
     fn params(patch: &str, key: &str) -> ApplyPatchParams {
@@ -473,6 +553,12 @@ mod tests {
         assert_eq!(by_key.operation_id, id);
         assert_eq!(by_key.status, PatchStatus::Applied);
         assert!(!by_key.replayed);
+        assert_eq!(by_key.kind, OperationKind::Patch);
+        assert_eq!(by_key.workspace_id.0, "demo");
+        assert!(by_key.finished_at.is_some());
+        assert_eq!(by_key.events[0].name, OperationEventName::Minted);
+        assert_eq!(by_key.events[1].name, OperationEventName::Finished);
+        assert_eq!(by_key.events[1].status, Some(PatchStatus::Applied));
         assert_eq!(
             store.status_lookup(None, None).unwrap_err().code,
             ErrorCode::OperationNotFound
@@ -590,5 +676,99 @@ mod tests {
         assert!(replay.replayed);
         assert_eq!(replay.operation_id, original);
         assert_eq!(replay.status, PatchStatus::Unknown);
+        let status = store.status(&original).unwrap();
+        assert_eq!(status.kind, OperationKind::Patch);
+        assert!(status.finished_at.is_none());
+        assert_eq!(status.events.len(), 1);
+        assert_eq!(status.events[0].name, OperationEventName::Minted);
+        assert!(status.files.is_empty());
+        assert!(status.changes.is_empty());
+    }
+
+    #[test]
+    fn status_lookup_exposes_files_changes_and_finish_reason() {
+        let store = Store::memory().unwrap();
+        let first = params("patch-a", "ledger-1");
+        let fp = Store::fingerprint(&first);
+        let Begin::Fresh(id) = store
+            .begin(first.operation_key.as_ref(), "demo", &fp)
+            .unwrap()
+        else {
+            panic!("expected fresh");
+        };
+        let mut done = ApplyPatchResult::new(PatchStatus::Applied, id.clone());
+        done.files = vec!["a.txt".into()];
+        done.changes = vec![FileChange {
+            path: "a.txt".into(),
+            before_version: Some("absent".into()),
+            after_version: Some("hash-a".into()),
+            kind: FileChangeKind::Add,
+        }];
+        store.finish(&id, &done).unwrap();
+        let status = store
+            .status_lookup(None, first.operation_key.as_ref())
+            .unwrap();
+        assert_eq!(status.files, vec!["a.txt"]);
+        assert_eq!(status.changes[0].after_version.as_deref(), Some("hash-a"));
+        assert_eq!(status.events[1].status, Some(PatchStatus::Applied));
+        assert_eq!(status.events[1].reason, None);
+
+        let Begin::Fresh(unknown_id) = store.begin(None, "demo", "fp-unknown").unwrap() else {
+            panic!("fresh unknown");
+        };
+        store
+            .finish(
+                &unknown_id,
+                &ApplyPatchResult::new(PatchStatus::Unknown, unknown_id.clone()),
+            )
+            .unwrap();
+        let unknown = store.status(&unknown_id).unwrap();
+        assert_eq!(unknown.status, PatchStatus::Unknown);
+        assert!(unknown.changes.is_empty());
+        assert_eq!(unknown.events[1].reason.as_deref(), Some("unknown"));
+        assert!(unknown.finished_at.is_some());
+    }
+
+    #[test]
+    fn legacy_operations_table_gains_ledger_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE operations (
+                    operation_id TEXT PRIMARY KEY,
+                    operation_key TEXT,
+                    workspace_id TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let first = params("legacy", "k-legacy");
+        let Begin::Fresh(id) = store
+            .begin(
+                first.operation_key.as_ref(),
+                "demo",
+                &Store::fingerprint(&first),
+            )
+            .unwrap()
+        else {
+            panic!("fresh");
+        };
+        store
+            .finish(
+                &id,
+                &ApplyPatchResult::new(PatchStatus::Checked, id.clone()),
+            )
+            .unwrap();
+        let status = store.status(&id).unwrap();
+        assert_eq!(status.status, PatchStatus::Checked);
+        assert_eq!(status.events[0].name, OperationEventName::Minted);
+        assert_eq!(status.events[1].name, OperationEventName::Finished);
     }
 }
