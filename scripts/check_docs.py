@@ -44,6 +44,9 @@ def headings(text):
             if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
                 fence = None
             continue
+        anchor = re.fullmatch(r'<a id="([\w-]+)"></a>', line.strip())
+        if anchor:
+            found.append(anchor[1])
         match = re.match(r'^#{1,6} (.+)$', line)
         if match:
             found.append(slug(match[1]))

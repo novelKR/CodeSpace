@@ -1,75 +1,42 @@
-# ChatGPT connector experiment
+<a id="chatgpt-connector-experiment"></a>
+
+# ChatGPT connection status
 
 [English](chatgpt-connector.md) | [한국어](ko/chatgpt-connector.md)
 
-CodeSpace is a Rust `rmcp` process. It speaks **stdio** and **Streamable HTTP**
-with the same live tools (`workspace_info`, `read`, `find`, `apply_patch`,
-`operation_status`, `exec_command`, `write_stdin`, `read_process`,
-`terminate_process`, `work_open`, `steer_status`, `steer_claim_next`,
-`steer_complete`, `work_finish`). User drafts are HTTP `/inbox`, not MCP.
-`exec_command` is a host process today; the compose file is an isolation
-fixture and is not a ChatGPT connection path.
+First establish a working local MCP integration using [installation](operations.md) and [Agent Loop integration](agent-integration.md). CodeSpace implements stdio and Streamable HTTP, but a live ChatGPT account connection is not verified by this repository's local tests.
 
-Core protocol baseline is **MCP 2025-11-25**. See
-[protocol-compatibility.md](protocol-compatibility.md).
+<a id="local-stdio-verified-by-cargo-test"></a>
+<a id="local-streamable-http-experiment"></a>
 
-## Local stdio (verified by cargo test)
+## Local MCP clients
 
-```bash
-cargo run -p codespace-server --bin codespace-mcp -- --transport stdio
-```
+Configure a stdio-capable client to launch the built `codespace-mcp` executable with absolute paths for `CODESPACE_CONFIG`, `CODESPACE_PATCH_BIN`, and optionally `CODESPACE_OPERATIONS_DB`. The exact client configuration wrapper varies by client; the executable, arguments, and environment are the portable parts.
 
-Cursor-style MCP config:
+For an HTTP-capable client, start the configured server with `--http` and connect to `http://127.0.0.1:8787/mcp`. If `CODESPACE_HTTP_TOKEN` is set, send the matching Bearer header. Complete initialization and call `workspace_info` for a registered workspace; a successful server startup alone is insufficient.
 
-```json
-{
-  "mcpServers": {
-    "codespace": {
-      "command": "cargo",
-      "args": ["run", "-p", "codespace-server", "--bin", "codespace-mcp", "--", "--transport", "stdio"],
-      "cwd": "/absolute/path/to/CodeSpace"
-    }
-  }
-}
-```
+<a id="chatgpt-account-connection"></a>
 
-## Local Streamable HTTP (experiment)
+## ChatGPT-specific requirements
 
-```bash
-export CODESPACE_HTTP_HOST=127.0.0.1
-export CODESPACE_HTTP_PORT=8787
-# Optional. Leave unset to disable auth. Never log this value.
-export CODESPACE_HTTP_TOKEN="replace-me"
-cargo run -p codespace-server --bin codespace-mcp -- --transport http
-```
+OpenAI's [developer-mode documentation](https://developers.openai.com/api/docs/guides/developer-mode#how-to-use), checked on 2026-09-19, describes remote MCP apps with streaming HTTP and supported authentication modes including OAuth. It does not establish that CodeSpace's static Bearer configuration is a compatible ChatGPT authentication flow.
 
-Endpoint: `http://127.0.0.1:8787/mcp`
+CodeSpace has no OAuth authorization server. It also validates HTTP Host values from its bind configuration rather than providing a separate public-host setting. Treat public HTTPS reachability, Host handling, authentication, tool discovery, and a harmless test call as separate integration checks. Do not publish an unauthenticated writable workspace just to bypass an authentication mismatch.
 
-Optional static Bearer is **HTTP experiment only**. It is not an OAuth
-server. ChatGPT Custom Connectors often expect OAuth or a different auth
-story; **do not assume Bearer works in ChatGPT** until a live account
-check says so.
+## Verification status
 
-Protocol policy: CI forces **2025-11-25** on stdio and HTTP
-(`protocol_compat.rs`). **2026-07-28** is progressive enhancement and is
-also forced in that file with **no** legacy fallback. Auto tests that
-prefer `2026-07-28` and fall back to `2025-11-25` (`http_contract`,
-`transport_contract`) do **not** replace 2025-11-25-only coverage.
-
-ChatGPT's `MCP-Protocol-Version` header was **not** observed. Do not
-assume ChatGPT requires 2026-07-28, MRTR, Tasks, subscriptions, or
-`Mcp-Name` routing.
-
-## ChatGPT account connection
-
-| Check | Result |
+| Check | Evidence or remaining work |
 | --- | --- |
-| Local stdio `tools/list` + `workspace_info` | `cargo test -p codespace-server` |
-| Local Streamable HTTP `tools/list` + `workspace_info` | `cargo test -p codespace-server` |
-| ChatGPT Custom Connector against a public HTTPS URL | **Not verified.** This session has no ChatGPT account UI to complete a Custom Connector. Bearer acceptance by ChatGPT is unknown. |
-| Public tunnel (ngrok/cloudflare) | **Not verified** |
+| Local stdio initialization and tool calls | Repository transport and protocol tests |
+| Local Streamable HTTP initialization and tool calls | Repository HTTP and protocol tests |
+| Real ChatGPT account connection | Not verified; requires testing against the intended account and deployment |
+| Public HTTPS/proxy configuration | Not established by loopback tests |
+| ChatGPT acceptance of static Bearer | Not established; do not assume support |
 
-## Secrets
+See [protocol compatibility](protocol-compatibility.md) for repository-tested versions. Do not infer ChatGPT's negotiated version or required optional MCP features from those tests.
 
-Never put `CODESPACE_HTTP_TOKEN` in logs, issue comments, or tool error
-text. HTTP 401 body is `{ "error": "unauthorized" }` only.
+<a id="secrets"></a>
+
+## Credentials
+
+Keep tokens out of commands shared in issues, logs, and committed examples. The HTTP authentication failure response contains only `{"error":"unauthorized"}`. Account secrets and public exposure are operator responsibilities; this guide does not configure them automatically.

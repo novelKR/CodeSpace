@@ -1,100 +1,60 @@
-# 오류 코드와 전송 대 실행
+<a id="오류-코드와-전송-대-실행"></a>
+<a id="오류-코드와-전송-대-실행"></a>
+
+# 오류와 불확실한 결과
 
 [English](../error-codes.md) | [한국어](error-codes.md)
 
-HTTP/JSON-RPC **요청 id**, `operation_id`, `process_id`는 세 개의 서로
-다른 식별자입니다. 잃어버린 HTTP 응답은 실행 실패가 아닙니다.
-클라이언트는 변경 도구를 재실행하는 대신 `operation_status`(W08)를
-호출합니다.
+먼저 전송 실패와 도구 결과를 구분하세요. HTTP·연결 오류만으로 요청한 변경이 실행되었는지 알 수 없습니다. 패치·프로세스·작업 관리 상태는 서로 다른 식별자를 사용합니다.
 
-## 전송 실패 (작업 없음)
+<a id="전송-실패-작업-없음"></a>
+<a id="전송-실패-작업-없음"></a>
 
-이들은 `operation_id`를 절대 발급하지 않으며 작업으로 저장되면 안
-됩니다.
+## 전송 실패
 
-| 신호 | 의미 |
+핸들러 실행 전 인증이 거부되면 작업 기록을 만들지 않습니다. 반면 연결 끊김이나 프록시 오류는 실행 요청 전달 후에도 발생할 수 있으므로 작업이 없다는 증거가 아닙니다. 도메인 분류 함수는 HTTP 401/403, 404, 408, 429, 502/503/504를 전송 실패로 분류합니다. 실제 요청 단계와 기록된 작업을 확인해 가능한 복구를 수행하세요.
+
+<a id="실행-오류-코드-도구-결과"></a>
+<a id="실행-오류-코드-도구-결과"></a>
+
+## 도구 오류 코드
+
+오류는 대문자 식별자와 메시지로 전달합니다. 실패 전에 패치 기록을 만들었다면 `operation_id`가 포함될 수 있습니다. 그 전에 발생한 권한·점유·키 충돌 오류에는 작업 ID가 없습니다.
+
+| 코드 | 의미 |
 | --- | --- |
-| TCP reset / client disconnect | Wire died. The process or patch may still be running. |
-| HTTP 401 / 403 from Bearer middleware | Auth failed **before** any tool handler. |
-| HTTP 404 at `/mcp` | Wrong path. |
-| HTTP 408 / 502 / 503 / 504 | Transport or proxy. |
-
-`codespace_domain::classify_http_status`는 이를
-`FailureClass::Transport`로 매핑합니다. `TRANSPORT_FAILURE_IS_NOT_OPERATION`은
-참입니다.
-
-## 실행 오류 코드 (도구 결과)
-
-JSON에서 `SCREAMING_SNAKE_CASE`로 직렬화됩니다.
-
-| 코드 | 때 |
-| --- | --- |
-| `UNAUTHORIZED` | Tool-layer refusal after a valid transport (not Bearer 401) |
-| `WORKSPACE_NOT_FOUND` | Unknown `workspace_id` (W04) |
-| `WORKSPACE_BUSY` | Write lock held by a live shell (W08 / W10) |
-| `INVALID_PATCH` | 패치 파싱/검증(W06 / W09); after-hash / delete-still-present / 생략된 `after_version`. rollback 파일시스템 I/O는 이 코드가 아님 |
-| `INVALID_COMMAND` | Command request is structurally invalid and was rejected before process dispatch |
-| `PROCESS_SPAWN_FAILED` | Execution backend confirmed that no managed process was established |
-| `PATH_ESCAPE` | workspace/path containment 위반: `../`·절대경로 요청, 또는 `find` walk 결과가 `workspace.root` 밖 |
+| `UNAUTHORIZED` | 도구 정책이 행동을 거부함 |
+| `WORKSPACE_NOT_FOUND` | 작업 공간 ID가 등록되지 않음 |
+| `WORKSPACE_BUSY` | 다른 변경 작업이나 실행 중인 명령이 작업 공간을 점유함 |
+| `INVALID_PATCH` | 패치 파싱·사전 검증·결과 검증 실패. 일부 도우미·입력 오류 경로에도 남아 있음 |
+| `INVALID_COMMAND` | 잘못된 명령 인자 배열을 실행 전에 거부함 |
+| `PROCESS_SPAWN_FAILED` | 관리 프로세스를 시작하지 못한 것으로 백엔드가 확인함 |
+| `PATH_ESCAPE` | 요청 경로가 작업 공간 범위를 벗어남 |
 | `FILE_NOT_FOUND` | 대상 경로가 없음 |
-| `PATH_NOT_DIRECTORY` | 디렉터리여야 하는 경로 구성 요소가 일반 파일임(`ENOTDIR`) |
-| `FILE_OPERATION_FAILED` | containment는 유지됐지만 filesystem operation 자체가 실패(`find` 루트 canonicalize 포함) |
-| `SYMLINK_REJECTED` | 심링크 파일 또는 조상 |
-| `SPECIAL_FILE_REJECTED` | Device, socket, fifo |
-| `ADD_FILE_EXISTS` | Add File destination already exists |
-| `MOVE_DESTINATION_EXISTS` | Move destination already exists |
-| `VERSION_CONFLICT` | `expected_versions` mismatch |
-| `OPERATION_KEY_CONFLICT` | Same key, different request (W08) |
-| `OPERATION_NOT_FOUND` | Unknown `operation_id` / `operation_key`, or `operation_status` did not receive exactly one of them |
-| `PROCESS_NOT_FOUND` | Unknown `process_id` |
-| `OUTPUT_LIMIT` | Reserved; live `read_process` drops oldest bytes instead of storing unbounded output |
-| `TIMEOUT` | Managed process time limit (default 30s; `CODESPACE_PROCESS_TIMEOUT_SECS`) |
-| `WORK_NOT_FOUND` | Unknown `work_id` |
-| `WORK_CLOSED` | Mutating steer on a closed work |
-| `INTENT_NOT_FOUND` | Unknown `intent_id` |
-| `INTENT_ALREADY_CLAIMED` | Edit/cancel after the model claimed the item |
-| `INTENT_NOT_EDITABLE` | State is not draft/queued |
-| `INTENT_REVISION_CONFLICT` | Optimistic `revision` mismatch |
-| `QUEUE_NOT_EMPTY` | Reserved; `work_finish` returns `closed: false` instead of this error |
+| `PATH_NOT_DIRECTORY` | 디렉터리여야 하는 경로 구성 요소가 디렉터리가 아님 |
+| `FILE_OPERATION_FAILED` | 허용 범위 안에서 파일 시스템 작업 실패 |
+| `SYMLINK_REJECTED` | 심볼릭 링크 경로 거부 |
+| `SPECIAL_FILE_REJECTED` | 장치·소켓·FIFO 등 일반 파일이 아닌 대상 거부 |
+| `ADD_FILE_EXISTS` | 추가할 파일이 이미 존재함 |
+| `MOVE_DESTINATION_EXISTS` | 이동 대상이 이미 존재함 |
+| `VERSION_CONFLICT` | 현재 내용이 예상 버전과 다름 |
+| `OPERATION_KEY_CONFLICT` | 같은 패치 키를 다른 인자에 사용함 |
+| `OPERATION_NOT_FOUND` | 조회 ID·키가 없거나 조회 식별자를 정확히 하나 지정하지 않음 |
+| `PROCESS_NOT_FOUND` | 프로세스 핸들이 없거나 만료됨. 입력 시 stdin이 이미 닫힌 경우도 포함 |
+| `OUTPUT_LIMIT` | 도우미 출력 상한 초과. 프로세스 출력 조회는 오래된 바이트를 버리는 방식 |
+| `TIMEOUT` | 관리 명령 또는 도우미의 제한 시간 초과 |
+| `WORK_NOT_FOUND` | 논리적 작업을 찾을 수 없음 |
+| `WORK_CLOSED` | 열린 작업에만 가능한 동작 |
+| `INTENT_NOT_FOUND` | 사용자 지시를 찾을 수 없음 |
+| `INTENT_ALREADY_CLAIMED` | 이미 가져간 지시임 |
+| `INTENT_NOT_EDITABLE` | 지시 상태가 편집을 허용하지 않음 |
+| `INTENT_REVISION_CONFLICT` | 지시 수정 버전이 달라짐 |
+| `QUEUE_NOT_EMPTY` | 예약된 코드. 현재 work_finish는 closed:false를 반환함 |
 
-적용 결과는 `status`를 사용합니다(`applied`, `checked`, `rejected`,
-`failed_rolled_back`, `failed_partial`, `unknown`). `checked`는 성공한
-`check_only` 미리보기입니다. `rejected`는 실제 거절입니다. 실패한 적용은
-절대 `applied`를 보고하지 않습니다. `applied`는 디스크 해시가 헬퍼가
-주장한 `after_version`과 일치해야 합니다. 재시작은 미완료 행을
-`unknown`으로 남기고 자동 적용하지 않습니다.
+## 실행 요청과 완료의 구분
 
-`exec_command`는 spawn이 일어났을 수 있을 때 성공 결과에
-`dispatch_status=unknown`을 실을 수 있습니다. 그것은 전송 오류 본문이
-아닙니다. 반환된 `process_id`는 그 불확정 시도를 식별합니다. 새
-프로세스를 시작하지 마세요. 백엔드가 도달 가능할 때만 `read_process` /
-`terminate_process`를 쓰세요. unknown이 시작되지 않았다는 뜻은 아닙니다.
+`dispatch_status: unknown`은 실행 여부가 불확실하다는 정상 형식의 응답이며 프로세스가 시작되지 않았다는 뜻이 아닙니다. 연결 가능하면 반환된 핸들을 사용하고 중복 실행을 피하세요. `confirmed`도 요청 확인을 뜻하며 명령 성공을 뜻하지 않습니다.
 
-`INVALID_PATCH`는 더 이상 exec command 검증, 확인된 process-spawn
-실패, rollback 파일시스템 I/O에 쓰이지 않습니다.
+Linux 도우미 준비·프로토콜·시작 오류는 관리 프로세스 생성 전에 발생하므로 `PROCESS_SPAWN_FAILED`를 사용합니다. 도우미가 이미 시작된 뒤 계획 읽기, 내부 샌드박스, 프록시 시작에서 실패하면 프로세스 종료로 처리됩니다. 현재 공개 결과에 종료 코드가 없으므로 출력 스트림 완료만으로 성공을 판단할 수 없습니다.
 
-`codespace-fs` `FsError`는 제품 코드와 1:1입니다.
-`NotFound` → `FILE_NOT_FOUND`, `NotDirectory` → `PATH_NOT_DIRECTORY`,
-일반 `Io` → `FILE_OPERATION_FAILED`, `SymlinkRejected` →
-`SYMLINK_REJECTED`, `NotRegularFile` → `SPECIAL_FILE_REJECTED`.
-`PATH_ESCAPE`는 workspace/path containment 위반입니다. 범위를 벗어나려는
-요청(`../`, 절대 경로)이거나, walk 결과가 `strip_prefix(workspace.root)`에
-실패한 경우입니다. `FILE_OPERATION_FAILED`는 containment는 유지된 채
-operation 자체가 실패한 것입니다.
-
-`INVALID_COMMAND`는 구조적으로 잘못된 argv입니다. 게이트웨이는
-`process_id` 발급과 mutation lease 전에 거절합니다. 러너도 같은 검사를
-반복합니다. `PROCESS_SPAWN_FAILED`는 백엔드가 managed process가
-**만들어지지 않았음을 확정**한 것입니다. 게이트웨이는 잡은 lease를
-해제합니다. Linux helper `prepare` / protocol / helper OS spawn 실패가
-이 코드입니다. managed helper spawn이 성공한 뒤 `run --plan` load,
-self-exec, inner sandbox 실패는 process exit이며 이 코드가 아닙니다.
-`INVALID_COMMAND`와 `PROCESS_SPAWN_FAILED` 모두
-`dispatch_status=unknown`이 아닙니다.
-
-`begin`이 `operation_id`를 발급한 뒤, 도구 오류는 그 id를
-`ErrorBody.operation_id`에 포함합니다. `begin` 전의 정책 / 잠금 /
-키 충돌 거절은 포함하지 않습니다.
-
-대기 중인 사용자 입력이 있는 `work_finish`는 **전송 실패가 아닙니다**.
-`{ "closed": false, "reason": "pending_user_input" }`를 반환합니다.
+패치는 [상태 표와 복구 한계](behavior-differences.md)를 참고하세요. 재시도, 시간 초과, 사라진 핸들, 사용자 지시 완료는 [Agent Loop 연동](agent-integration.md)을 따릅니다. `work_finish`의 `closed: false`, `reason: "pending_user_input"`는 애플리케이션 결과이며 전송 실패가 아닙니다.

@@ -1,62 +1,44 @@
-# Behavior differences
+<a id="behavior-differences"></a>
+
+# Patch behavior and recovery
 
 [English](behavior-differences.md) | [한국어](ko/behavior-differences.md)
 
-Product policy is **not** “whatever `codex-apply-patch` does by
-default.” `crates/patch` calls the original parser and apply functions
-in-process, then the gateway/runner refuse operations the crate might
-accept.
-
-| Topic | Codex library / standalone default (0.154 candidate) | CodeSpace product |
-| --- | --- | --- |
-| Paths from the model | May accept host-absolute paths; resolve relative to process cwd | **Relative paths only**, resolved inside the registered workspace root |
-| Symlinks | Apply options can follow / keep going | **Reject** symlink files and symlink-escape |
-| Special files | Not a product gate | **Reject** devices, sockets, fifos |
-| Add File | May interact with an existing path depending on hunks | **Reject** Add File if the destination already exists |
-| Move destination | Engine may apply if the hunk says so | **Reject** if the move destination already exists |
-| Newlines | Multiple modes exist; do not assume | **Preserve-newline mode preferred**; parity uses the same mode |
-| `git apply` | Not the V4A engine; other products sometimes fall back | **No silent git-apply fallback** |
-| Sandbox | Standalone `apply_patch` uses sandbox `None` | Patch crate is **not** the sandbox; gateway policy + PathSandbox today; Linux container is the **target** |
-| Unified diff | Different tool elsewhere | Out of MVP (`git_apply_patch` later, never auto-convert) |
-| Rollback | N/A in the crate | Snapshot restore of files; **no** `git reset --hard` |
+CodeSpace accepts Codex V4A patches and applies additional workspace rules before calling the pinned library. A supported library option is not automatically an allowed service operation.
 
 ## Patch request contract
 
-```json
-{
-  "workspace_id": "demo",
-  "patch": "*** Begin Patch\\n*** Update File: src/config.ts\\n...",
-  "expected_versions": {
-    "src/config.ts": "sha256:<from read>"
-  },
-  "operation_key": "change-timeout-001",
-  "check_only": false
-}
-```
+Use relative paths and versions returned by `read`. The version `absent` means the target must not exist. Include both source and destination versions when protecting a move. A complete [preview/apply example](agent-integration.md) shows how to change the operation key between those distinct requests.
 
-- `expected_versions` values are content versions from `read`, or
-  `"absent"` for a file that must not exist yet. Move validates source
-  and destination.
-- `operation_key` is idempotency, not a capability token.
-- `check_only: true` must leave every target file byte-identical and
-  returns `status: "checked"`.
-- Successful apply returns `files` (path list) plus `changes` with
-  `path`, `before_version`, `after_version`, and `kind`
-  (`add` / `update` / `delete` / `move`). `applied` means the helper
-  claimed hash matches a fresh disk hash.
+| Rule | CodeSpace behavior |
+| --- | --- |
+| Paths | Resolve within the registered root; reject absolute and escaping paths |
+| Symlinks and special files | Reject symlink paths and devices, sockets, or FIFOs |
+| Add or move destination exists | Refuse rather than overwrite the existing destination |
+| Newlines | Request Codex `PreserveLineEndings`; selected parity cases are tested |
+| Patch format | V4A only; no automatic unified-diff conversion or `git apply` fallback |
+| Preview | `check_only: true` runs preflight without writing; it is not a reservation or proof that later apply will succeed |
 
-Result `status`: `applied` | `checked` | `rejected` |
-`failed_rolled_back` | `failed_partial` | `unknown`.
+## Results and recovery limits
 
-## Write lock
+| Status | Meaning and next action |
+| --- | --- |
+| `checked` | Preview passed; use a new operation key for actual application |
+| `applied` | Post-apply disk hashes matched helper claims |
+| `rejected` | Request was refused or an error was recorded; inspect the error and whether execution had already begun |
+| `failed_rolled_back` | Helper application failed and snapshot restoration reported completion |
+| `failed_partial` | Helper application failed and restoration was incomplete; inspect files |
+| `unknown` | Final outcome is not known; inspect files and recorded state before retrying |
 
-A `workspace-write` shell is a mutating occupant. While it is live,
-other mutating patch/exec work on that workspace is blocked
-(`WORKSPACE_BUSY`) or waits per a documented queue. The product does not
-pretend a shell cannot delete workspace files.
+The Runner snapshots affected files and restores them if the helper apply call fails. An error while verifying a successful helper response currently returns before restoration. The gateway can record that error as `rejected` even though files may have changed. Do not interpret every rejected result as proof of no writes. Crash recovery also does not automatically restore snapshots or replay work. No `git reset --hard` is used.
 
-## Transport
+A successful result includes affected `files` and `changes` with kind and available before/after hashes. Those hashes describe the observed files, not a repository commit or a successful build.
 
-stdio and Streamable HTTP expose the **same** tool schemas. Optional
-static Bearer is HTTP experiment only and is **not** assumed to satisfy
-ChatGPT Custom Connectors until a live account check says so.
+<a id="write-lock"></a>
+<a id="transport"></a>
+
+## Write lock and transport
+
+One live command blocks other patch/exec work in that workspace with `WORKSPACE_BUSY`. There is no waiting queue. Reads and searches remain possible. Patch operation keys support replay only for matching request fingerprints; choosing a new key after an uncertain response risks applying the change twice.
+
+stdio and Streamable HTTP expose the same tool schemas. Connection failure does not establish whether a mutation ran. See [error codes](error-codes.md) and [recovery rules](agent-integration.md).

@@ -1,137 +1,56 @@
+<a id="보안-모델"></a>
+
 # 보안 모델
 
 [English](../security-model.md) | [한국어](security-model.md)
 
-CodeSpace는 커널 샌드박스가 아닙니다. CoS와 cokacremote도 아닙니다.
-인가는 **게이트웨이 정책**입니다. Linux 컨테이너 격리가 **목표** 실행
-OS입니다. 현재 `exec_command`는 워크스페이스 cwd를 가진 호스트
-프로세스입니다. Codex 패치 크레이트는 제품 경계를 공급하지 않습니다.
-Codex 세션 설정과 `permissionProfile`은 허용 경로가 아닙니다. 게이트웨이와
-러너는 둘 다 Rust입니다. 언어를 나눠도 신뢰 경계가 추가되지 않습니다.
-프리미티브 대 제품:
-[codex-reuse.md](codex-reuse.md). 실행 전용 기반:
-[execution-substrate.md](execution-substrate.md).
+CodeSpace는 개인용 단일 사용자 배포를 기준으로 설계되어 있습니다. 외부 에이전트가 사용할 디렉터리는 운영자가 정합니다. 파일 도구 권한, 명령 격리, 네트워크 정책 집행은 서로 다른 제어입니다. 도구 이름만으로 안전성을 판단하지 말고 실제 작업 공간의 실행 정보를 확인하세요.
+
+<a id="신뢰-경계"></a>
+<a id="인증-대-선택"></a>
+<a id="인증-대-선택"></a>
+<a id="제품-경로-정책-크레이트가-허용해도-항상"></a>
+<a id="제품-경로-정책-크레이트가-허용해도-항상"></a>
 
 ## 신뢰 경계
 
-1. **MCP client** — 인가에 대해 신뢰하지 않음. `workspace_id`,
-   `approved: true`, 절대 경로를 포함해 어떤 도구 인자도 보낼 수
-   있습니다. 그 인자는 권리를 부여하지 않습니다.
-2. **Gateway (`crates/server` + `crates/policy`)** — 전송을 인증하고
-   (HTTP 실험의 선택적 정적 Bearer), 등록된 워크스페이스를 고르며,
-   프로필이 허용하지 않는 작업을 거절하도록 신뢰합니다.
-3. **Runner (`crates/runner`, 오늘은 프로세스 내부)** — 경로 정책
-   (`PathSandbox`)을 강제하고 이미 인가된 동작의 **호스트** 프로세스를
-   감독하도록 신뢰합니다. 게이트웨이 비밀을 보도록 신뢰하지 않습니다.
-   이후 Unix 소켓 / 컨테이너 분리는 같은 Rust 워크스페이스를 유지합니다.
-   프로세스 경계이지 언어 경계가 아닙니다. `deploy/` 아래 compose는
-   격리 픽스처이지 이 프로세스가 아닙니다.
-4. **Patch helper (`codespace-patch` + `crates/patch`)** — 헬퍼 자식
-   **안에서 프로세스 내부로** Codex V4A를 파싱/검증/적용하도록
-   신뢰합니다. 게이트웨이는 JSON stdin/stdout으로 그 자식과 대화합니다.
-   샌드박스로는 신뢰하지 않습니다(업스트림 독립 apply는 sandbox `None`을
-   쓰고 심링크를 따를 수 있음). 폐기된 `native/patch-worker`가 아닙니다.
+게이트웨이는 인증, 작업 공간 등록, 권한 결정을 담당합니다. `workspace_id`, `work_id`, 지시문이나 `approved: true` 같은 클라이언트 입력은 권한을 부여하지 않습니다. HTTP에서는 선택적으로 정적 Bearer 토큰을 검사하지만 OAuth나 사용자별 권한 시스템은 아닙니다.
 
-## 인증 대 선택
+Runner는 허용된 요청을 실행합니다. `PathSandbox`는 논리적인 파일 접근 범위를 검사하고, `codespace-fs`는 Runner 파일 작업에서 심볼릭 링크를 따라가지 않는 I/O를 수행합니다. 사전 검사만으로는 다른 프로세스가 그 직후 경로를 바꾸는 상황을 막을 수 없습니다. 패치 도우미는 별도로 CodeSpace 경로 정책과 Codex의 no-follow 패치 옵션을 적용합니다. 다만 도우미의 사전 검증과 적용 후 해시 계산에는 직접 파일 시스템을 호출하는 코드도 남아 있습니다. 모든 파일 처리가 하나의 경쟁 조건 방지 구현으로 통합되었다고 볼 수는 없습니다.
 
-- 선택적 정적 Bearer는 **HTTP 실험 전용**입니다. OAuth 서버가 아닙니다.
-  토큰은 로그나 오류 페이로드에 절대 나타나면 안 됩니다.
-- `workspace_id`는 선택자입니다. id를 아는 것이 인증이 아닙니다.
-- `work_id`와 `intent_id`는 선택자입니다. 아는 것이 인증이 아닙니다.
-- 사용자 의도 본문은 지시입니다. 워크스페이스 프로필을 올리거나 경로
-  정책을 우회하지 않습니다.
-- ChatGPT 대화 id는 신뢰 기반이 아닙니다.
+선택적 UDS worker는 같은 호스트에서 프로세스를 분리합니다. 소켓을 전용 디렉터리에 두지만 프로세스 분리 자체가 명령 샌드박스는 아닙니다. Linux 도우미의 사용 가능 검사가 성공하면 명령 샌드박스를 사용합니다. 조건과 실패 시 동작은 [러너 격리](runner-isolation.md)에 설명합니다.
 
-## 워크스페이스 레지스트리
+<a id="워크스페이스-레지스트리"></a>
+<a id="워크스페이스-레지스트리"></a>
+<a id="프로필-mvp"></a>
+<a id="프로필-mvp"></a>
+<a id="러너-격리-linux"></a>
+<a id="러너-격리-linux"></a>
 
-워크스페이스는 모델이 아니라 **서버 설정**에 등록됩니다.
+## 권한과 격리
 
-각 항목은 `workspace_id` → `{ root, profile }`을 매핑합니다.
+`read-only`는 읽기를 허용하고 패치·명령 실행을 거부합니다. `workspace-write`는 둘 다 허용하므로 임의의 명령이 작업 공간 파일을 변경하거나 삭제할 수 있습니다. MCP 파일 도구의 상대 경로 제한만으로 호스트 명령의 접근 범위까지 제한되지는 않습니다.
 
-알 수 없는 id는 거절됩니다. 경로는 엔진에 넘기기 **전에** 해석됩니다.
-상대 경로만. 해석 후 그 워크스페이스 루트 안에 남아 있어야 합니다.
+Linux 도우미가 없으면 restricted 정책의 작업 공간에서도 비격리 호스트 명령을 실행할 수 있으며 `network.enforcement`는 `none`입니다. 네트워크가 차단된다는 보장이 아닙니다. enabled 정책은 도우미가 필요하며 호스트 네트워크로 대체 실행하지 않습니다. 현재 enabled 프록시는 모든 목적지 도메인을 허용하므로 도메인별 허용 목록 기능은 아닙니다.
 
-## 프로필 (MVP)
+운영자가 등록한 루트 경로는 신뢰의 기준입니다. 토큰, 작업 데이터베이스, 게이트웨이 설정과 비밀 정보는 관리 대상 루트 밖에 두세요. 파일 도구가 상대 경로를 검사한다는 이유로 높은 권한의 호스트, Docker 소켓, SSH 에이전트를 작업 공간에 노출해서는 안 됩니다.
 
-| 프로필 | 의미 |
-| --- | --- |
-| `read-only` | Default. `read` / `find` / `workspace_info` / `operation_status`. No patch, no shell. |
-| `workspace-write` | Explicit. Mutating patch and shell **inside** the workspace. A live shell can delete workspace files; the product says so honestly. |
-| `host-admin` | **Excluded from MVP.** |
+<a id="패치-정직성"></a>
+<a id="패치-정직성"></a>
+<a id="프로세스-정직성"></a>
+<a id="프로세스-정직성"></a>
 
-바쁜 셸은 워크스페이스 쓰기 잠금을 잡습니다. 다른 변경 작업은 기다리거나
-`WORKSPACE_BUSY`로 실패합니다.
+## 작업과 복구의 안전성
 
-## 제품 경로 정책 (크레이트가 허용해도 항상)
+버전 검사는 예상하지 못한 파일 버전에 패치를 적용하는 것을 막습니다. 작업 키는 패치 중복 요청을 구분하며 인증 토큰이 아닙니다. 작업 공간 점유는 파일을 변경할 수 있는 패치·명령 실행을 직렬화합니다. 큐 스케줄러와 영속적인 프로세스 복구는 없습니다.
 
-- 상대 경로만.
-- 심링크 대상과 특수 파일(디바이스, 소켓, fifo)을 거절.
-- 목적지가 이미 있으면 Add File을 거절.
-- 목적지가 이미 있으면 Move를 거절.
-- 워크스페이스 밖으로 `..`를 따르지 않음.
-- 모델의 호스트 절대 경로를 엔진에 넘기지 않음.
-- `PathSandbox`는 논리 경로를 인가합니다. 이후 open을 안전하게 만들지
-  **않습니다**. 살아 있는 `read` / `find`는 디렉터리를 심링크로 바꾸는
-  프로세스와 경쟁할 수 있습니다(TOCTOU).
-- Runner 소유 파일 연산과 rollback은 `codespace-fs`를 씁니다. Codex
-  `LOCAL_FS` 위의 얇은 어댑터이며 `follow_symlinks: false`입니다.
-- `apply_patch` mutation은 `crates/patch` →
-  `apply_patch_with_options` + `LOCAL_FS` `follow_symlinks: false`
-  (`sandbox: None`)입니다. 헬퍼 프리플라이트와 사후 hash는 아직
-  `std::fs`를 쓸 수 있으며, 그 경로는 no-follow 경계가 아닙니다.
-- 공통 primitive는 `codespace-fs` 자체가 아니라 Codex `LOCAL_FS`
-  no-follow입니다. `sandbox: None`은 그 고정을 끄지 않습니다.
+패치 스냅샷 복원은 가능한 범위에서 수행하며 모든 실패의 롤백을 보장하지 않습니다. `unknown`, 부분 실패, 적용 후 검증 오류가 발생하면 해당 파일을 확인하세요. [패치 동작](behavior-differences.md)과 [연동 복구 규칙](agent-integration.md)을 참고하세요.
 
-[behavior-differences.md](behavior-differences.md)를 보세요.
+<a id="로깅"></a>
+<a id="로깅"></a>
 
-## 러너 격리 (Linux)
+## 검증 근거와 한계
 
-**현재:** `exec_command`는 argv + 워크스페이스 cwd + `env_clear`로
-호스트에서 실행됩니다. 경로 샌드박스는 `read` / `find` / versions /
-rollback에 적용되며 Linux 네임스페이스가 아닙니다.
+보안 테스트에는 경로 이탈, 특수 파일, 인증 응답, 작업 재조회, 동시 작업 사례가 있습니다. Linux 도우미 테스트는 샌드박스와 프록시 동작을 검사합니다. 테스트 범위가 커널 탈출 감사나 모든 배포 환경의 안전성을 뜻하지는 않습니다. [검증 범위 목록](../../tests/adversarial-report.md)을 참고하세요.
 
-**목표 / 픽스처:** 비특권 컨테이너 사용자. 워크스페이스를 `/workspace`
-(또는 동등한 전용 볼륨)에 마운트합니다. 다음을 마운트하지 **마세요**.
-
-- host home
-- SSH agent socket
-- `/var/run/docker.sock`
-- gateway `.env`, Bearer files, SQLite
-
-[`deploy/compose.yml`](../../deploy/compose.yml)은 `sleep infinity`로 그
-속성을 보여줍니다. `exec_command`에 연결되어 있지 않습니다. 지금은 러너
-제어 소켓이 없습니다.
-
-게이트웨이 단위 시험은 macOS에서 실행할 수 있습니다. 개발 노트북에서
-Linux 격리를 검증했다는 주장이 아닙니다.
-
-## 패치 정직성
-
-상태: `applied`, `checked`, `rejected`, `failed_rolled_back`,
-`failed_partial`, `unknown`.
-
-- 성공한 `check_only` 미리보기 → 파일 변경 없음 (`checked`).
-- 프리플라이트 / 정책 실패 → 파일 변경 없음 (`rejected`).
-- 스냅샷을 복원한 적용 실패 → `failed_rolled_back`.
-- 남은 드리프트가 있는 적용 실패 → `failed_partial` 또는 `unknown`.
-- 디스크 해시가 헬퍼가 주장한 `after_version`과 일치하지 않으면
-  `applied`를 보고하지 마세요(삭제는 없어야 함).
-- `git reset --hard`를 쓰지 마세요.
-- HTTP 타임아웃을 롤백이나 성공으로 취급하지 마세요.
-
-`Store::begin`이 `operation_id`를 발급한 뒤, 실행 오류는 그 id를
-`ErrorBody`에 포함합니다. 전송과 `begin` 전 거절은 포함하지 않습니다.
-
-## 프로세스 정직성
-
-`process_id` 값은 서버가 발급합니다. 클라이언트가 핸들을 만들어 낼 수
-없습니다. 출력은 커서로 읽고 제한됩니다(프로세스당 256 KiB). 시간, 살아있는
-프로세스 수, **완료 핸들 보존**(15분 또는 완료 슬롯 64개)이 제한됩니다.
-연결 끊김이 프로세스가 죽었다는 뜻은 아닙니다. 프로세스 상태는 휘발성입니다.
-SQLite에 저장되지 않습니다.
-
-## 로깅
-
-Authorization 헤더, Bearer 토큰, `.env` 값을 가리세요. 원본 요청을
-덤프하기보다 구조화 필드(`workspace_id`, `operation_id`)를 선호하세요.
-별도 감사 서브시스템은 없습니다.
+구조화된 stderr 로그에는 비밀 정보 가림 처리가 있지만 원시 도구 요청이나 비밀을 로그에 남기지 않도록 해야 합니다. 별도의 위변조 방지 감사 서비스는 없습니다. 로컬 MCP 테스트만으로 공개 HTTPS·ChatGPT 배포나 다중 사용자 권한을 검증할 수는 없습니다.

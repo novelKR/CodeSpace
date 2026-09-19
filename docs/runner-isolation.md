@@ -2,89 +2,45 @@
 
 [English](runner-isolation.md) | [한국어](ko/runner-isolation.md)
 
-**Target** execution isolation OS is a Linux container. **Current**
-`exec_command` is a host process. When the Linux helper probe succeeds,
-pipe and PTY spawn the same `codespace-linux-sandbox run --plan` argv
-(bubblewrap + `no_new_privs`/seccomp; Codex translation stays inside
-that process). Prepare / protocol / helper OS-spawn failure is
-`PROCESS_SPAWN_FAILED`. After the managed helper process is spawned,
-`run --plan` load, Restricted self-exec, Enabled proxy spawn, or inner
-sandbox failure is a managed process exit. When the probe fails (macOS, no
-bwrap), Restricted spawn is unsandboxed and `workspace_info` advertises `none`.
-Enabled without a helper is `PROCESS_SPAWN_FAILED` (not host network).
-Gateway unit tests may run on macOS. That is not a
-claim that Linux isolation was verified on the development laptop.
+There are three separate questions: which process runs the work, whether commands are sandboxed, and whether execution moves into a container. Today the first two are implemented; container dispatch is not.
 
-## What the compose fixture does
+<a id="later-process-split"></a>
 
-[`deploy/compose.yml`](../deploy/compose.yml) is an **isolation fixture**.
-It runs an unprivileged user (`uid 10001`), bind-mounts **only** the
-workspace at `/workspace`, and sleeps. It does not ship
-`codespace-mcp` / `codespace-patch`, and it is **not** connected to
-`exec_command`.
+## Host and worker execution
 
-It does not mount:
+`in-process` runs the supervisor inside `codespace-mcp`. `uds` (Unix domain socket) runs that supervisor inside `codespace-codex-runtime` on the same host. The worker starts with Codex process hardening and binds a private Unix socket. Hardening the worker does not sandbox its commands.
 
-- host `$HOME`
-- SSH agent socket
-- `/var/run/docker.sock`
-- gateway `.env`, Bearer files, or SQLite
+The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 3, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery. Gateway/worker disconnect ends the owned worker and its children; process handles are lost.
 
-There is no runner control socket on the compose fixture. Do not add a
-host Docker socket or a future control socket to this fixture by
-accident. Opt-in `CODESPACE_RUNNER=uds` uses a **private** gateway↔worker
-Unix socket off this fixture. The gateway creates a unique 0700 leaf
-(`$TMPDIR/codespace-runner-<pid>-<rand>/` or
-`$CODESPACE_RUNNER_DIR/run-<pid>-<rand>/`) and binds `$dir/runner.sock`.
-Live sockets are probed with `connect`; only `ConnectionRefused`
-leftovers are unlinked. `/tmp` itself is never chmodded.
+<a id="macos-no-docker"></a>
 
-## macOS / no Docker
+## Linux command sandbox
 
-`codespace-runner::PathSandbox` applies the same relative-path + symlink
-+ special-file rules for unit tests and for `read` / `find` / versions.
-That is workspace authorization, not race-proof I/O. File bytes,
-metadata, mkdir, chmod, remove, and bounded walks go through isolated
-`crates/file-system` (`codespace-fs`, no-follow `LOCAL_FS`). Live
-processes may mutate the tree between PathSandbox's lstat and the
-adapter open; no-follow I/O is the safety boundary. If Docker is not
-used, **Linux container isolation is unverified**. Host
-seccomp/AppArmor and Docker Desktop vs Linux engine differences are also
-unverified.
+Both pipe and PTY execution use the same Linux helper path. On Linux, the runner probes `CODESPACE_LINUX_SANDBOX_BIN` or a sibling `codespace-linux-sandbox` binary. A successful probe enables preparation and sandboxed execution. The probe result is cached for that process.
 
-## Later process split
+```text
+Runner → helper prepare (CodeSpace JSON, protocol 1)
+       ← opaque plan pathname
+Runner → managed helper run --plan
+       → Codex sandbox setup → requested command
+```
 
-Today `codespace-mcp` is one process by default. `crates/runner` hosts
-`InProcessRunner` (`PathSandbox`, one `apply_patch` transaction, host
-supervisor) and the opt-in Unix-socket `UdsRunner` client. The
-worker is isolated `crates/codex-runtime` (`codespace-codex-runtime`):
-`codex_process_hardening::pre_main_hardening()` stays the first line of
-`main` (process hardening of the worker/helper, **not** a command
-sandbox; no `ctor`). Then bind `$dir/runner.sock` (no parent chmod),
-then **one** `InProcessRunner` for the process. Wire format is **u32
-length-prefix + CodeSpace JSON** (`protocol: 3`, Hello handshake,
-`request_id` `rrpc-…`, events include `ProcessExited`), not App Server.
-P0 UDS is 1:1: the gateway owns the worker child (`kill_on_drop`);
-disconnect or gateway shutdown kills the worker and host children;
-`process_id` does not survive; there is no reconnect. Runner `Replay`
-is same-connection only. That **transport** is implemented; it
-is opt-in (`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`) on the
-**same host**. Linux command sandbox is a wrap of that same
-`InProcessRunner` spawn (`helper probe` / `prepare` / `run --plan`), not a second transport rewrite.
-Prefer `codex-uds` as the socket primitive; the Runner RPC stays a
-CodeSpace contract.
+Codex permission translation and sandbox arguments stay inside the binary-only helper. The plan is a private 0600 file consumed by the helper. The runner depends on the small protocol crate, not the sandbox implementation library. Restricted execution uses self-exec; enabled execution keeps a helper-owned proxy while waiting for its sandbox child.
 
-Linux isolation is still the target OS. Landlock, seccomp, PTY helpers,
-UDS, filesystem mechanics, and network isolation are **not** a default
-homegrown stack. Prefer upstream execution subgraphs
-([codex-reuse.md](codex-reuse.md)), staged
-process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
-network (filesystem is taken via `crates/file-system`; linux-sandbox
-via the `crates/linux-sandbox` binary and `crates/linux-sandbox-protocol`).
-`codex-linux-sandbox` can sit beside a
-container; keep its `codex-core` **dev-dep** out of the product graph.
-P0 network (`Enabled` + managed proxy) is taken. `codex-exec` stays
-rejected. `codex-exec-server` is a reference / future backend, not a
-forever reject. Gateway policy remains the only allow path. Do not
-mount a host Docker socket or a future control socket on the compose
-fixture by accident.
+A failed initial probe permits unsandboxed host execution for `restricted`; the contract reports `command_sandbox: none` and no OS network enforcement. `enabled` requires the helper and fails without it. Once a probe succeeds, later prepare/protocol/spawn errors never fall back to unsandboxed execution. They report `PROCESS_SPAWN_FAILED`. Failure inside an already-started helper is observed as process termination; the public MCP result currently has no exit code.
+
+## Network and filesystem scope
+
+Restricted mode uses network namespace separation and restricted seccomp rules. Enabled mode uses an isolated network namespace with a managed HTTP proxy. Proxy bypass environment entries are cleared so loopback HTTP also follows the proxy. Direct host networking is not the fallback. Destination domain restrictions and compatibility with every network client are not implemented guarantees.
+
+Read the effective `workspace_info.execution` fields. File tools stay workspace-scoped independently of command sandboxing. `codespace-fs` provides no-follow I/O behind logical path checks. The patch helper has its own path checks and Codex patch options; command sandboxing does not automatically wrap all file tools.
+
+Sandboxed commands use a limited system PATH rather than mounting host toolchains from the user's home. Prepare the required compilers, package caches, and binaries in the execution environment. A command that works on the host may fail in the sandbox because its executable or dependency is unavailable.
+
+<a id="what-the-compose-fixture-does"></a>
+
+## Container fixture and verification
+
+`deploy/compose.yml` runs a non-root sleeper with only the selected workspace mounted at `/workspace`. It does not install the server, launch a Runner, or receive `exec_command` calls. Never describe starting this fixture as activating the MCP command sandbox.
+
+CI has a Linux isolation job that installs bubblewrap and requires helper availability for isolation tests. macOS checks cover host behavior, not Linux enforcement. Kernel escapes, Docker Desktop differences, and arbitrary remote deployments need separate assessment. See [operations](operations.md) for setup and [security model](security-model.md) for trust assumptions.

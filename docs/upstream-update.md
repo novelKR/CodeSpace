@@ -1,68 +1,34 @@
-# Upstream pin update
+<a id="upstream-pin-update"></a>
+
+# Updating Codex dependencies
 
 [English](upstream-update.md) | [한국어](ko/upstream-update.md)
 
-Changing the Codex revision is a **deliberate release**, not `git
-submodule update --remote` to `main`. If the parity subset fails, **do
-not ship**. Do not copy `apply-patch` sources into `crates/patch` to
-paper over a workspace dependency.
+Update the pinned revision through a reviewed PR. The change can affect every adapter listed in [Codex reuse](codex-reuse.md), including process, filesystem, and network behavior.
 
-Current pin: [upstream-lock.md](upstream-lock.md).
-Product vs crate defaults: [behavior-differences.md](behavior-differences.md).
-What may be reused besides apply-patch: [codex-reuse.md](codex-reuse.md).
-NOTICE must keep the Apache-2.0 Codex attribution.
+<a id="checklist"></a>
 
-## Checklist
+## Review the candidate
 
-1. Choose a **tag or commit** (not floating `main`). Record why.
-2. `git submodule update --init third_party/codex`
-3. `git -C third_party/codex fetch --tags`
-4. `git -C third_party/codex checkout <commit>`
-5. Rebuild the isolated adapter:
-   `cargo test --manifest-path crates/patch/Cargo.toml`
-   `cargo clippy --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings`
-6. Run `scripts/check-upstream-pin.sh` after updating the Commit cell in
-   `docs/upstream-lock.md` to the new SHA (the script fails if submodule
-   HEAD ≠ lock file).
-7. Update [behavior-differences.md](behavior-differences.md) if apply
-   options, symlink policy, or parse errors changed.
-8. Update [NOTICE](../NOTICE) if the reuse description or pin string
-   changed.
-9. Judge the pin’s **execution subgraph** against
-   [codex-reuse.md](codex-reuse.md): cohesive execution vs agent /
-   model semantics vs Gateway allow bypass. Treat diffs in
-   process-hardening, PTY, UDS, filesystem, linux-sandbox, and
-   network-proxy as an execution/security changelog. Update the
-   candidate table. Do not add a Codex path dep to the root
-   workspace. Isolation stays in `crates/patch` and, when it exists,
-   `crates/codex-runtime` (`codespace-codex-runtime`).
-10. Until that runtime workspace exists, the gate is SHA + patch
-    parity only. When it exists, also require: runtime adapter
-    compile, plus PTY / sandbox / process regressions. This work
-    package does not add that suite.
-11. Open a PR. CI must run the pin check **and** `crates/patch` tests.
-    A red patch job is a failed deploy, not a warning.
+Choose an explicit tag or commit and record the reason. Inspect relevant upstream changes in patch handling, PTY, hardening, filesystem, sandbox, and proxy code. Check runtime and development dependencies separately; the presence of a development-only dependency is not proof that it enters the product binary.
 
-There is **no** path that marks a failed parity run as success.
+Update the submodule, [pin record](upstream-lock.md), affected adapter locks, and attribution when needed. Preserve the separation between core types and Codex adapter types. Never copy a single upstream crate into the product to conceal an incompatible dependency.
 
-## Local gate
+<a id="local-gate"></a>
 
-```bash
-./scripts/check-upstream-pin.sh
-```
+## Validate before submission
 
-Exit non-zero if the submodule SHA mismatches the lock file or if
-`cargo test --manifest-path crates/patch/Cargo.toml` fails.
+1. Check the pin with `PIN_ONLY=1 ./scripts/check-upstream-pin.sh`.
+2. Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and tests for the root workspace and each isolated adapter: patch, codex-runtime, pty, file-system, linux-sandbox.
+3. Build the patch, runtime, and Linux helper binaries; point integration tests at the intended binaries. Run workspace integration and protocol tests.
+4. On Linux with bubblewrap and namespace support, run the sandbox isolation tests with `CODESPACE_REQUIRE_LINUX_SANDBOX=1`. Include restricted denial and enabled proxy behavior.
+5. Check the dependency-policy scan and Runner's prohibited sandbox-helper library edges, as encoded in [CI](../.github/workflows/ci.yml).
+6. Update behavior documentation and review both languages when defaults, errors, or limitations change.
 
-`PIN_ONLY=1 ./scripts/check-upstream-pin.sh` checks the SHA only.
-CI runs that **before** fmt/clippy, then runs patch tests without
-re-checking the SHA. Locally, the unprefixed script still does SHA +
-`crates/patch` tests.
+A passing patch subset is insufficient for an update that also affects execution adapters. Keep command outputs tied to the candidate SHA and report unavailable platform checks explicitly. The CI workflow is the authoritative executable list of current gates.
 
-## Forbidden
+<a id="forbidden"></a>
 
-- File-copy vendor of `codex-rs/apply-patch` without its workspace
-  crates
-- Wrapping the standalone `apply_patch` binary as the security boundary
-- Silent `git apply` fallback
-- Shipping when patch tests fail
+## Release and rollback
+
+Open a PR with the old/new SHA, behavioral changes, and test evidence. Do not merge a failed compatibility gate or silently fall back to another patch engine. If the update must be reverted, revert the submodule, adapter locks, required Cargo patches, and documentation together; then rerun the affected gates. A pin mismatch is an error, not a warning.
