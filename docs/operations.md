@@ -1,79 +1,49 @@
-# Operations
+<a id="operations"></a>
+
+# Installation and operations
 
 [English](operations.md) | [한국어](ko/operations.md)
 
-Reproduce a local CodeSpace from a clean clone: install, start the
-gateway, then `workspace_info` → `read` → `apply_patch` → `exec_command`.
-This is a **personal single-user** layout. It is not a multi-tenant SaaS
-and not a full OAuth server.
-
-ChatGPT Custom Connector against a public hostname is **not verified**.
-See [chatgpt-connector.md](chatgpt-connector.md).
+This guide sets up a personal, single-user server on macOS or Linux. For the tool-calling sequence, continue with [Agent Loop integration](agent-integration.md).
 
 ## Install
 
-Needs Rust 1.88+, Git, and (for the Linux isolation fixture) Docker.
+Install Git and a current Rust stable toolchain, matching CI. The root manifest declares Rust 1.88, but that is not a verified minimum for the full Codex adapter graph; the pinned upstream checkout selects Rust 1.95.0. On macOS, install the Xcode command-line tools. Linux command isolation additionally needs the sandbox helper, bubblewrap, and permission to create the required namespaces. Docker is only needed for the separate [container fixture](../deploy/README.md).
 
 ```bash
 git clone --recurse-submodules https://github.com/novelKR/CodeSpace.git
 cd CodeSpace
-# If you already cloned without submodules:
-# git submodule update --init --recursive
-```
-
-The Codex pin is `third_party/codex` at the commit in
-[upstream-lock.md](upstream-lock.md). Do not `git submodule update --remote`
-to Codex `main`. Product runtime stays out of the gateway; see
-[codex-reuse.md](codex-reuse.md) and
-[execution-substrate.md](execution-substrate.md).
-
-Build the gateway, patch helper, and Linux sandbox helper into the
-**same** directory so the gateway can find them next to itself (or set
-`CODESPACE_PATCH_BIN` / `CODESPACE_LINUX_SANDBOX_BIN`).
-The UDS worker is optional (`CODESPACE_RUNTIME_BIN`).
-
-```bash
-cargo build -p codespace-server --bin codespace-mcp --release
-cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
-cargo build --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox --release
+# For an existing clone:
+git submodule update --init --recursive
+cargo build --locked -p codespace-server --bin codespace-mcp --release
+cargo build --locked --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
 mkdir -p dist
 cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
-cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
-# Optional Unix-socket worker (not the default exec path):
-cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
-cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 ```
 
-`codespace-patch` is a host child process. It hosts the pinned Codex
-crate **in-process**. It is not the upstream standalone `apply_patch`
-binary and not the retired `native/patch-worker`. `codespace-codex-runtime`
-binds a private Unix socket with `codex-process-hardening` and
-`codex-uds`, then runs `InProcessRunner`. Hardening is **worker/helper
-process** hardening (`pre_main_hardening()` as the first line of
-`main`; no `ctor`), not a command sandbox. Default `exec_command` still
-uses in-process host spawn. On Linux, when
-`CODESPACE_LINUX_SANDBOX_BIN` (or `codespace-linux-sandbox` next to the
-gateway) probes successfully, that spawn is `helper run --plan` after a
-short `prepare`. Codex argv never enters the runner.
-`workspace_info.execution.isolation.command_sandbox` is `linux-sandbox`
-only then; otherwise `none`. Restricted network is OS-enforced in that
-case (`network.enforcement=enforced`). Enabled is the same enforcement
-state with a managed HTTP proxy inside the helper; without the helper
-it is `PROCESS_SPAWN_FAILED`, not host FullAccess. `exec_command.tty` defaults to false (pipes).
-`tty: true` attaches a PTY at 24x80. Exec DTO cwd is `WorkspaceRoot`; `PATH` /
-`HOME` / `LANG` are applied inside the runner process (`TERM=xterm` for PTY).
+Keep the two binaries together so the server can locate the patch helper. Alternatively, set `CODESPACE_PATCH_BIN` to its absolute path. The helper runs the pinned Codex patch library; the server alone cannot apply patches.
 
-## Workspace registry
+For Linux command isolation, build and place this helper alongside the server:
 
-Copy [workspaces.example.json](workspaces.example.json) and point `root`
-at a **real directory you registered**. Models cannot add workspaces.
+```bash
+cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox --release
+cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
+```
+
+A successful build does not prove isolation is active. Check `workspace_info.execution.isolation.command_sandbox` after connecting. See [activation and failure conditions](runner-isolation.md).
+
+<a id="workspace-registry"></a>
+
+## Register a workspace
+
+Create an existing project directory and a registry outside it. Replace `/absolute/path/to/project` with that directory; do not use this placeholder literally.
 
 ```json
 {
   "workspaces": {
     "demo": {
-      "root": "/absolute/path/to/your/project",
+      "root": "/absolute/path/to/project",
       "profile": "workspace-write",
       "network": "restricted"
     }
@@ -81,148 +51,92 @@ at a **real directory you registered**. Models cannot add workspaces.
 }
 ```
 
-Profiles: `read-only` (default intent) or `workspace-write`. `host-admin`
-is not a product profile. Optional operator `network` is `restricted`
-(default) or `enabled` — this is workspace JSON like `environment`, not
-a tool argument and not `{ "network": true }`. Enabled requires the
-Linux helper. Optional operator `environments` may register
-`host` or `linux-container`. Omitted environment is implicit local host.
-`linux-container` is not an exec path. Tools and `workspace_info` have
-no `environment_id`. Call `workspace_info` with a `workspace_id` to read
-the effective execution contract (`execution`): policy vs backend support,
-`files.*.available` and `process.available` (permission and backend
-support only; not occupancy — `exec_command` or `apply_patch` may still
-return `WORKSPACE_BUSY`; tool existence is `tools_exposed`), fixed 24x80
-PTY without resize when a process is available, mutation lease /
-`WORKSPACE_BUSY`, workspace-scoped file tools vs Linux command sandbox
-when advertised, and `network.policy` (`restricted` or `enabled`) with
-OS enforcement when the helper probe succeeds. `output_combined=true` means `read_process` exposes one
-combined stream; stdout/stderr identity is not preserved. `exec_command`
-returns `dispatch_status`
-(`confirmed` or `unknown`). Treat `unknown` patch/exec as possibly
-executed; do not retry the same mutation under a new `operation_key`.
+Save this as `workspaces.json` in the CodeSpace checkout. `read-only` permits reads; `workspace-write` also permits patches and commands. Only the operator registers roots and chooses permissions. A tool's `workspace_id` selects a registration; it grants no permission by itself.
 
-## Run the gateway
+`network` defaults to `restricted`. `enabled` requires the Linux helper and routes supported HTTP traffic through its managed proxy; it does not grant unrestricted host networking. Without a working helper, `enabled` execution fails. With `restricted` and no helper, host execution is possible but network restrictions are not OS-enforced. Use the reported enforcement state when deciding whether an environment is suitable.
 
-stdio (Cursor / local MCP host):
+<a id="run-the-gateway"></a>
+
+## Start the server
+
+From the CodeSpace checkout, configure absolute paths and persistent patch/coordination storage:
 
 ```bash
-export CODESPACE_CONFIG="$PWD/docs/workspaces.example.json"
-export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
+export CODESPACE_CONFIG="$PWD/workspaces.json"
 mkdir -p data
-./dist/codespace-mcp
+export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
+export CODESPACE_PATCH_BIN="$PWD/dist/codespace-patch"
+# Use a suitable operator-selected limit for builds; the default is 30 seconds.
+export CODESPACE_PROCESS_TIMEOUT_SECS=300
 ```
 
-Streamable HTTP (optional static Bearer — experiment only, never log it):
+For stdio, configure your MCP client to launch the absolute path to `dist/codespace-mcp` with those environment variables. The server defaults to stdio. Running `./dist/codespace-mcp` in a terminal waits for MCP input; it does not open an interactive chat. Logs go to stderr, leaving stdout for MCP.
+
+For Streamable HTTP, keep the process running:
 
 ```bash
 export CODESPACE_HTTP_HOST=127.0.0.1
 export CODESPACE_HTTP_PORT=8787
-# export CODESPACE_HTTP_TOKEN="replace-me"
-export CODESPACE_CONFIG="$PWD/docs/workspaces.example.json"
-export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
+# Set CODESPACE_HTTP_TOKEN securely if your client will send a Bearer token.
 ./dist/codespace-mcp --http
 ```
 
-Endpoint: `http://127.0.0.1:8787/mcp`. User Inbox JSON is
-`http://127.0.0.1:8787/inbox` on the **same** HTTP listener and Bearer.
-stdio-only mode does not expose `/inbox`. Drafts stay off the model
-until `POST /inbox/intents/{id}/queue`. Bind address is not the same as a
-public `Host` header. For a reverse proxy, allow the external hostname
-separately; do not treat `0.0.0.0` as that name.
+Connect an MCP client to `http://127.0.0.1:8787/mcp`. The same listener exposes `/inbox` as a JSON API with the same optional Bearer authentication. It is unavailable in stdio-only mode. The server does not automatically load `.env.example`.
 
-If `CODESPACE_OPERATIONS_DB` is unset, operations and the intent queue
-live in memory and **do not survive restart**. Process handles never
-survive restart.
+Public HTTPS and reverse-proxy deployment need separate verification. The current HTTP Host allowlist is constructed from loopback and bind-host values; there is no separate public-host configuration option. A public hostname may therefore be rejected. Do not assume that binding to `0.0.0.0` configures an external hostname.
 
-Opt-in runner worker (still host exec, not Linux isolation). UDS is
-1:1: the gateway owns `RuntimeProcess` (child, private 0700 directory,
-`$dir/runner.sock`). There is no reconnect. Allowed `--runner` /
-`CODESPACE_RUNNER` values are `in-process` and `uds` only. `--runner-dir` /
-`CODESPACE_RUNNER_DIR` may name a parent for that unique leaf; `/`,
-`/tmp`, `/var/tmp`, and `$HOME` are rejected as the directory itself.
-`--runner-socket` is only for connecting to an already-running worker
-and does not chmod the parent path.
+<a id="reproduce-the-mvp-flow"></a>
+
+## Verify the first connection
+
+Complete MCP initialization, list tools, and call `workspace_info` with `{"workspace_id":"demo"}`. Confirm that file and process availability match your intended profile. Then read a known project file and follow the [small patch and process example](agent-integration.md).
+
+`available` combines permission and backend support, not current occupancy. A later patch or command may still return `WORKSPACE_BUSY`. A registered `linux-container` environment has no implemented file or exec backend.
+
+## Optional Unix-socket worker
+
+Build the worker and select it before starting the gateway:
 
 ```bash
+cargo build --locked --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
+cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 export CODESPACE_RUNNER=uds
-export CODESPACE_RUNNER_DIR="$PWD/data/runner"
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
-./dist/codespace-mcp
 ```
 
-## Reproduce the MVP flow
+The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. The default remains `in-process`.
 
-Automated coverage (no ChatGPT account required):
+<a id="logs"></a>
+<a id="recovery-after-disconnect-or-restart"></a>
 
-```bash
-cargo test -p codespace-server --test apply
-cargo test -p codespace-server --test process
-cargo test -p codespace-server --test protocol_compat
-cargo test -p codespace-server --test inbox
-cargo test -p codespace-server --test e2e
-```
+## Logs, limits, and recovery
 
-Those tests cover patch apply/disk confirmation and managed processes
-(`exec_command` / `read_process` / `WORKSPACE_BUSY`).
+| Setting or limit | Behavior |
+| --- | --- |
+| `RUST_LOG` | stderr tracing level; default `info` |
+| `CODESPACE_OPERATIONS_DB` unset | In-memory patch operations and instruction queue; lost on restart |
+| `CODESPACE_PROCESS_TIMEOUT_SECS` | Positive integer; default 30 seconds; set in the runner environment |
+| `CODESPACE_MAX_PROCESSES` | Default 8 live processes across the runner; workspace occupancy still applies |
+| Process output | Last 256 KiB retained; stdout/stderr combined; no explicit loss flag or exit code in MCP results |
+| Completed handles | Default retention up to 15 minutes and 64 completed entries; not durable |
 
-Manual stdio: connect an MCP client to `./dist/codespace-mcp` with the
-env vars above, then call those tools against `workspace_id: "demo"`
-(after the JSON `root` exists and the profile allows writes).
+Store logs and the database outside the managed workspace. Rotate stderr capture yourself. Do not log Bearer tokens or commit real credentials. Deleting the database also deletes patch idempotency records.
 
-## Linux isolation fixture
+After losing a patch response, query `operation_status` with exactly one of `operation_id` or `operation_key`. An unfinished record becomes `unknown` after restart; inspect files before deciding what to do. Processes use `process_id` and cannot be recovered through `operation_status`. See [retry and recovery rules](agent-integration.md).
 
-[`deploy/compose.yml`](../deploy/compose.yml) is a sleeper fixture. It
-bind-mounts **only** the project at `/workspace` as uid `10001`. It does
-not mount host `$HOME`, SSH agent sockets, `/var/run/docker.sock`,
-gateway `.env`, Bearer files, or the operations SQLite file. It does not
-run `codespace-mcp` and is **not** connected to `exec_command`.
+<a id="linux-isolation-fixture"></a>
+<a id="what-this-document-does-not-verify"></a>
 
-```bash
-export CODESPACE_WORKSPACE=/absolute/path/to/your/project
-docker compose -f deploy/compose.yml up --build
-```
+## Troubleshooting
 
-The gateway still runs on the host. `exec_command` is a host process
-(pipes by default; PTY when `tty` is true) with the workspace as cwd.
+| Symptom | First check |
+| --- | --- |
+| `WORKSPACE_NOT_FOUND` | Registry path, registered ID, and process environment |
+| Patch helper cannot start | Build `codespace-patch` and check its absolute path |
+| `WORKSPACE_BUSY` | Finish or terminate the existing command before patching |
+| Command times out | Operator timeout; do not assume a long build completed |
+| Linux reports no sandbox | Helper location, bubblewrap, namespace support; see isolation guide |
+| `enabled` command fails before starting | A working Linux sandbox helper is required |
+| HTTP rejects the request | `/mcp` path, Bearer header, and Host validation |
 
-## Logs
-
-- Gateway logs go to **stderr** (`RUST_LOG` / `tracing`, default `info`).
-- Secret keys (`authorization`, `token`, `bearer`, …) are redacted in
-  structured sanitizers. Do not print `CODESPACE_HTTP_TOKEN` in shell
-  history docs you share.
-- Rotate or truncate stderr capture yourself. There is no log SaaS.
-- The operations SQLite file grows with **patch operation** rows plus
-  works/intents. Process handles and resource locks are volatile
-  memory. Keep the database off any future runner mount. Deleting it
-  forgets idempotency keys.
-
-## Recovery after disconnect or restart
-
-HTTP/JSON-RPC request id ≠ `operation_id` ≠ `process_id` ≠ `work_id`. A lost HTTP
-response is not an execution failure.
-
-- Call `operation_status` with **exactly one** of the server-minted
-  `operation_id` or the client `operation_key` instead of blindly
-  re-running `apply_patch`. Providing both or neither is an error.
-- After a crash, unfinished rows are `unknown`. The server does **not**
-  auto-replay them. A lost UDS `apply_patch` response is stored as
-  `unknown`, never a disk-contradicting `rejected`. Inspect the
-  workspace, then start a **new** `operation_key` if you still want the
-  change.
-- A live `exec_command` process can outlive the MCP request. Use
-  `read_process` / `terminate_process` with the issued `process_id`.
-  Ambiguous transport keeps the process-owned lease. `ProcessExited`
-  from the worker calls `release_process` so `WORKSPACE_BUSY` does not
-  stick forever. UDS disconnect or gateway shutdown **kills the worker**
-  (host children die with it). Confirmed worker death releases
-  process-owned leases; `process_id` does not survive. Runner `Replay`
-  is a same-connection primitive, not disconnect recovery. After
-  gateway restart, old OS PIDs are not reused as CodeSpace handles.
-
-## What this document does not verify
-
-- Installing on someone else's laptop or a cloud VM from this session
-- ChatGPT Custom Connector OAuth / public HTTPS `Host` headers
-- Kernel escape of the Docker example
+Local transport tests do not establish a live ChatGPT connection, compatibility with every package manager through the proxy, or protection against kernel/container escapes.

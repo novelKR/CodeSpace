@@ -1,111 +1,38 @@
-# 프로토콜 호환성
+<a id="프로토콜-호환성"></a>
+<a id="프로토콜-호환성"></a>
+
+# MCP 프로토콜 호환성
 
 [English](../protocol-compatibility.md) | [한국어](protocol-compatibility.md)
 
-CodeSpace는 실행 도구 MCP 서버입니다. 바깥 클라이언트가 무엇을 할지
-고릅니다. 이 프로세스는 모델을 호출하지 않습니다.
+일반적인 MCP 초기화, 도구 조회, `tools/call`을 사용합니다. stdio와 `/mcp`의 Streamable HTTP는 같은 도구를 제공합니다. 작업·지시 큐는 애플리케이션 상태이며 전송 세션과 별개입니다.
 
-## 핵심 기준
+<a id="핵심-기준"></a>
+<a id="핵심-기준"></a>
+<a id="핵심이-요구하면-안-되는-것"></a>
+<a id="핵심이-요구하면-안-되는-것"></a>
+<a id="_2026-07-28"></a>
+<a id="2026-07-28"></a>
+<a id="범위-밖"></a>
+<a id="범위-밖"></a>
 
-| 계층 | 기준 | 참고 |
-| --- | --- | --- |
-| Protocol | **MCP 2025-11-25** | 1급. CI가 stdio와 Streamable HTTP에서 이 리비전을 강제합니다. |
-| Transport | **stdio**와 **Streamable HTTP `/mcp`** | 양쪽 모두 같은 도구 계약입니다. |
-| HTTP floor | **2025-03-26** | Streamable HTTP가 있는 첫 리비전. CI 핀은 아닙니다. |
-| Progressive enhancement | **2026-07-28** | 선택. 같은 도구 의미. 핵심에 절대 필수 아님. |
+## 지원 기준
 
-핵심 실행에 필요한 원시 연산: `initialize`, `tools/list`,
-`tools/call`. 현재 실제 도구는 `workspace_info`, `read`, `find`,
-`apply_patch`, `operation_status`, `exec_command`, `write_stdin`,
-`read_process`, `terminate_process`, `work_open`, `steer_status`,
-`steer_claim_next`, `steer_complete`, `work_finish`입니다. 여전히
-`tools/call`을 사용합니다. 사용자 초안과 재정렬은 MCP가 아니라 HTTP
-`/inbox`에 있습니다.
+저장소는 두 전송 방식에서 MCP `2025-11-25`를 명시적으로 테스트합니다. 고정된 SDK를 통해 `2026-07-28` 협상도 이전 버전으로 대체하지 않고 테스트합니다. 새 버전 협상이 다른 실행 동작을 추가하지는 않습니다. 이는 저장소의 호환성 검증 대상이며 클라이언트와 서버가 공통으로 지원하는 버전을 협상해야 합니다.
 
-## 핵심이 요구하면 안 되는 것
+HTTP 전송의 최소 기준은 `2025-03-26`입니다. 이전 `2024-11-05`의 HTTP+SSE 방식은 여기서 지원하지 않습니다. Tasks, 구독, 여러 번의 요청 왕복, 헤더 기반 도구 라우팅은 기본 실행 경로의 필수 조건이나 구현 기능이 아닙니다. 서버는 본문의 JSON-RPC 메서드와 도구 이름으로 요청을 처리합니다.
 
-이 2026-07-28(및 관련) 기능은 나중에 UX나 가속으로 협상할 수 있습니다.
-**핵심 계약의 일부가 아니며** `tools/call`을 막으면 안 됩니다.
+## 클라이언트가 확인할 정보
 
-- MRTR (multi-round-trip requests)
-- Tasks
-- subscriptions
-- `Mcp-Method` / `Mcp-Name` 헤더 라우팅 (SEP-2243)
-- 애플리케이션 상태로서의 2026-07-28 무상태 수명주기
+`initialize.instructions`를 읽고 도구를 조회한 뒤 등록 ID로 `workspace_info`를 호출하세요. `execution` 객체는 권한과 백엔드 지원을 구분하고 파일·프로세스 사용 가능 여부, PTY 기능, 직렬화, 샌드박스, 네트워크 집행 상태를 제공합니다. 사용 가능 여부에는 일시적인 점유 상태가 포함되지 않습니다.
 
-인증과 라우팅은 Bearer 미들웨어(선택)와 `/mcp` → rmcp 도구 디스패치로
-남습니다. 디스패치는 본문에서 JSON-RPC 메서드와 도구 이름을 읽습니다.
-`Mcp-Name`으로 라우팅하지 않습니다.
+도구 인자, 결과 해석, 재시도 규칙은 [Agent Loop 연동](agent-integration.md)을 참고하세요. 지시 큐는 MCP Tasks가 아닌 `work_id`와 `intent_id`를 사용합니다. 프로토콜 플래그는 추가 작업 공간 권한을 부여하지 않습니다.
 
-`crates/domain`, `crates/policy`, `crates/patch`, `crates/store`, `crates/runner`는
-`ProtocolVersion`이나 `NegotiatedFeatures`를 가져오지 않습니다. 서버
-어댑터 `crates/server/src/protocol.rs`가 협상된 리비전을 향상 플래그로
-매핑합니다. 그 플래그가 참이어도 핸들러는 `tools/call`을 유지합니다.
-work/steer는 애플리케이션 상태(`work_id` / `intent_id`)이며 MCP Tasks,
-MRTR, subscriptions가 아닙니다.
+<a id="시험"></a>
+<a id="시험"></a>
 
-이후 **승인** 또는 장시간 **Tasks**(
-[execution-substrate.md](execution-substrate.md) 참고)는 2025-11-25
-`tools/call` 경로를 유지해야 합니다. 추가 권한은 현재 정책 거절입니다.
-MRTR을 요구하기 전에 미래의 `approval_*` 폴백이 옵니다. 대화형
-프로세스는 `process_id` 핸들로 남습니다. Tasks가 이를 대체하면 안
-됩니다.
+## 테스트
 
-## 2026-07-28
+`crates/server/tests/protocol_compat.rs`는 stdio와 HTTP에서 검증 대상 버전을 각각 강제한 뒤 도구 조회·호출을 검사합니다. 새 버전을 우선하되 이전 버전도 허용하는 테스트는 별개의 근거이며 기준 버전을 강제한 테스트를 대신하지 않습니다.
 
-클라이언트가 2026-07-28을 협상하면 서버는 향상 플래그를 광고할 수
-있습니다. 실제 도구의 의미는 2025-11-25와 동일합니다. 이 리비전은
-**점진적 향상 전용**입니다.
-
-2026-07-28을 선호하고 2025-11-25로 폴백하는 기존 Auto 시험은 폴백을
-증명합니다. 2025-11-25 전용 커버리지를 **대체하지 않습니다**.
-
-## 범위 밖
-
-- **2024-11-05 HTTP+SSE.** 목표가 아닙니다. `rmcp` 3.x는 그 전송을
-  제공하지 않습니다.
-- MRTR, Tasks, subscriptions 구현. 선택적 점진적 향상으로 남으며
-  work/steer, exec, patch, 또는 이후 승인 흐름에 **필수가 아닙니다**.
-- 브라우저 Inbox UI(이 릴리스에는 HTTP `/inbox` JSON이 있습니다).
-
-## 시험
-
-`crates/server/tests/protocol_compat.rs`가 핀합니다.
-
-1. stdio와 HTTP에서 강제 **2025-11-25** (`ClientLifecycleMode::Initialize`
-   + `with_protocol_version(V_2025_11_25)`).
-2. HTTP와 stdio에서 강제 **2026-07-28**, 레거시 폴백 **없음**
-   (`Auto { preferred_versions: [V_2026_07_28], legacy_version: None }`).
-
-핸드셰이크 후 `tools/list`는 `workspace_info`를 포함하고 `tools/call`은
-기존 페이로드 계약과 맞습니다. 강제 2025-11-25는 `read` / `apply_patch` /
-`exec_command` / `operation_status`와 work/steer 체크포인트(`work_open`
-→ `/inbox` queue → `steer_claim_next` → `work_finish`)도 다룹니다. 강제
-2026-07-28은 같은 `tools/call` 표면을 사용합니다.
-
-클라이언트 쪽 실행 의미는 그 표면에 남습니다. `initialize.instructions`는
-전역 불변식(요청 수명 ≠ 프로세스 수명, host는 OS sandbox가 아님,
-강제되지 않은 네트워크는 허가가 아님)을 말합니다. 네트워크 정책 값을
-단정하지 않습니다. 실제 정책은 `workspace_info.execution.network`가
-보고합니다. `workspace_id`가 있는
-`workspace_info`는 `execution` 객체(권한 대 백엔드 지원,
-`files.*.available`과 `process.available`은 권한과 백엔드 지원이지
-occupancy가 아님, PTY, mutation lease, 격리, 네트워크)를 더합니다.
-`files.read.available`과 `files.find.available`은 read 권한과
-`file_read_supported`가 필요합니다. `files.patch.available`은 write
-권한과 `file_write_supported`가 필요합니다. `process.available`은 exec
-권한과 백엔드 지원이 모두 필요하며 transient occupancy는 포함하지
-않습니다. 도구 존재는 `tools_exposed`입니다.
-`output_combined=true`는 `read_process`가 하나의 combined stream만
-노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
-`exec_command` 결과는
-`dispatch_status`(`confirmed` 또는 `unknown`)를 더합니다. 빈 argv는
-`INVALID_COMMAND`입니다(프로세스 dispatch 전 거절). 확인된 spawn 실패는
-`PROCESS_SPAWN_FAILED`입니다. 백엔드가 managed process가 만들어지지
-않았음을 확정한 것이며 `dispatch_status=unknown`과 구분됩니다. Runner
-UDS 와이어는 `WIRE_PROTOCOL` 3입니다. `ErrorBody` 제품 코드가 그 JSON을
-타므로 오류 어휘가 바뀌면 protocol number도 바뀝니다. handshake mismatch는
-before-dispatch입니다. Gateway와 worker는 같은 CodeSpace build이며 skew는
-허용하지 않고 탐지합니다. 도구 **이름**은
-늘지 않습니다. `environment_id`, `cwd`, `tty_size`, `process_resize`는
-클라이언트 스키마에 없습니다.
+`http_contract`, `stdio_contract`, `transport_contract`는 전송 어댑터를 검사합니다. 로컬 테스트 성공은 실제 ChatGPT 계정이 사용하는 프로토콜 버전의 증거가 아닙니다. [ChatGPT 연결 상태](chatgpt-connector.md)를 참고하세요.

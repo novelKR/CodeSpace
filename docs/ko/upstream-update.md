@@ -1,66 +1,38 @@
-# 업스트림 핀 갱신
+<a id="업스트림-핀-갱신"></a>
+<a id="업스트림-핀-갱신"></a>
+
+# Codex 의존성 업데이트
 
 [English](../upstream-update.md) | [한국어](upstream-update.md)
 
-Codex 리비전을 바꾸는 것은 **의도적 릴리스**이며, `main`으로
-`git submodule update --remote`가 아닙니다. 패리티 부분집합이 실패하면
-**출하하지 마세요**. 워크스페이스 의존성을 덮으려고 `apply-patch` 소스를
-`crates/patch`에 복사하지 마세요.
+고정 버전은 검토 가능한 PR로 변경합니다. 업데이트는 [Codex 재사용 범위](codex-reuse.md)에 있는 모든 어댑터의 프로세스·파일 시스템·네트워크 동작에 영향을 줄 수 있습니다.
 
-현재 핀: [upstream-lock.md](upstream-lock.md).
-제품 대 크레이트 기본값: [behavior-differences.md](behavior-differences.md).
-apply-patch 외에 재사용할 수 있는 것: [codex-reuse.md](codex-reuse.md).
-NOTICE는 Apache-2.0 Codex 귀속을 유지해야 합니다.
+<a id="점검-목록"></a>
+<a id="점검-목록"></a>
 
-## 점검 목록
+## 후보 검토
 
-1. **태그 또는 커밋**을 고르세요(떠 있는 `main` 아님). 이유를 기록하세요.
-2. `git submodule update --init third_party/codex`
-3. `git -C third_party/codex fetch --tags`
-4. `git -C third_party/codex checkout <commit>`
-5. 격리된 어댑터를 다시 빌드하세요:
-   `cargo test --manifest-path crates/patch/Cargo.toml`
-   `cargo clippy --manifest-path crates/patch/Cargo.toml --all-targets -- -D warnings`
-6. `docs/upstream-lock.md`의 Commit 칸을 새 SHA로 갱신한 뒤
-   `scripts/check-upstream-pin.sh`를 실행하세요(서브모듈 HEAD ≠ lock
-   파일이면 스크립트가 실패합니다).
-7. 적용 옵션, 심링크 정책, 또는 파싱 오류가 바뀌면
-   [behavior-differences.md](behavior-differences.md)를 갱신하세요.
-8. 재사용 설명이나 핀 문자열이 바뀌면 [NOTICE](../../NOTICE)를 갱신하세요.
-9. 핀의 **실행 서브그래프**를 [codex-reuse.md](codex-reuse.md)에 비춰
-   판단하세요: 응집력 있는 실행 대 에이전트 / 모델 의미 대 Gateway 허용
-   우회. process-hardening, PTY, UDS, filesystem, linux-sandbox,
-   network-proxy의 diff는 실행/보안 변경 로그로 취급하세요. 후보 표를
-   갱신하세요. 루트 워크스페이스에 Codex 경로 의존성을 추가하지 마세요.
-   격리는 `crates/patch`와, 생기면 `crates/codex-runtime`
-   (`codespace-codex-runtime`)에 남습니다.
-10. 그 런타임 워크스페이스가 생기기 전까지 게이트는 SHA + 패치 패리티
-    뿐입니다. 생기면 추가로: 런타임 어댑터 컴파일, 그리고 PTY /
-    sandbox / process 회귀. 이 작업 패키지는 그 스위트를 추가하지
-    않습니다.
-11. PR을 여세요. CI는 핀 검사 **와** `crates/patch` 시험을 실행해야
-    합니다. 빨간 패치 job은 경고가 아니라 실패한 배포입니다.
+태그나 커밋을 명시적으로 선택하고 이유를 기록합니다. 패치 처리, PTY, 프로세스 보호, 파일 시스템, 샌드박스, 프록시의 관련 변경을 확인하세요. 런타임 의존성과 개발용 의존성은 구분합니다. 개발용 의존성이 있다는 사실만으로 제품 실행 파일에 포함된다고 볼 수는 없습니다.
 
-실패한 패리티 실행을 성공으로 표시하는 경로는 **없습니다**.
+서브모듈, [버전 기록](upstream-lock.md), 영향받는 어댑터 잠금 파일, 필요한 출처 고지를 함께 갱신합니다. 핵심 타입과 Codex 어댑터 타입의 분리를 유지하세요. 호환되지 않는 의존성을 감추기 위해 업스트림 crate 하나를 제품에 복사하지 않습니다.
 
-## 로컬 게이트
+<a id="로컬-게이트"></a>
+<a id="로컬-게이트"></a>
 
-```bash
-./scripts/check-upstream-pin.sh
-```
+## 제출 전 검증
 
-서브모듈 SHA가 lock 파일과 다르거나
-`cargo test --manifest-path crates/patch/Cargo.toml`이 실패하면
-종료 코드가 0이 아닙니다.
+1. `PIN_ONLY=1 ./scripts/check-upstream-pin.sh`로 고정 커밋을 확인합니다.
+2. 루트 workspace와 분리된 patch, codex-runtime, pty, file-system, linux-sandbox 어댑터에서 `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, 테스트를 수행합니다.
+3. 패치·런타임·Linux 도우미를 빌드하고 통합 테스트가 의도한 실행 파일을 사용하게 설정합니다. workspace 통합·프로토콜 테스트를 실행합니다.
+4. bubblewrap과 네임스페이스를 지원하는 Linux에서 `CODESPACE_REQUIRE_LINUX_SANDBOX=1`로 격리 테스트를 실행합니다. restricted 차단과 enabled 프록시 동작을 포함합니다.
+5. [CI](../../.github/workflows/ci.yml)에 정의된 의존성 정책 검사와 Runner의 금지된 샌드박스 도우미 라이브러리 의존성을 확인합니다.
+6. 기본값·오류·제약이 바뀌면 동작 문서와 두 언어를 함께 검토합니다.
 
-`PIN_ONLY=1 ./scripts/check-upstream-pin.sh`는 SHA만 검사합니다.
-CI는 그것을 fmt/clippy **전에** 실행한 뒤, SHA를 다시 검사하지 않고
-패치 시험을 실행합니다. 로컬에서 접두 없는 스크립트는 여전히 SHA +
-`crates/patch` 시험을 합니다.
+실행 어댑터도 바뀌는 업데이트를 패치 일부 테스트만으로 검증할 수는 없습니다. 명령 결과를 후보 SHA와 연결하고 수행하지 못한 플랫폼 검사는 명시하세요. 현재 검사 목록의 실행 가능한 기준은 CI workflow입니다.
 
-## 금지
+<a id="금지"></a>
+<a id="금지"></a>
 
-- 워크스페이스 크레이트 없이 `codex-rs/apply-patch`를 파일 복사 벤더
-- 독립 `apply_patch` 바이너리를 보안 경계로 감싸기
-- 조용한 `git apply` 폴백
-- 패치 시험이 실패하는데 출하하기
+## 반영과 되돌리기
+
+PR에 이전·새 SHA, 동작 변경, 테스트 근거를 기록합니다. 호환성 검사가 실패한 채 병합하거나 다른 패치 엔진으로 조용히 대체하지 않습니다. 되돌릴 때는 서브모듈, 어댑터 잠금 파일, 필요한 Cargo 패치, 문서를 함께 되돌리고 영향받는 검사를 다시 수행합니다. 고정 커밋 불일치는 경고가 아닌 오류입니다.

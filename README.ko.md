@@ -2,68 +2,47 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-개인용 **실행 도구 MCP 서버**입니다. ChatGPT, Cursor 또는 다른 MCP
-클라이언트가 무엇을 할지 판단합니다. 이 프로세스는 워크스페이스 파일을
-읽고, 고정된 Rust `codex-apply-patch` 엔진으로 Codex 형식 패치를 적용하며,
-등록된 워크스페이스에서 관리형 명령을 실행합니다.
+CodeSpace는 외부 코딩 에이전트가 작업 공간의 파일을 읽고 수정하며 명령을 실행할 수 있게 하는 MCP(Model Context Protocol) 서버입니다. 에이전트가 작업을 계획하고 결과를 해석하면, CodeSpace는 접근 권한을 확인하고 작업을 실행하며 실행 상태를 관리합니다. 자체적으로 모델을 호출하거나 에이전트 루프를 실행하지 않습니다.
 
-서버는 [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)로 만든
-**Cargo 워크스페이스**입니다(stdio와 Streamable HTTP). TypeScript
-게이트웨이와 폐기된 `native/patch-worker`는 없습니다. 게이트웨이는 JSON
-stdin/stdout으로 Rust `codespace-patch` 헬퍼와 대화합니다. 그 헬퍼
-프로세스는 Codex를 **프로세스 내부에서** 호출합니다. `exec_command`는
-현재 워크스페이스를 cwd로 하는 **호스트** 프로세스
-(`tokio::process::Command`)를 띄웁니다. 격리된 Linux 디스패치가 목표
-러너 경계이며, 현재 exec 경로는 아닙니다. 선택적 `CODESPACE_RUNNER=uds`는
-CodeSpace JSON으로 `codespace-codex-runtime`과 대화합니다. 그것은 Linux
-격리가 아닙니다.
+<a id="실행"></a>
+<a id="실행"></a>
 
-다음이 **아닙니다**.
+## 작업 공간을 등록하고 시작하기
 
-- CoS 또는 cokacremote의 포크
-- Codex 에이전트 래퍼
-- 내부에서 모델을 호출하는 호스트
-- 완료된 Linux 샌드박스 러너
+[설치와 첫 연결](docs/ko/operations.md)에서 서버·패치 도우미 빌드, 프로젝트 디렉터리 등록, stdio 또는 Streamable HTTP 연결 순서를 확인하세요. 작업 공간을 등록하지 않고 서버만 시작하면 접근할 수 있는 프로젝트가 없습니다.
 
-내부 모델 호출은 없습니다. MCP 클라이언트가 판단을 소유하고, CodeSpace는
-실행 계약을 소유합니다. 경로 정책, 작업 멱등성, 패치 적용/롤백 보고,
-프로세스 수명입니다.
+이후 [Agent Loop 연동 가이드](docs/ko/agent-integration.md)에 따라 읽기 → 수정 → 실행 → 결과 확인 흐름을 구성하세요. 취소와 결과가 불확실한 경우의 처리도 설명합니다. 상세 문서는 [문서 안내](docs/ko/index.md)에서 찾을 수 있습니다.
 
-## 상태
+## 제공하는 도구
 
-실제 MCP 도구는 `workspace_info`, `read`, `find`, `apply_patch`,
-`operation_status`, `exec_command`, `write_stdin`, `read_process`,
-`terminate_process`, `work_open`, `steer_status`, `steer_claim_next`,
-`steer_complete`, `work_finish`입니다. Codex V4A 적용은
-`codespace-patch` 헬퍼 안의 `crates/patch`입니다
-([docs/upstream-lock.md](docs/upstream-lock.md) 참고).
-Codex 제품 런타임은 제외합니다. 프리미티브 재사용:
-[docs/codex-reuse.md](docs/codex-reuse.md).
-실행 전용(Responses API 없음):
-[docs/execution-substrate.md](docs/execution-substrate.md).
-지연된 사용자 의도는 MCP가 아니라 HTTP `/inbox`에서 편집합니다.
+| 목적 | 도구 |
+| --- | --- |
+| 실행 환경과 파일 확인 | `workspace_info`, `find`, `read` |
+| 패치 적용과 기록된 상태 조회 | `apply_patch`, `operation_status` |
+| 프로세스 실행과 제어 | `exec_command`, `read_process`, `write_stdin`, `terminate_process` |
+| 작업과 사용자 추가 지시 관리 | `work_open`, `steer_status`, `steer_claim_next`, `steer_complete`, `work_finish` |
 
-현재와 목표 프로세스 배치:
-[docs/architecture.md](docs/architecture.md).
-설치, HTTP/stdio, 로그, 복구:
-[docs/operations.md](docs/operations.md).
-기능을 `main`에 직접 커밋하지 마세요.
+두 전송 방식에서 같은 도구를 사용할 수 있습니다. HTTP `/inbox` API는 사용자용 클라이언트가 지시 초안을 관리하는 JSON API입니다. 브라우저에서 사용하는 받은 편지함 화면은 제공하지 않습니다.
 
-## 실행
+<a id="상태"></a>
+<a id="상태"></a>
 
-```bash
-cargo run -p codespace-server --bin codespace-mcp
-# Streamable HTTP at /mcp (default 127.0.0.1:8787); user inbox at /inbox:
-cargo run -p codespace-server --bin codespace-mcp -- --http
-```
+## 실행 방식과 현재 제약
 
-시험: `cargo test --workspace`와
-`cargo test --manifest-path crates/patch/Cargo.toml`와
-`cargo test --manifest-path crates/codex-runtime/Cargo.toml`. ChatGPT Custom
-Connector 절차와 **검증하지 않은** 항목:
-[docs/chatgpt-connector.md](docs/chatgpt-connector.md).
-운영자 설치: [docs/operations.md](docs/operations.md).
+기본 러너는 서버 호스트에서 실행합니다. 선택적으로 Unix 소켓을 사용하는 별도 프로세스에 실행을 맡길 수 있지만, 실행 위치는 같은 호스트입니다. Linux에서는 샌드박스 도우미의 사용 가능 검사가 성공하면 명령 격리와 네트워크 정책이 적용됩니다. UDS 사용과 샌드박스 활성화는 별개입니다. 자세한 조건은 [러너 격리](docs/ko/runner-isolation.md)를 참고하세요.
+
+패치, 터미널 세션, 파일 시스템 접근, Linux 샌드박스에는 특정 버전에 고정한 Codex 실행 라이브러리를 사용합니다. [Codex 재사용 범위](docs/ko/codex-reuse.md)에서 실제 연결된 구성 요소와 CodeSpace가 담당하는 책임을 설명합니다.
+
+에이전트를 연동할 때는 다음 제약을 반영해야 합니다.
+
+- 프로세스 결과에는 출력과 EOF가 있지만 종료 코드는 없습니다. EOF만으로 테스트 성공을 판단할 수 없습니다.
+- 프로세스 출력의 보관 크기가 제한되어 있으며, 유실된 출력을 알리는 별도 필드는 없습니다.
+- 명령이 실행 중이면 같은 작업 공간에서 다른 명령이나 패치를 실행할 수 없습니다. 개발 서버를 켜 둔 채 같은 작업 공간을 수정하는 흐름에는 제약이 있습니다.
+- 서버를 재시작하면 프로세스 핸들이 사라집니다. 패치 작업 기록은 데이터베이스 경로를 설정한 경우에만 유지됩니다.
+- 컨테이너 실행과 완전한 OAuth 서버는 구현되어 있지 않습니다. 실제 ChatGPT 계정 연결도 아직 검증되지 않았습니다.
+
+<a id="라이선스"></a>
 
 ## 라이선스
 
-Apache License 2.0. [LICENSE](LICENSE)와 [NOTICE](NOTICE)를 보세요.
+Apache License 2.0을 따릅니다. [LICENSE](LICENSE)와 [의존성 출처 고지](NOTICE)를 확인하세요.

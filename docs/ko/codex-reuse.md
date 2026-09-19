@@ -1,416 +1,83 @@
-# Codex 재사용: 제품과 프리미티브
+<a id="codex-재사용-제품과-프리미티브"></a>
+<a id="codex-재사용-제품과-프리미티브"></a>
+
+# CodeSpace의 Codex 재사용 범위
 
 [English](../codex-reuse.md) | [한국어](codex-reuse.md)
 
-CodeSpace는 Codex 에이전트를 넣지 **않습니다**. 모든 실행 메커니즘을
-처음부터 재구현하지도 **않습니다**.
+CodeSpace는 특정 버전에 고정한 Codex 소스의 실행 라이브러리를 선택적으로 사용합니다. 계획과 코드 생성은 외부 에이전트가 담당합니다. MCP, 작업 공간 권한, 작업 식별자, 프로세스 관리는 CodeSpace가 담당합니다.
 
-> CodeSpace는 Codex 실행 코드를 피하지 않습니다. Codex 에이전트/제품
-> 소유권이 CodeSpace 핵심에 들어오는 것을 막습니다. 의미와 인가는 여기에
-> 남고, 저수준 실행은 핀된 Codex 서브그래프에서 옵니다.
+<a id="재사용-단위는-서브그래프"></a>
+<a id="재사용-단위는-서브그래프"></a>
+<a id="지금-재사용-코드에서"></a>
+<a id="지금-재사용-코드에서"></a>
 
-요점은 “코드를 덜 쓰는 것”이 아닙니다. 핀 범프가 PTY, 샌드박스,
-hardening, 경로 버그 수정을 물려받아야 합니다. 그다음 CodeSpace는 MCP,
-인가, 작업 신원, Runner 계약에 힘을 씁니다.
+## 실제 연결된 구성 요소
 
-이 프로세스는 실행 전용입니다. 모델 없음, Responses API 없음
-([execution-substrate.md](execution-substrate.md)). App Server
-**프로토콜**은 MCP 번역 대상이 아닙니다. `command/exec` **형태**
-(독립 argv, 핸들, 이후 TTY)는 Runner DTO에 올 수 있습니다.
-`codex-exec`, `codex-core`, App Server는 금지된 채로 남습니다.
+| 어댑터 | Codex 구성 요소 | 현재 역할 |
+| --- | --- | --- |
+| `crates/patch` | `codex-apply-patch`, `codex-exec-server::LOCAL_FS`, 경로 도구, 프로세스 보호 | `codespace-patch` 안에서 V4A 파싱·적용 |
+| `crates/codex-runtime` | `codex-process-hardening`, `codex-uds` | 선택적 worker의 보호 설정과 Unix 소켓 |
+| `crates/pty` | `codex-utils-pty` | `tty: true`의 터미널 실행 |
+| `crates/file-system` | `codex-file-system`, `LOCAL_FS`, 경로 도구 | 심볼릭 링크를 따라가지 않는 Runner 파일 I/O와 범위가 제한된 탐색 |
+| `crates/linux-sandbox` | `codex-linux-sandbox`, `codex-sandboxing`, `codex-protocol`, `codex-network-proxy` | 실행 파일 전용 명령 샌드박스 도우미와 enabled 네트워크 프록시 |
 
-```text
-WHO MAY  → CodeSpace Gateway
-           MCP contract, workspace, profile meaning,
-           operation/idempotency, audit, Runner trait
+의존성이 존재한다고 그 구성 요소의 서비스 전체가 실행되는 것은 아닙니다. 예를 들어 파일·패치 어댑터는 `codex-exec-server`의 `LOCAL_FS`를 사용하지만 그 서버를 일반 명령 실행 백엔드로 사용하지는 않습니다. Linux 도우미가 프록시와 샌드박스 변환을 관리하며 공개 타입은 CodeSpace 타입으로 유지합니다.
 
-HOW SAFE → pinned Codex execution subgraph
-           patch engine, PTY, spawn/reap, Landlock/seccomp,
-           process hardening, filesystem mechanics,
-           network enforcement
-```
+<a id="핵심-대-어댑터"></a>
+<a id="핵심-대-어댑터"></a>
+<a id="apply-patch-패턴-격리이지-크레이트-너비가-아님"></a>
+<a id="apply_patch-패턴-격리이지-크레이트-너비가-아님"></a>
+<a id="격리-층-전이-codex-protocol"></a>
+<a id="격리-층-전이-codex-protocol"></a>
 
-서브그래프를 재사용해도 Codex가 인가자가 되지는 **않습니다**.
-게이트웨이가 여전히 허용하고, 어댑터가 여전히 실행합니다.
+## 어댑터 경계
 
 ```text
-ChatGPT / Cursor / other MCP host
-   │ MCP
-   ▼
-CodeSpace Core          ← only authorization authority
-   ├─ MCP / workspace / profile meaning
-   ├─ operation_key / operation_id / persist
-   └─ Runner contract (CodeSpace DTOs; no Codex types)
-          │
-          ▼
-   isolated adapter workspace
-          │  crates/patch (codespace-patch)
-          │  crates/codex-runtime (codespace-codex-runtime)
-          │    process-hardening + UDS worker; opt-in
-          │  crates/pty (codespace-pty)
-          │    interactive spawn; runner API에 Codex 타입 없음
-          │  crates/file-system (codespace-fs)
-          │    no-follow I/O + 제한된 walk; PathSandbox가 인가, I/O 안전은 어댑터
-          │  crates/linux-sandbox-protocol (serde 핸드셰이크; SANDBOX_HELPER_PROTOCOL=1)
-          │  crates/linux-sandbox (codespace-linux-sandbox 바이너리)
-          │    프로세스 경계: prepare / opaque plan / run exec; Restricted 네트워크 hard deny
-          ▼
-   Codex execution subgraph (pinned) → OS
+에이전트 → CodeSpace MCP·정책·저장소 → Runner 계약
+                                      → 어댑터 → Codex 실행 라이브러리 → OS
 ```
 
-Codex는 어댑터 뒤의 **구현** 의존성이며 Gateway의 아키텍처 의존성이
-아닙니다. `InProcessRunner`, `UdsRunner`, 이후 원격 러너, 또는
-다른 샌드박스 백엔드는 Codex 타입이 어댑터를 떠나지 않으면 바뀔 수
-있습니다.
-
-## 재사용 단위는 서브그래프
-
-“`codex-apply-patch`만큼 좁아야 한다”를 요구하지 마세요. 물으세요.
-
-1. 이 서브그래프가 **응집력 있는 실행**인가?
-2. **에이전트 / 모델 / 제품** 타입이 Runner 경계를 넘는가?
-3. **Gateway 허용을 우회**할 수 있는가?
-
-넓은 Cargo 그래프 자체는 거절이 아닙니다. PTY fd 처리, 시그널 레이스,
-Landlock, 마운트 탈출, 또는 프로세스 hardening을 재구현하면 Codex 버그
-수정이 손으로만 옵니다. 선호:
-
-```text
-Codex bugfix → candidate pin → adapter compile / security / parity → promotion
-```
-
-그것은 **“`main`을 추적”이 아닙니다.** 릴리스 수락은
-[upstream-update.md](upstream-update.md)에 남습니다. 핀 범프에서
-hardening / PTY / sandbox / filesystem / network 크레이트의 diff는
-실행/보안 변경 로그이지 조용한 의존성 범프가 아닙니다.
-
-컨테이너 격리와 호스트 샌드박스는 **대체물이 아닙니다**. 컨테이너에
-no-new-privs / seccomp / Landlock / 네트워크 한도를 더하는 것은
-심층 방어입니다. 이후 Environment(로컬 컨테이너, 원격 Linux, 베어
-Linux)는 같은 Linux 샌드박스 서브그래프를 공유할 수 있습니다.
-
-## 핵심 대 어댑터
-
-```text
-CodeSpace core
-  crates/domain, policy, store, server, runner
-  ──────────────────────────────────────────
-  NO Codex types (including codex-protocol)
-  NO Codex crate path dependency
-
-
-isolated adapter (crates/patch today;
-crates/codex-runtime today; crates/pty today;
-crates/file-system today; crates/linux-sandbox today,
-binary-only)
-  ──────────────────────────────────────────
-  approved execution subgraph allowed
-  including transitive codex-protocol
-
-crates/linux-sandbox-protocol (root workspace)
-  ──────────────────────────────────────────
-  serde / serde_json only; no Codex types
-  SANDBOX_HELPER_PROTOCOL = 1 (not UDS / WIRE_PROTOCOL)
-
-
-adapter boundary
-  ──────────────────────────────────────────
-  CodeSpace DTO  ↔  Codex DTO
-```
-
-공개 MCP는 `workspace_id` + 상대 경로로 남습니다. 내부에서 어댑터는
-해석할 수 있습니다.
-
-```text
-MCP virtual path
-      ↓
-CodeSpace WorkspaceResolver / path scope
-      ↓
-Codex AbsolutePath / PathUri  (adapter only)
-      ↓
-Runner helper
-```
-
-## 정책 대 메커니즘
-
-| CodeSpace가 소유 (정책) | Codex를 선호 (메커니즘) |
-| --- | --- |
-| workspace / profile allow | PTY, UDS transport primitive |
-| path permission meaning | filesystem walk / symlink mechanics |
-| network permission meaning | seccomp / Landlock / hardening |
-| operation approval | network enforcement (when needed) |
-| Runner RPC contract | shell parse / argv construction |
-
-`codex-execpolicy`는 어댑터에서 파싱하거나 분류할 수 있습니다. 최종
-`allow(command)`가 **아닙니다**.
-
-## `apply_patch` 패턴 (격리이지 크레이트 너비가 아님)
-
-엔진을 재사용하세요. 그 주변 서비스는 소유하세요. 이후 런타임 어댑터도
-같은 패턴입니다.
-
-- 핀은 [upstream-lock.md](upstream-lock.md)에 남습니다
-  (`6b9826e3aa83b1a5947db50f4332cb9c65f1b340`).
-- **격리된** Cargo 워크스페이스에서의 경로 의존성이며 저장소 루트가
-  아닙니다. 오늘: `crates/patch`, `crates/codex-runtime`
-  (`codespace-codex-runtime`), `crates/pty` (`codespace-pty`),
-  `crates/file-system` (`codespace-fs`), `crates/linux-sandbox`
-  (`codespace-linux-sandbox` 바이너리). 러너는
-  `crates/linux-sandbox-protocol`(serde만, 루트 워크스페이스 멤버)로
-  그 헬퍼와 대화합니다.
-- NOTICE + Apache-2.0 귀속.
-- 제품 정책은 서브그래프 앞과 뒤에 남습니다.
-- Codex 워크스페이스에서 크레이트를 파일 복사하지 마세요.
-
-```text
-Gateway → Runner trait → UdsRunner (opt-in)
-       → codespace-codex-runtime helper → Codex execution crates
-```
-
-루트 워크스페이스에 Codex 경로 의존성이 생기면 안 됩니다.
-
-정책 스캔(`scripts/check-no-model-deps.sh`)은 Codex 서브모듈 **없이**
-돌아가는 싼 병렬 CI job입니다. 비용은 이 grep이 아니라 서브모듈
-checkout과 cargo가 지배합니다.
-
-| 구역 | 경로 | 비용 | 때 |
-| --- | --- | --- | --- |
-| core manifests | root + `crates/{domain,policy,runner,store,server}/Cargo.toml` | tiny | crate in the update range |
-| core sources | those crates’ trees | low | same |
-| server tests | `tests/` | low | `crates/server` or `tests/` changed |
-| adapter manifests | `crates/patch/Cargo.toml`; `crates/codex-runtime`; `crates/pty`; `crates/file-system`; `crates/linux-sandbox` | tiny | adapter in the update range; allowlist only |
-| protocol crate | `crates/linux-sandbox-protocol` | tiny | `codex-` 키 없음; runner는 helper 라이브러리 path dep 금지 |
-| upstream | `third_party/codex` | huge / false positives | never |
-
-갱신 범위는 `SCAN_BASE`(PR base / 이전 `main`)입니다. 범위를 모르면
-**모든** 핵심 크레이트와 어댑터 매니페스트를 스캔합니다(diff 실패로
-건너뛰지 않음). 문서만 바뀌면 이 job은 exit 0으로 건너뛰고, rust job은
-여전히 실행됩니다.
-
-핵심 매니페스트는 어떤 `codex-` 의존성 키도 금지합니다. 어댑터
-매니페스트는 승인된 서브그래프만 허용합니다(오늘 `crates/patch`:
-`codex-apply-patch`, apply-patch 워크스페이스 그래프로서
-`codex-exec-server`, `codex-utils-path-uri`, `codex-process-hardening`;
-`crates/codex-runtime`: `codex-process-hardening`, `codex-uds`;
-`crates/pty`: `codex-utils-pty`; `crates/file-system`:
-`codex-file-system`, `codex-exec-server`, `codex-utils-path-uri`;
-`crates/linux-sandbox`: `codex-linux-sandbox`, `codex-sandboxing`,
-`codex-protocol`, `codex-utils-path-uri`). 소스는 에이전트/모델
-패턴을 유지합니다(`api.openai.com`, Responses, `codex-login`,
-`codex-core`, `codex-app-server`, `async-openai`). 크레이트 이름을
-언급하는 주석은 cargo 의존성이 아닙니다.
-
-linux-sandbox **helper lock**은 Rama **0.3.0-alpha.4** leaf
-크레이트(`rama-error`, `rama-macros`, `rama-utils`)를 resolver
-가드로 고정합니다. **file-system lock**(`crates/file-system`)도 같은
-leaf를 고정합니다. root가 `codespace-fs` → `codex-exec-server` /
-`codex-protocol`로 Rama를 보기 때문입니다. Codex 핀 `6b9826e`는 그
-train으로 검증되어 있습니다. 새로 resolve하면 `rama-core`는
-alpha.4인데 leaf만 stable `0.3.0`이 될 수 있습니다. 러너는 helper
-크레이트를 path 의존하지 **않으므로** helper 가드가 sandbox를 통해
-root lock에 들어오지 않습니다. helper와 file-system CI
-`cargo clippy` / `cargo test`는 `--locked`입니다. rust job은
-`cargo tree -p codespace-runner`에서 helper-package
-edge(`codespace-linux-sandbox`, `codex-linux-sandbox`)를 검사합니다.
-`codex-sandboxing` / `landlock` / `seccompiler`는 `codespace-fs` →
-`codex-protocol`로 남을 수 있으며, 그건 sandbox helper 그래프가
-아닙니다.
-
-독립 `apply_patch` 바이너리를 보안 경계로 감싸지 **마세요**. Codex App
-Server를 내부 백엔드로 감싸지 **마세요**.
-
-## 감독 코드가 아직 있는 이유
-
-`process_id`, stdin, terminate, timeout이 모이는 이유는 요청 수명이
-프로세스 수명이 아니기 때문입니다. 프로세스 내부 감독이 **기본**입니다.
-선택적 `UdsRunner`도 그 감독을 `codespace-codex-runtime` 안에서
-돌립니다. `operation_key` / `operation_status`는 잃어버린 **원격 MCP
-변경 RPC**를 복구하며, Codex 스레드를 복구하지 않습니다.
-
-spawn+PTY를 얻으려고 `codex-core` / `codex-exec` / App Server를 끌어오면
-login, models, plugins, rollout도 따라옵니다. 그 폭발 반경은 여전히
-거절입니다.
-
-## 단계적 가져오기 (그 WP가 생길 때)
-
-문서화된 순서입니다. **이 WP에서 코드로 가져옴:** process-hardening, UDS,
-PTY(`crates/pty` → `codex-utils-pty`), filesystem(`crates/file-system`
-→ `LOCAL_FS` / `ExecutorFileSystem`), linux-sandbox
-(`crates/linux-sandbox` 바이너리 → prepare / opaque plan / `run --plan`
-Restricted `exec` / Enabled 관리 프록시). **가져옴:**
-network(`Enabled` + proxy).
-
-```text
-process-hardening → PTY → UDS / path → filesystem → linux-sandbox → network
-```
-
-복잡도와 잠금은 그 순서로 커집니다. 핀은 가져가는 모든 서브시스템을
-한 번에 정의합니다.
-
-## 핀 `6b9826e`의 후보
-
-Codex `main`이 아니라 핀의 `Cargo.toml` 파일로 판단합니다.
-
-### 지금 재사용 (코드에서)
-
-**`codex-apply-patch`** via `crates/patch`. 파싱, 헝크 검증, 적용,
-패리티 부분집합.
-
-**`codex-process-hardening`** via `codespace-patch`와
-`codespace-codex-runtime` `pre_main_hardening()`. 워커/헬퍼 **프로세스**
-강화이지 command sandbox가 아닙니다. `main` 첫 줄로 유지하고, 의존성
-폭이 커지지 않는 한 `ctor`는 넣지 않습니다.
-
-**`codex-uds`** via `codespace-codex-runtime` bind. RPC는 CodeSpace.
-
-**`codex-utils-pty`** via `crates/pty` (`codespace-pty`).
-Unix: `portable-pty`, `tokio`, `libc`. 기본 크기 24x80. 연결해도 PTY
-MCP 도구가 추가되지는 **않습니다**. `exec_command`에 선택적 `tty`(기본
-false). 게이트웨이가 여전히 `process_id`를 발급합니다. Resize는
-Runner/MCP 표면에 두지 않습니다(P1).
-
-**`codex-file-system`** via `crates/file-system` (`codespace-fs`).
-제한된 walk, `LOCAL_FS`를 통한 no-follow I/O(`sandbox: None`).
-공개 타입은 CodeSpace(`Path` / bytes / walk 결과 / `FsError`)만.
-`PathSandbox`는 **인가자**(논리 워크스페이스 선택)로 남습니다. I/O
-안전 경계가 아닙니다. 살아 있는 프로세스가 사전 검사와 경쟁할 수
-있습니다. `codespace-fs`가 레이스에 강한 no-follow
-open/read/write/remove/walk와 typed error(`SymlinkRejected`,
-`NotRegularFile`)를 소유합니다. MCP `read` / `find`는 워크스페이스
-상대로 남습니다.
-
-**`codex-linux-sandbox`** via `crates/linux-sandbox`
-(`codespace-linux-sandbox` 바이너리).
-([`codex-rs/linux-sandbox/Cargo.toml`](../../third_party/codex/codex-rs/linux-sandbox/Cargo.toml))
-
-라이브러리 어댑터가 아니라 **프로세스 경계**입니다. 러너는
-`SandboxPrepareRequest` JSON(`SANDBOX_HELPER_PROTOCOL = 1`)을
-`prepare`에 보내고 plan **경로만** 받은 뒤 managed `run --plan`을
-spawn합니다. Restricted는 0600 plan을 unlink하고 같은 PID에서 Codex argv로
-`exec`합니다. Enabled는 헬퍼가 `NetworkProxy`를 띄우고
-`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`를 채운 뒤 Codex argv 자식을
-spawn+wait합니다(`--allow-network-for-proxy`; `--proxy-route-spec`은
-plan에 넣지 않고 Codex outer가 런타임에 붙입니다). `WIRE_PROTOCOL`은
-`3`으로 남습니다. Restricted 네트워크는 `--unshare-net`과 Restricted
-seccomp입니다. Enabled는 Codex FullAccess 호스트 네트워크가 아니라
-격리 netns + 그 관리 프록시입니다. 런타임 의존성에는 `codex-core`가
-없습니다. **dev-dependencies에는 있습니다** — 어댑터 시험이 그
-그래프를 제품 바이너리로 끌어오면 안 됩니다.
-`codex_protocol::PermissionProfile`은 헬퍼 안에 남습니다.
-`codespace-runner`는 `codespace-linux-sandbox-protocol`만 의존합니다.
-
-**헬퍼에서 직접:** `codex-network-proxy`(Enabled `run --plan`의
-`NetworkProxy` 수명). **전이(어댑터에서 허용):** `codex-sandboxing`,
-`codex-protocol`. 허용 엔진이 아닙니다. 루트 워크스페이스 의존성이
-아닙니다.
-
-### 재사용 선호 (그 WP가 올 때)
-
-**`codex-uds`** (이미 `codespace-codex-runtime`에 있음)
-([`codex-rs/uds/Cargo.toml`](../../third_party/codex/codex-rs/uds/Cargo.toml))
-
-Unix: Tokio `fs` / `net` / `rt`. 선택적 Runner Unix 소켓 워커의 소켓
-프리미티브입니다. **RPC 프로토콜은 CodeSpace 소유로 남습니다.**
-
-**`codex-utils-absolute-path` / `codex-utils-path-uri`**
-
-작은 경로/URI 층(`dirs`, `dunce`, URL). 패치가 이미 필요합니다. MCP는
-여전히 워크스페이스 상대 경로만 노출합니다.
-
-**`codex-file-search`**
-([`codex-rs/file-search/Cargo.toml`](../../third_party/codex/codex-rs/file-search/Cargo.toml))
-
-`ignore`, `nucleo`, Tokio. `codex-core` 없음. MCP는
-`find(query, workspace_id)`로 남고, 엔진은 어댑터 뒤로 옮길 수 있습니다.
-
-### 조건부 / 적극 평가
-
-**`codex-shell-command`**
-
-Tree-sitter Bash/PowerShell, shlex, `which`. 파싱 / 인용 / 실행 파일
-해석만. 허용 엔진이 아닙니다.
-
-### 내부 프로토콜 후보
-
-**`codex-exec-server-protocol`**
-([`codex-rs/exec-server-protocol/Cargo.toml`](../../third_party/codex/codex-rs/exec-server-protocol/Cargo.toml))
-
-file-system, network-proxy, protocol, shell-command, path-uri. 이후
-워커 DTO / 어댑터 기반. MCP나 `crates/domain` 타입이 **아닙니다**.
-
-### 격리 층 전이: `codex-protocol`
-
-무거움: execpolicy, http-client, network-proxy, extension items,
-Linux에서 Landlock/seccompiler. **핵심에서 금지.** 어댑터에서는
-허용합니다. 금지하면 file-system, sandbox, shell-command를 다시 짜야
-합니다. `codex_protocol::PermissionProfile`은 MCP나 `crates/domain`에
-나타나면 안 됩니다.
-
-### 실험적 백엔드 (지금은 아님)
-
-**`codex-exec-server`**
-([`codex-rs/exec-server/Cargo.toml`](../../third_party/codex/codex-rs/exec-server/Cargo.toml))
-
-HTTP/WS plus `codex-api`, `codex-config`, OTel, protocol, sandboxing,
-PTY. 오늘의 Runner 백엔드로는 너무 무겁습니다. 영구 거절은 아닙니다.
-나중에 UdsRunner + 저수준 크레이트 대 Gateway 어댑터 →
-exec-server를 비교하세요. 컴파일 그래프와 업그레이드 비용을 재세요.
-
-### 이후 Environment (P0 아님)
-
-**`codex-git-utils` / `codex-worktree`** — Environment 프로비저닝이
-필요하면 격리된 checkout / worktree 수명주기. file-system, protocol,
-PTY, `gix`를 끌어옵니다. 그 WP까지 빼 두세요.
-
-### 코드는 허용, 권한은 금지
-
-**`codex-execpolicy`** — Starlark 접두 규칙. 어댑터의 분류/파싱은
-괜찮습니다. 최종 허용은 Gateway에 남습니다.
-
-### 거절
-
-**`codex-exec`** — App Server 클라이언트, `codex-core`, login, config,
-rollout, history. 제품 exec 흐름이지 `spawn`이 아닙니다.
-
-**`codex-core`** — 에이전트 루프, 도구, 세션.
-
-**App Server embed** (`ChatGPT → MCP adapter → Codex App Server`) —
-에이전트 인프라를 다시 가져오고 인가를 나눕니다.
-
-**login / model / Responses** — 실행 전용 위반.
-
-**Codex 세션 `permissionProfile` / 사용자 샌드박스 설정을 허용으로** —
-두 번째 인가자.
-
-## CodeSpace에 남는 것
-
-- MCP 도구 스키마와 도메인 타입(runner/domain에 `rmcp` 없음. 핵심에
-  Codex 타입 없음).
-- 워크스페이스 레지스트리, 프로필의 **의미**, 경로 정책.
-- 쓰기 잠금, 셸 점유, `WORKSPACE_BUSY`(스케줄러 WP까지).
-- `operation_key` 재실행, `operation_id`, `operation_status`.
-- 호스트/프로세스 내부 프로세스 감독이 기본. UDS 워커는 선택적.
-- 컨테이너 수명주기와 워크스페이스 바인드 마운트 **정책**.
-- 격리된 어댑터 워크스페이스(`crates/patch`,
-  `crates/codex-runtime` / `codespace-codex-runtime`, `crates/pty` /
-  `codespace-pty`,   `crates/file-system` / `codespace-fs`,
-  `crates/linux-sandbox` / `codespace-linux-sandbox` 바이너리).
-  핸드셰이크 타입은 `crates/linux-sandbox-protocol`에 있습니다.
-
-## 다음 구현 WP
-
-다음 **코드** 작업 패키지는 기존 `Runner` 트레이트 뒤의 남은 실행
-서브그래프(network: `Enabled` + proxy)입니다.
-`apply_patch`를 게이트웨이가 구동하는 여러 RPC로 쪼개면 안 됩니다.
-
-기본으로 자체 PTY / Landlock / seccomp 스택을 두지 마세요.
-위 표 이후 격리된 워크스페이스를 통해 실행 서브그래프를 가져오세요.
-핀 범프는 의도적 릴리스입니다
-([upstream-update.md](upstream-update.md)): 지금은 SHA + 패치 패리티.
-그 크레이트를 가져가면 런타임 어댑터 빌드와 PTY / sandbox / process
-회귀를 더합니다.
-
-남은 도메인 확장(스케줄러 큐, 승인 도구)은
-[execution-substrate.md](execution-substrate.md)에서 순서를 정합니다.
-실제 MCP 도구 이름은 그대로입니다. `exec_command`에 선택적 `tty`가
-생겼습니다.
+핵심 crate에는 직접적인 Codex 의존성이 없습니다. 어댑터는 고정된 업스트림의 workspace 의존성을 수용하기 위해 별도의 Cargo workspace로 구성합니다. 파일 시스템·PTY 어댑터는 Runner의 라이브러리 의존성이며, 패치와 Linux 샌드박스는 도우미 프로세스를 사용합니다. Cargo workspace를 분리하는 것만으로 프로세스나 보안 경계가 생기지는 않습니다.
+
+Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-linux-sandbox-protocol`에는 CodeSpace가 정의한 핸드셰이크 데이터만 있고 Codex 타입은 없습니다. worker의 UDS 프로토콜 버전 3과 샌드박스 도우미 프로토콜 버전 1은 별개의 계약입니다.
+
+<a id="정책-대-메커니즘"></a>
+<a id="정책-대-메커니즘"></a>
+<a id="감독-코드가-아직-있는-이유"></a>
+<a id="감독-코드가-아직-있는-이유"></a>
+<a id="코드는-허용-권한은-금지"></a>
+<a id="코드는-허용-권한은-금지"></a>
+<a id="거절"></a>
+<a id="거절"></a>
+<a id="codespace에-남는-것"></a>
+<a id="codespace에-남는-것"></a>
+
+## 권한 결정은 CodeSpace에서 수행
+
+게이트웨이 정책은 작업 공간에서 허용할 행동을 결정합니다. Codex 실행 코드는 no-follow 파일 접근, PTY 생성, 샌드박스 설정 같은 기능을 구현합니다. Codex 세션 권한, 로그인, 모델 선택, 에이전트 루프를 가져오는 것은 이 책임 구분을 바꾸는 일이며 현재 제품에 포함되지 않습니다.
+
+현재 진입점은 `codex-core`, `codex-exec`, Codex App Server를 제품 런타임으로 내장하지 않습니다. 간접 의존성 그래프의 범위와 실제 호출 경로는 별도로 평가합니다. [보안 경계](security-model.md)를 참고하세요.
+
+<a id="단계적-가져오기-그-wp가-생길-때"></a>
+<a id="단계적-가져오기-그-wp가-생길-때"></a>
+<a id="핀-6b9826e의-후보"></a>
+<a id="핀-6b9826e의-후보"></a>
+<a id="재사용-선호-그-wp가-올-때"></a>
+<a id="재사용-선호-그-wp가-올-때"></a>
+<a id="조건부-적극-평가"></a>
+<a id="조건부-적극-평가"></a>
+<a id="내부-프로토콜-후보"></a>
+<a id="내부-프로토콜-후보"></a>
+<a id="실험적-백엔드-지금은-아님"></a>
+<a id="실험적-백엔드-지금은-아님"></a>
+<a id="이후-environment-p0-아님"></a>
+<a id="이후-environment-p0-아님"></a>
+<a id="다음-구현-wp"></a>
+<a id="다음-구현-wp"></a>
+
+## 업데이트와 향후 검토
+
+재사용하는 구성 요소는 현재 모두 [같은 고정 버전](upstream-lock.md)에서 가져옵니다. 업스트림 수정은 버전 갱신과 검증을 거쳐야 반영되며 자동으로 들어오지 않습니다. [업데이트 검사](upstream-update.md)는 패치뿐 아니라 연결된 모든 어댑터를 포함합니다.
+
+`codex-file-search`, 셸 명령 파싱, worktree 준비, 범용 `codex-exec-server` 백엔드는 아직 연결되지 않은 후보입니다. 도입 시 제공하는 실행 기능, 빌드·업데이트 비용, 모델이나 권한 결정 책임이 어댑터 경계를 넘는지를 검토합니다. 사용자에게 영향을 주는 현재 제약은 [Agent Loop 연동](agent-integration.md)에 정리되어 있습니다.

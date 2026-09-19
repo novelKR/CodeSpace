@@ -1,60 +1,49 @@
-# 동작 차이
+<a id="동작-차이"></a>
+<a id="동작-차이"></a>
+
+# 패치 동작과 복구
 
 [English](../behavior-differences.md) | [한국어](behavior-differences.md)
 
-제품 정책은 “`codex-apply-patch`가 기본으로 하는 일”이 **아닙니다**.
-`crates/patch`는 원본 파서와 적용 함수를 프로세스 내부에서 호출한 뒤,
-게이트웨이/러너가 크레이트가 받아들일 수 있는 작업을 거절합니다.
+CodeSpace는 Codex V4A 패치를 받으며 고정된 라이브러리를 호출하기 전에 작업 공간 규칙을 적용합니다. 라이브러리가 지원하는 옵션이 곧 서비스에서 허용하는 동작은 아닙니다.
 
-| 주제 | Codex 라이브러리 / 독립 기본값 (0.154 후보) | CodeSpace 제품 |
-| --- | --- | --- |
-| Paths from the model | 호스트 절대 경로를 받을 수 있음. 프로세스 cwd 기준으로 상대 해석 | **상대 경로만**, 등록된 워크스페이스 루트 안에서 해석 |
-| Symlinks | 적용 옵션이 follow / keep going 가능 | 심링크 파일과 심링크 탈출을 **거절** |
-| Special files | 제품 게이트가 아님 | 디바이스, 소켓, fifo를 **거절** |
-| Add File | 헝크에 따라 기존 경로와 상호작용할 수 있음 | 목적지가 이미 있으면 Add File을 **거절** |
-| Move destination | 헝크가 그렇게 말하면 엔진이 적용할 수 있음 | 이동 목적지가 이미 있으면 **거절** |
-| Newlines | 여러 모드가 있음. 가정하지 말 것 | **Preserve-newline 모드 선호**. 패리티는 같은 모드 사용 |
-| `git apply` | V4A 엔진이 아님. 다른 제품은 가끔 폴백 | **조용한 git-apply 폴백 없음** |
-| Sandbox | 독립 `apply_patch`는 sandbox `None` 사용 | 패치 크레이트는 샌드박스가 **아님**. 지금은 게이트웨이 정책 + PathSandbox. Linux 컨테이너가 **목표** |
-| Unified diff | 다른 곳의 다른 도구 | MVP 밖(`git_apply_patch`는 나중, 절대 자동 변환하지 않음) |
-| Rollback | 크레이트에 N/A | 파일 스냅샷 복원. `git reset --hard` **없음** |
+<a id="패치-요청-계약"></a>
 
 ## 패치 요청 계약
 
-```json
-{
-  "workspace_id": "demo",
-  "patch": "*** Begin Patch\\n*** Update File: src/config.ts\\n...",
-  "expected_versions": {
-    "src/config.ts": "sha256:<from read>"
-  },
-  "operation_key": "change-timeout-001",
-  "check_only": false
-}
-```
+상대 경로와 `read`가 반환한 버전을 사용합니다. `absent`는 대상 파일이 없어야 한다는 뜻입니다. 이동 전 파일 상태를 확인하려면 원본과 대상 경로의 예상 버전을 모두 지정하세요. [사전 검증·적용 예시](agent-integration.md)에서 서로 다른 두 요청에 작업 키를 어떻게 사용하는지 설명합니다.
 
-- `expected_versions` 값은 `read`의 내용 버전이거나, 아직 없어야 하는
-  파일의 `"absent"`입니다. Move는 출발지와 목적지를 검증합니다.
-- `operation_key`는 멱등이지 능력 토큰이 아닙니다.
-- `check_only: true`는 모든 대상 파일을 바이트 단위로 그대로 두고
-  `status: "checked"`를 반환해야 합니다.
-- 성공한 적용은 `files`(경로 목록)와 함께 `path`, `before_version`,
-  `after_version`, `kind`(`add` / `update` / `delete` / `move`)를 담은
-  `changes`를 반환합니다. `applied`는 헬퍼가 주장한 해시가 새로 읽은
-  디스크 해시와 일치한다는 뜻입니다.
+| 규칙 | CodeSpace 동작 |
+| --- | --- |
+| 경로 | 등록 루트 안에서 해석하며 절대 경로와 범위 이탈 거부 |
+| 심볼릭 링크·특수 파일 | 심볼릭 링크 경로와 장치·소켓·FIFO 거부 |
+| 추가·이동 대상이 이미 존재 | 기존 대상을 덮어쓰지 않고 거부 |
+| 줄바꿈 | Codex의 `PreserveLineEndings` 사용. 선택된 동작 일치 사례를 테스트 |
+| 패치 형식 | V4A만 지원. unified diff 자동 변환이나 `git apply` 대체 실행 없음 |
+| 사전 검증 | `check_only: true`로 파일을 쓰지 않고 검사. 예약이나 이후 적용 성공 보장은 아님 |
 
-결과 `status`: `applied` | `checked` | `rejected` |
-`failed_rolled_back` | `failed_partial` | `unknown`.
+## 결과와 복구 한계
 
-## 쓰기 잠금
+| 상태 | 의미와 다음 행동 |
+| --- | --- |
+| `checked` | 사전 검증 성공. 실제 적용에는 새 작업 키 사용 |
+| `applied` | 적용 후 디스크 해시가 도우미가 보고한 값과 일치 |
+| `rejected` | 요청 거부 또는 오류 기록. 오류 내용과 실행이 이미 시작되었는지 확인 |
+| `failed_rolled_back` | 도우미 적용 실패 후 스냅샷 복원 완료로 보고됨 |
+| `failed_partial` | 도우미 적용 실패 후 복원이 불완전함. 파일 확인 필요 |
+| `unknown` | 최종 결과를 알 수 없음. 재시도 전에 파일과 기록 확인 |
 
-`workspace-write` 셸은 변경하는 점유자입니다. 살아 있는 동안 그
-워크스페이스의 다른 변경 패치/exec 작업은 막히거나(`WORKSPACE_BUSY`)
-문서화된 큐에 따라 기다립니다. 제품은 셸이 워크스페이스 파일을 지울 수
-없다고 가장하지 않습니다.
+Runner는 대상 파일을 스냅샷으로 저장하고 도우미의 적용 호출이 실패하면 복원합니다. 그러나 도우미가 성공 응답을 보낸 뒤 검증에서 오류가 발생하면 현재는 복원 전에 반환됩니다. 게이트웨이는 파일이 변경되었어도 그 오류를 `rejected`로 기록할 수 있습니다. 모든 거부 결과를 파일 변경이 없었다는 증거로 해석하지 마세요. 비정상 종료 후에도 자동 스냅샷 복원이나 작업 재실행은 하지 않습니다. `git reset --hard`는 사용하지 않습니다.
 
-## 전송
+성공 결과에는 영향을 받은 `files`와 변경 종류·확인 가능한 전후 해시를 담은 `changes`가 있습니다. 해시는 관측한 파일을 설명하며 저장소 커밋이나 빌드 성공을 뜻하지 않습니다.
 
-stdio와 Streamable HTTP는 **같은** 도구 스키마를 노출합니다. 선택적 정적
-Bearer는 HTTP 실험 전용이며, 실제 계정 검사가 그렇게 말하기 전에는
-ChatGPT Custom Connector를 만족한다고 **가정하지 않습니다**.
+<a id="쓰기-잠금"></a>
+<a id="쓰기-잠금"></a>
+<a id="전송"></a>
+<a id="전송"></a>
+
+## 쓰기 점유와 전송
+
+명령 하나가 실행 중이면 같은 작업 공간의 다른 패치·명령은 `WORKSPACE_BUSY`로 거부됩니다. 대기 큐는 없습니다. 읽기와 검색은 가능합니다. 패치 작업 키는 저장된 요청과 인자가 일치할 때만 이전 결과를 재사용합니다. 응답이 불확실한 상태에서 새 키를 선택하면 변경을 중복 적용할 수 있습니다.
+
+stdio와 Streamable HTTP의 도구 스키마는 같습니다. 연결 실패만으로 변경 작업이 실행되었는지 판단할 수 없습니다. [오류 코드](error-codes.md)와 [복구 규칙](agent-integration.md)을 참고하세요.

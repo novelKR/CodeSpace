@@ -1,25 +1,27 @@
-# CodeSpace 문서
+<a id="codespace-문서"></a>
+<a id="codespace-문서"></a>
+
+# CodeSpace 문서 안내
 
 [English](../index.md) | [한국어](index.md)
 
-CodeSpace는 개인용 실행 도구 MCP 서버입니다. 바깥 클라이언트가 무엇을
-할지 판단합니다. 이 프로세스는 모델을 호출하지 않습니다. 파일을 읽고,
-Codex 형식 패치를 적용하며, 등록된 워크스페이스에서 관리형 명령을
-실행합니다.
+CodeSpace를 직접 구성한 코딩 에이전트의 실행 계층으로 연결하는 방법을 안내합니다. 먼저 로컬 작업 공간을 등록하고 MCP로 연결한 다음, 에이전트에 실행 결과 처리와 복구 규칙을 적용하세요.
 
-## 다음 단계
+<a id="다음-단계"></a>
+<a id="다음-단계"></a>
 
-- [시작하기](../../README.ko.md) — 도구, 실행 명령, 라이선스
-- [운영](operations.md) — 설치, 실행, 로그, 복구
-- [ChatGPT 커넥터](chatgpt-connector.md) — stdio, HTTP, 미검증 계정 검사
-- [아키텍처](architecture.md) — 현재와 목표 프로세스 배치
-- [실행 기반](execution-substrate.md) — 모델 없는 실행 불변식
-- [프로토콜 호환성](protocol-compatibility.md) — MCP 2025-11-25 기준
-- [동작 차이](behavior-differences.md) — 제품 정책 대 크레이트 기본값
-- [보안 모델](security-model.md) — 게이트웨이 정책과 신뢰 경계
-- [러너 격리](runner-isolation.md) — 현재 호스트 exec와 목표 Linux 컨테이너
-- [오류 코드](error-codes.md) — 전송 실패 대 실행 오류
-- [Codex 재사용](codex-reuse.md) — 제품 대 프리미티브
-- [업스트림 고정](upstream-lock.md) — 핀된 Codex 서브모듈
-- [업스트림 핀 갱신](upstream-update.md) — 의도적 릴리스 절차
-- [문서 사이트](documentation.md) — 영·한 레지스트리와 Pages
+## 목적에 맞는 문서 찾기
+
+| 필요한 정보 | 문서 |
+| --- | --- |
+| 제품의 역할과 제약 이해 | [시작하기](../../README.ko.md) |
+| 설치와 작업 공간 연결 | [운영 가이드](operations.md) |
+| 읽기·수정·실행·복구 루프 구성 | [Agent Loop 연동](agent-integration.md) |
+| ChatGPT 연결 가능성 검토 | [ChatGPT 연결 상태](chatgpt-connector.md) |
+| 모듈별 책임 이해 | [아키텍처](architecture.md), [실행 계약](execution-substrate.md) |
+| 권한과 격리 조건 확인 | [보안 모델](security-model.md), [러너 격리](runner-isolation.md) |
+| 프로토콜과 도구 결과 처리 | [프로토콜 호환성](protocol-compatibility.md), [패치 동작](behavior-differences.md), [오류 코드](error-codes.md) |
+| Codex 의존성 유지보수 | [재사용 범위](codex-reuse.md), [고정 버전](upstream-lock.md), [업데이트 절차](upstream-update.md) |
+| 문서 수정과 게시 | [문서 유지보수](documentation.md) |
+
+지원 동작은 실제 구현을 기준으로 설명합니다. 테스트 안내는 검사 범위를 나타내며, 특정 설치 환경이나 외부 계정에서 검증을 마쳤다는 뜻은 아닙니다. 실제 사용할 작업 공간의 실행 조건은 `workspace_info` 응답에서 확인하세요.

@@ -16,7 +16,7 @@ async function copyPage() {
     if (!response.ok) throw new Error('Markdown is unavailable');
     const text = await response.text();
     await navigator.clipboard.writeText(text);
-    if (route.path === current) status.value = ko.value ? '원문을 복사했습니다.' : 'Original Markdown copied.';
+    if (route.path === current) status.value = ko.value ? '이 페이지의 Markdown을 복사했습니다.' : 'This page’s Markdown was copied.';
   } catch {
     if (route.path === current) status.value = ko.value ? '복사하지 못했습니다. 브라우저 권한을 확인하세요.' : 'Copy failed. Check browser permissions.';
   } finally { busy.value = false; }

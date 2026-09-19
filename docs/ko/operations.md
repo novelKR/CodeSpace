@@ -1,81 +1,53 @@
-# 운영
+<a id="운영"></a>
+<a id="운영"></a>
+
+# 설치와 운영
 
 [English](../operations.md) | [한국어](operations.md)
 
-깨끗한 클론에서 로컬 CodeSpace를 재현합니다. 설치하고 게이트웨이를
-시작한 뒤 `workspace_info` → `read` → `apply_patch` → `exec_command`
-순서로 진행합니다. 이것은 **개인 단일 사용자** 배치입니다. 멀티테넌트
-SaaS가 아니고 완전한 OAuth 서버도 아닙니다.
+macOS 또는 Linux에서 개인용 단일 사용자 서버를 준비하는 방법입니다. 설치 후 도구 호출 순서는 [Agent Loop 연동](agent-integration.md)을 참고하세요.
 
-공개 호스트 이름에 대한 ChatGPT Custom Connector는 **검증하지 않았습니다**.
-[chatgpt-connector.md](chatgpt-connector.md)를 보세요.
+<a id="설치"></a>
 
 ## 설치
 
-Rust 1.88+, Git, 그리고 (Linux 격리 픽스처용) Docker가 필요합니다.
+Git과 CI에서 사용하는 최신 Rust stable 도구 체인을 준비하세요. 루트 manifest에는 Rust 1.88이 선언되어 있지만 Codex 어댑터 전체의 최소 빌드 버전으로 검증된 값은 아닙니다. 고정된 업스트림 소스는 Rust 1.95.0을 지정합니다. macOS에는 Xcode 명령줄 도구를 설치하세요. Linux 명령 격리에는 샌드박스 도우미, bubblewrap, 필요한 네임스페이스를 생성할 권한이 추가로 필요합니다. Docker는 별도의 [컨테이너 실험 구성](../../deploy/README.md)을 사용할 때만 필요합니다.
 
 ```bash
 git clone --recurse-submodules https://github.com/novelKR/CodeSpace.git
 cd CodeSpace
-# If you already cloned without submodules:
-# git submodule update --init --recursive
-```
-
-Codex 핀은 [upstream-lock.md](upstream-lock.md)의 커밋에 있는
-`third_party/codex`입니다. Codex `main`으로 `git submodule update --remote`를
-하지 마세요. 제품 런타임은 게이트웨이 밖에 둡니다.
-[codex-reuse.md](codex-reuse.md)와
-[execution-substrate.md](execution-substrate.md)를 보세요.
-
-게이트웨이가 패치 헬퍼와 Linux 샌드박스 헬퍼를 자기 옆에서 찾을 수
-있도록 게이트웨이와 헬퍼를 **같은** 디렉터리에 빌드하세요
-(`CODESPACE_PATCH_BIN` / `CODESPACE_LINUX_SANDBOX_BIN`을 설정해도
-됩니다). UDS 워커는 선택입니다(`CODESPACE_RUNTIME_BIN`).
-
-```bash
-cargo build -p codespace-server --bin codespace-mcp --release
-cargo build --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
-cargo build --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox --release
+# 이미 복제한 저장소에서도 서브모듈을 초기화합니다.
+git submodule update --init --recursive
+cargo build --locked -p codespace-server --bin codespace-mcp --release
+cargo build --locked --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
 mkdir -p dist
 cp target/release/codespace-mcp dist/
 cp crates/patch/target/release/codespace-patch dist/
-cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
-# Optional Unix-socket worker (not the default exec path):
-cargo build --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
-cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 ```
 
-`codespace-patch`는 호스트 자식 프로세스입니다. 핀된 Codex 크레이트를
-**프로세스 내부에서** 호스팅합니다. 업스트림 독립 `apply_patch` 바이너리가
-아니고 폐기된 `native/patch-worker`도 아닙니다. `codespace-codex-runtime`은
-`codex-process-hardening`과 `codex-uds`로 비공개 Unix 소켓을 바인드한 뒤
-`InProcessRunner`를 실행합니다. hardening은 워커/헬퍼 **프로세스**
-강화입니다(`main` 첫 줄 `pre_main_hardening()`, `ctor` 없음). command
-sandbox가 아닙니다. 기본 `exec_command`는 여전히 프로세스 내부 호스트
-spawn입니다. Linux에서 `CODESPACE_LINUX_SANDBOX_BIN`(또는 게이트웨이 옆
-`codespace-linux-sandbox`) probe가 성공하면 그 spawn은 짧은 `prepare`
-다음 `helper run --plan`입니다. Codex argv는 러너에 들어오지 않습니다.
-`workspace_info.execution.isolation.command_sandbox`는 그때만
-`linux-sandbox`이고, 아니면 `none`입니다. Restricted 네트워크는 그때
-OS에서 강제됩니다(`network.enforcement=enforced`). Enabled도 같은
-enforcement이며 헬퍼 안의 관리 HTTP 프록시를 씁니다. 헬퍼가 없으면
-`PROCESS_SPAWN_FAILED`이지 호스트 FullAccess가 아닙니다.
-`exec_command.tty` 기본값은 false(파이프)입니다.
-`tty: true`는 24x80 PTY를 붙입니다. Exec DTO cwd는 `WorkspaceRoot`이며
-`PATH` / `HOME` / `LANG`은 러너 프로세스에서 적용합니다(PTY일 때
-`TERM=xterm`).
+서버가 패치 도우미를 찾을 수 있도록 두 실행 파일을 같은 디렉터리에 두세요. 다른 위치에 두려면 `CODESPACE_PATCH_BIN`에 절대 경로를 지정합니다. 도우미에서 Codex 패치 라이브러리를 호출하므로 서버만 빌드해서는 패치를 적용할 수 없습니다.
 
-## 워크스페이스 레지스트리
+Linux 명령 격리를 사용하려면 다음 도우미도 빌드하여 서버 옆에 둡니다.
 
-[workspaces.example.json](../workspaces.example.json)을 복사하고 `root`를
-**등록한 실제 디렉터리**로 지정하세요. 모델은 워크스페이스를 추가할 수
-없습니다.
+```bash
+cargo build --locked --manifest-path crates/linux-sandbox/Cargo.toml --bin codespace-linux-sandbox --release
+cp crates/linux-sandbox/target/release/codespace-linux-sandbox dist/
+```
+
+빌드 성공만으로 격리가 활성화되었다고 판단할 수 없습니다. 연결 후 `workspace_info.execution.isolation.command_sandbox`를 확인하세요. 자세한 내용은 [활성 조건과 실패 처리](runner-isolation.md)에 있습니다.
+
+<a id="워크스페이스-레지스트리"></a>
+<a id="워크스페이스-레지스트리"></a>
+
+## 작업 공간 등록
+
+사용할 프로젝트 디렉터리를 먼저 만들고, 레지스트리는 그 밖에 둡니다. 아래 `/absolute/path/to/project`를 실제 프로젝트 경로로 바꾸세요.
 
 ```json
 {
   "workspaces": {
     "demo": {
-      "root": "/absolute/path/to/your/project",
+      "root": "/absolute/path/to/project",
       "profile": "workspace-write",
       "network": "restricted"
     }
@@ -83,151 +55,98 @@ enforcement이며 헬퍼 안의 관리 HTTP 프록시를 씁니다. 헬퍼가 �
 }
 ```
 
-프로필: `read-only`(기본 의도) 또는 `workspace-write`. `host-admin`은
-제품 프로필이 아닙니다. 선택적 운영자 `network`는 `restricted`(기본)
-또는 `enabled`이며 `environment`처럼 워크스페이스 JSON이지 도구 인자나
-`{ "network": true }`가 아닙니다. Enabled는 Linux 헬퍼가 필요합니다.
-선택적 운영자 `environments`는 `host` 또는
-`linux-container`를 등록할 수 있습니다. 생략하면 암시적 로컬 호스트입니다.
-`linux-container`는 exec 경로가 아닙니다. 도구와 `workspace_info`에는
-`environment_id`가 없습니다. `workspace_id`로 `workspace_info`를 호출하면
-실제 execution 계약(`execution`)을 읽습니다. 정책 대 백엔드 지원,
-`files.*.available`과 `process.available`(권한과 백엔드 지원만,
-occupancy 아님 — `exec_command`나 `apply_patch`는 여전히
-`WORKSPACE_BUSY`일 수 있음; 도구 존재는 `tools_exposed`), process가
-가능할 때 resize 없는 고정 24x80 PTY, mutation lease /
-`WORKSPACE_BUSY`, 워크스페이스 범위 파일 도구 대 광고된 Linux command
-sandbox, 헬퍼 probe가 성공하면 OS가 강제하는 `network.policy`
-(`restricted` 또는 `enabled`)입니다.
-`output_combined=true`는 `read_process`가 하나의 combined stream만
-노출하고 stdout/stderr origin을 보존하지 않는다는 뜻입니다.
-`exec_command`는 `dispatch_status`(`confirmed` 또는
-`unknown`)를 반환합니다. `unknown` patch/exec는 실행됐을 수 있으니 새
-`operation_key`로 같은 mutation을 재시도하지 마세요.
+CodeSpace 저장소의 `workspaces.json`으로 저장합니다. `read-only`는 읽기를 허용하고, `workspace-write`는 패치와 명령 실행도 허용합니다. 경로와 권한은 운영자가 등록합니다. 도구에 전달하는 `workspace_id`는 등록 항목을 선택할 뿐, 권한을 부여하지 않습니다.
 
-## 게이트웨이 실행
+`network` 기본값은 `restricted`입니다. `enabled`를 사용하려면 Linux 도우미가 필요하며, 지원되는 HTTP 통신은 관리 프록시를 거칩니다. 호스트 네트워크에 무제한 접근하는 설정이 아닙니다. 도우미를 사용할 수 없으면 `enabled` 실행은 실패합니다. `restricted`이고 도우미가 없으면 호스트 실행은 가능하지만 네트워크 제한은 OS 수준에서 강제되지 않습니다. 실제 환경의 적합성은 응답의 정책 집행 상태를 확인해 판단하세요.
 
-stdio(Cursor / 로컬 MCP 호스트):
+<a id="게이트웨이-실행"></a>
+<a id="게이트웨이-실행"></a>
+
+## 서버 시작
+
+CodeSpace 저장소에서 절대 경로와 패치·작업 기록 저장 위치를 설정합니다.
 
 ```bash
-export CODESPACE_CONFIG="$PWD/docs/workspaces.example.json"
-export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
+export CODESPACE_CONFIG="$PWD/workspaces.json"
 mkdir -p data
-./dist/codespace-mcp
+export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
+export CODESPACE_PATCH_BIN="$PWD/dist/codespace-patch"
+# 기본 제한은 30초입니다. 운영자가 빌드에 맞는 시간을 지정합니다.
+export CODESPACE_PROCESS_TIMEOUT_SECS=300
 ```
 
-Streamable HTTP(선택적 정적 Bearer — 실험 전용, 절대 로그하지 마세요):
+stdio를 사용하려면 MCP 클라이언트가 위 환경변수를 전달하고 `dist/codespace-mcp`의 절대 경로를 실행하도록 설정합니다. 서버의 기본 전송 방식은 stdio입니다. 터미널에서 `./dist/codespace-mcp`를 실행하면 MCP 입력을 기다리며, 대화 화면이 열리지는 않습니다. 로그는 stderr로, MCP 메시지는 stdout으로 출력합니다.
+
+Streamable HTTP를 사용하려면 다음 프로세스를 계속 실행해 둡니다.
 
 ```bash
 export CODESPACE_HTTP_HOST=127.0.0.1
 export CODESPACE_HTTP_PORT=8787
-# export CODESPACE_HTTP_TOKEN="replace-me"
-export CODESPACE_CONFIG="$PWD/docs/workspaces.example.json"
-export CODESPACE_OPERATIONS_DB="$PWD/data/operations.sqlite"
+# 클라이언트가 Bearer 토큰을 보낸다면 CODESPACE_HTTP_TOKEN을 안전하게 설정합니다.
 ./dist/codespace-mcp --http
 ```
 
-엔드포인트: `http://127.0.0.1:8787/mcp`. 사용자 Inbox JSON은
-`http://127.0.0.1:8787/inbox`이며 **같은** HTTP 리스너와 Bearer를
-사용합니다. stdio 전용 모드는 `/inbox`를 노출하지 않습니다. 초안은
-`POST /inbox/intents/{id}/queue` 전까지 모델에 넘어가지 않습니다.
-바인드 주소는 공개 `Host` 헤더와 같지 않습니다. 리버스 프록시는 외부
-호스트 이름을 따로 허용하세요. `0.0.0.0`을 그 이름으로 취급하지 마세요.
+MCP 클라이언트에서 `http://127.0.0.1:8787/mcp`로 연결합니다. 같은 포트의 `/inbox`는 JSON API이며 동일한 선택적 Bearer 인증을 사용합니다. stdio 전용 모드에는 `/inbox`가 없습니다. 서버는 `.env.example`을 자동으로 읽지 않습니다.
 
-`CODESPACE_OPERATIONS_DB`가 없으면 작업과 의도 큐는 메모리에 있고
-재시작 후 **남지 않습니다**. 프로세스 핸들은 재시작 후 절대 남지
-않습니다.
+공개 HTTPS와 리버스 프록시는 별도로 검증해야 합니다. 현재 HTTP Host 허용 목록은 루프백과 바인드 호스트 값으로 구성되며, 공개 호스트를 따로 지정하는 설정은 없습니다. 따라서 공개 도메인 요청이 거부될 수 있습니다. `0.0.0.0`에 바인드하는 것과 외부 호스트 이름을 허용하는 것은 다릅니다.
 
-선택적 러너 워커(여전히 호스트 exec이며 Linux 격리가 아님). UDS는
-1:1입니다. 게이트웨이가 `RuntimeProcess`(자식, 비공개 0700 디렉터리,
-`$dir/runner.sock`)를 소유합니다. 재연결은 없습니다.
-`--runner` / `CODESPACE_RUNNER`의 허용 값은 `in-process`와 `uds`뿐입니다.
-`--runner-dir` / `CODESPACE_RUNNER_DIR`은 그 unique leaf의 부모가 될
-수 있습니다. `/`, `/tmp`, `/var/tmp`, `$HOME`을 디렉터리 자체로 주면
-거절합니다. `--runner-socket`은 이미 떠 있는 워커에 연결할 때만 쓰며
-부모 path를 chmod하지 않습니다.
+<a id="mvp-흐름-재현"></a>
+<a id="mvp-흐름-재현"></a>
+
+## 첫 연결 확인
+
+MCP 초기화와 도구 목록 조회를 마친 뒤 `workspace_info`를 `{"workspace_id":"demo"}`로 호출합니다. 파일·프로세스 사용 가능 여부가 의도한 권한과 맞는지 확인하세요. 이어서 프로젝트의 알려진 파일을 읽고 [작은 패치와 프로세스 예시](agent-integration.md)를 실행합니다.
+
+`available`은 권한과 백엔드 지원 여부를 나타내며 현재 점유 상태는 포함하지 않습니다. 이후 패치나 명령에서 `WORKSPACE_BUSY`가 발생할 수 있습니다. `linux-container` 환경은 등록할 수 있지만 파일·명령 실행 백엔드는 아직 없습니다.
+
+## 선택적 Unix 소켓 worker
+
+worker를 빌드하고 게이트웨이를 시작하기 전에 선택합니다.
 
 ```bash
+cargo build --locked --manifest-path crates/codex-runtime/Cargo.toml --bin codespace-codex-runtime --release
+cp crates/codex-runtime/target/release/codespace-codex-runtime dist/
 export CODESPACE_RUNNER=uds
-export CODESPACE_RUNNER_DIR="$PWD/data/runner"
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
-./dist/codespace-mcp
 ```
 
-## MVP 흐름 재현
+worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. 기본값은 `in-process`입니다.
 
-자동 커버리지(ChatGPT 계정 불필요):
+<a id="로그"></a>
+<a id="로그"></a>
+<a id="연결-끊김-또는-재시작-후-복구"></a>
+<a id="연결-끊김-또는-재시작-후-복구"></a>
 
-```bash
-cargo test -p codespace-server --test apply
-cargo test -p codespace-server --test process
-cargo test -p codespace-server --test protocol_compat
-cargo test -p codespace-server --test inbox
-cargo test -p codespace-server --test e2e
-```
+## 로그와 제한, 복구
 
-이 시험은 패치 적용/디스크 확인과 관리형 프로세스
-(`exec_command` / `read_process` / `WORKSPACE_BUSY`)를 다룹니다.
+| 설정 또는 제한 | 동작 |
+| --- | --- |
+| `RUST_LOG` | stderr 로그 수준. 기본값 `info` |
+| `CODESPACE_OPERATIONS_DB` 미설정 | 패치 작업과 지시 큐를 메모리에 보관하며 재시작 시 사라짐 |
+| `CODESPACE_PROCESS_TIMEOUT_SECS` | 양의 정수. 기본 30초. 러너 환경에 설정 |
+| `CODESPACE_MAX_PROCESSES` | 러너 전체의 실행 중 프로세스 기본 상한 8개. 작업 공간별 점유 규칙도 적용 |
+| 프로세스 출력 | 마지막 256 KiB 보관. stdout/stderr를 합치며 MCP 결과에 유실 표시와 종료 코드가 없음 |
+| 종료된 핸들 | 기본 최대 15분, 최대 64개 보관. 영구 저장하지 않음 |
 
-수동 stdio: 위 환경 변수로 MCP 클라이언트를 `./dist/codespace-mcp`에
-연결한 뒤, JSON `root`가 존재하고 프로필이 쓰기를 허용한 다음
-`workspace_id: "demo"`에 대해 그 도구들을 호출하세요.
+로그와 데이터베이스는 관리 대상 작업 공간 밖에 두세요. stderr 로그의 보관·순환은 운영자가 관리합니다. Bearer 토큰을 로그나 커밋에 넣지 마세요. 데이터베이스를 삭제하면 패치 중복 실행 방지 기록도 사라집니다.
 
-## Linux 격리 픽스처
+패치 응답을 받지 못했다면 `operation_id` 또는 `operation_key` 중 하나만 지정해 `operation_status`를 조회합니다. 재시작 후 미완료 기록은 `unknown`이 되므로 파일을 확인한 뒤 다음 행동을 결정하세요. 프로세스는 `process_id`로 관리하며 `operation_status`로 복구할 수 없습니다. [재시도와 복구 규칙](agent-integration.md)을 참고하세요.
 
-[`deploy/compose.yml`](../../deploy/compose.yml)은 슬리퍼 픽스처입니다.
-프로젝트를 uid `10001`로 `/workspace`에 **만** 바인드 마운트합니다.
-호스트 `$HOME`, SSH 에이전트 소켓, `/var/run/docker.sock`, 게이트웨이
-`.env`, Bearer 파일, operations SQLite 파일은 마운트하지 않습니다.
-`codespace-mcp`를 실행하지 않으며 `exec_command`에 **연결되어 있지
-않습니다**.
+<a id="linux-격리-픽스처"></a>
+<a id="linux-격리-픽스처"></a>
+<a id="이-문서가-검증하지-않는-것"></a>
+<a id="이-문서가-검증하지-않는-것"></a>
 
-```bash
-export CODESPACE_WORKSPACE=/absolute/path/to/your/project
-docker compose -f deploy/compose.yml up --build
-```
+## 문제 해결
 
-게이트웨이는 여전히 호스트에서 실행됩니다. `exec_command`는
-워크스페이스를 cwd로 하는 호스트 프로세스입니다(기본은 파이프,
-`tty: true`이면 PTY).
+| 증상 | 먼저 확인할 항목 |
+| --- | --- |
+| `WORKSPACE_NOT_FOUND` | 레지스트리 경로, 등록 ID, 서버에 전달된 환경변수 |
+| 패치 도우미 시작 실패 | `codespace-patch` 빌드 여부와 절대 경로 |
+| `WORKSPACE_BUSY` | 기존 명령이 끝났는지 확인하거나 종료한 뒤 패치 |
+| 명령 시간 초과 | 운영자 제한 시간. 긴 빌드가 완료되었다고 가정하지 않기 |
+| Linux에서 샌드박스가 없다고 표시 | 도우미 위치, bubblewrap, 네임스페이스 지원 확인 |
+| `enabled` 명령 시작 실패 | 사용 가능한 Linux 샌드박스 도우미 필요 |
+| HTTP 요청 거부 | `/mcp` 경로, Bearer 헤더, Host 검증 |
 
-## 로그
-
-- 게이트웨이 로그는 **stderr**로 갑니다(`RUST_LOG` / `tracing`, 기본
-  `info`).
-- 비밀 키(`authorization`, `token`, `bearer`, …)는 구조화 살균기에서
-  가려집니다. 공유하는 셸 이력 문서에 `CODESPACE_HTTP_TOKEN`을 출력하지
-  마세요.
-- stderr 캡처는 직접 순환하거나 잘라내세요. 로그 SaaS는 없습니다.
-- operations SQLite 파일은 **패치 작업** 행과 works/intents와 함께
-  커집니다. 프로세스 핸들과 자원 잠금은 휘발성 메모리입니다.
-  데이터베이스를 이후 러너 마운트에서 빼 두세요. 삭제하면 멱등 키를
-  잊습니다.
-
-## 연결 끊김 또는 재시작 후 복구
-
-HTTP/JSON-RPC 요청 id ≠ `operation_id` ≠ `process_id` ≠ `work_id`. 잃어버린
-HTTP 응답은 실행 실패가 아닙니다.
-
-- `apply_patch`를 맹목적으로 다시 실행하지 말고, 서버가 발급한
-  `operation_id` 또는 클라이언트 `operation_key` **정확히 하나**로
-  `operation_status`를 호출하세요. 둘 다 주거나 둘 다 안 주면 오류입니다.
-- 충돌 후 미완료 행은 `unknown`입니다. 서버는 이를 자동 재실행하지
-  **않습니다**. UDS에서 `apply_patch` 응답이 유실되면 DB는 `unknown`이며
-  디스크와 모순되는 `rejected`를 쓰지 않습니다. 워크스페이스를 검사한 뒤,
-  그 변경이 여전히 필요하면 **새** `operation_key`를 시작하세요.
-- 살아있는 `exec_command` 프로세스는 MCP 요청보다 오래 살 수 있습니다.
-  발급된 `process_id`로 `read_process` / `terminate_process`를 사용하세요.
-  전송이 모호하면 셸 임대를 유지합니다. 워커 `ProcessExited` 뒤에
-  `release_process`가 풀어 무한 `WORKSPACE_BUSY`를 막습니다. UDS 연결
-  끊김이나 게이트웨이 종료는 **워커를 죽입니다**(호스트 자식도 함께
-  죽습니다). 확인된 워커 죽음만 프로세스 소유 임대를 풀며 `process_id`는
-  살아남지 않습니다. 러너 `Replay`는 같은 연결 안의 프리미티브이며
-  연결 끊김 복구가 아닙니다. 게이트웨이 재시작 후 옛 OS PID는
-  CodeSpace 핸들로 재사용되지 않습니다.
-
-## 이 문서가 검증하지 않는 것
-
-- 이 세션에서 다른 사람의 노트북이나 클라우드 VM에 설치하기
-- ChatGPT Custom Connector OAuth / 공개 HTTPS `Host` 헤더
-- Docker 예제의 커널 탈출
+로컬 전송 테스트는 실제 ChatGPT 연결, 모든 패키지 관리자의 프록시 호환성, 커널·컨테이너 탈출 방어까지 검증하지 않습니다.

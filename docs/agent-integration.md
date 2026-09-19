@@ -1,0 +1,165 @@
+# Connect an Agent Loop
+
+[English](agent-integration.md) | [한국어](ko/agent-integration.md)
+
+CodeSpace is the execution layer of your agent. The outer loop selects tools, writes patches, interprets results, and decides when a task is complete. Start with [a configured server and registered workspace](operations.md).
+
+## Connect and inspect capabilities
+
+Use an MCP client SDK to initialize stdio or Streamable HTTP, send the initialized notification, and discover tools with `tools/list`. The repository tests use MCP 2025-11-25 as the baseline. Do not send tool arguments as an ordinary HTTP body to `/mcp`; let the SDK manage MCP framing, session headers, and result decoding.
+
+Examples below are `tools/call` parameter objects, not complete JSON-RPC messages. Tool results may be exposed by your SDK as structured content or text containing JSON. Check both MCP errors and the tool's own result before continuing.
+
+```json
+{
+  "name": "workspace_info",
+  "arguments": {
+    "workspace_id": "demo"
+  }
+}
+```
+
+Inspect `execution.files.*.available`, `execution.process.available`, `execution.isolation.command_sandbox`, and `execution.network`. The tool list says what exists; workspace information says what the registered environment permits and supports. Availability does not reserve the workspace. Read-only workspaces cannot run commands.
+
+## Read and patch a file
+
+Use a disposable project for this example. Create `hello.txt` with `hi` followed by a newline before connecting. First read it:
+
+```json
+{
+  "name": "read",
+  "arguments": {
+    "workspace_id": "demo",
+    "path": "hello.txt"
+  }
+}
+```
+
+Keep the returned `version`. Paths are relative to the registered root. `find` accepts a path glob, not a content search query. `read` returns at most 1 MiB and `find` returns a bounded list; their `truncated` flag means you did not receive the whole result. There is no public range-read or pagination argument.
+
+Replace `VERSION_FROM_READ` below with the exact version returned by `read`. V4A is Codex’s text patch format, using markers such as `*** Begin Patch` and `*** Update File`. This is a complete V4A patch, with JSON newline escapes:
+
+```json
+{
+  "name": "apply_patch",
+  "arguments": {
+    "workspace_id": "demo",
+    "patch": "*** Begin Patch\n*** Update File: hello.txt\n@@\n-hi\n+hello\n*** End Patch\n",
+    "expected_versions": {
+      "hello.txt": "VERSION_FROM_READ"
+    },
+    "operation_key": "hello-preview-1",
+    "check_only": true
+  }
+}
+```
+
+A preview returns `status: "checked"` without writing. To apply, send the same patch and expected version with `check_only: false` and a **different** key, such as `hello-apply-1`. The preview and apply requests differ and cannot share an idempotency key. Read the file again after applying. See [patch states and recovery limits](behavior-differences.md).
+
+## Run and observe a command
+
+```json
+{
+  "name": "exec_command",
+  "arguments": {
+    "workspace_id": "demo",
+    "command": [
+      "/bin/echo",
+      "agent-smoke"
+    ]
+  }
+}
+```
+
+The command is an argument array. Shell quoting, pipes, and `&&` are not interpreted unless you explicitly launch a shell. The working directory is the workspace root; environment and timeout are operator-controlled. Add `"tty": true` to allocate a pseudo-terminal (PTY) when a program requires a terminal (fixed 24×80; no resize API).
+
+The response contains a server-issued `process_id` and `dispatch_status`. `confirmed` means dispatch was acknowledged, **not that the command succeeded**. Save the ID, then poll with a modest delay and pass the returned cursor into the next read:
+
+```json
+{
+  "name": "read_process",
+  "arguments": {
+    "process_id": "PROCESS_ID_FROM_EXEC",
+    "cursor": 0
+  }
+}
+```
+
+Each result has `chunk`, `cursor`, and `eof`. Output combines stdout/stderr without preserving their identity. EOF means output collection is complete; it is not a successful exit status. MCP currently exposes no exit code. The last 256 KiB are retained and older bytes can be dropped without an explicit loss flag. Do not claim a build or test passed solely from EOF or an incomplete log. If success cannot be established from a reliable task-specific result, report it as unverified.
+
+
+
+These example result bodies illustrate the command above. IDs are placeholders: use the values from your own responses. The examples omit the MCP envelope and show a call without coordination context.
+
+```json
+{
+  "process_id": "SERVER_ISSUED_PROCESS_ID",
+  "dispatch_status": "confirmed"
+}
+```
+
+```json
+{
+  "process_id": "SERVER_ISSUED_PROCESS_ID",
+  "cursor": 12,
+  "chunk": "agent-smoke\n",
+  "eof": true
+}
+```
+
+Interactive input and cancellation use the same handle:
+
+```json
+{
+  "name": "write_stdin",
+  "arguments": {
+    "process_id": "PROCESS_ID_FROM_EXEC",
+    "data": "input\n"
+  }
+}
+```
+
+```json
+{
+  "name": "terminate_process",
+  "arguments": {
+    "process_id": "PROCESS_ID_FROM_EXEC"
+  }
+}
+```
+
+A live command occupies the workspace. Wait for it to end or terminate it before applying a patch or starting another command. Reads and searches remain available. Long-lived development servers therefore require a workflow that stops them before edits.
+
+## Retry and recover deliberately
+
+| Situation | Agent action |
+| --- | --- |
+| Patch response lost | Query `operation_status` using the original key, or the operation ID if known |
+| `VERSION_CONFLICT` | Read current content and produce a new patch; do not force the old one |
+| `OPERATION_KEY_CONFLICT` | The key belongs to different arguments; inspect the earlier request |
+| Patch `unknown` or `failed_partial` | Inspect affected files and report uncertainty before deciding on a new operation |
+| Exec `dispatch_status: unknown` | A process may exist. Inspect or terminate the returned handle if reachable; do not blindly start another |
+| `WORKSPACE_BUSY` | Wait for the owning task or cancel the process; avoid a tight retry loop |
+| `TIMEOUT` | Treat execution as interrupted; inspect partial effects |
+| Server/worker lost | Reconnect and inspect capabilities/files; old process handles are not recoverable |
+
+```json
+{
+  "name": "operation_status",
+  "arguments": {
+    "operation_key": "hello-apply-1"
+  }
+}
+```
+
+Use exactly one lookup identifier. `operation_status` tracks patches, not commands. A request ID identifies a transport message; `operation_id` identifies a recorded patch; `process_id` identifies a managed process. None of these IDs grants authority. A recorded patch refusal after dispatch does not prove that disk contents are unchanged; inspect files when verification failed after application.
+
+## Handle user instructions and finish
+
+Optionally call `work_open` with `workspace_id` and a title. Pass its `work_id` on tools that accept it. At safe checkpoints, call `steer_status`, then `steer_claim_next`; process any claimed instruction and mark it `done` or `blocked` with `steer_complete`. Counts in `coordination` are hints, not the instruction body.
+
+Users create and queue drafts through HTTP `/inbox`; drafts are not delivered until queued. This API requires HTTP mode and has no built-in browser UI. Queued text never changes workspace permissions.
+
+Call `work_finish` with the work ID after draining instructions. If it returns `closed: false` and `reason: "pending_user_input"`, handle the remaining queue instead of declaring completion. This closes coordination state; it does not certify code correctness or replace test evidence.
+
+A useful integration acceptance test is: read → preview → apply → read back → run → collect output → cancel a long command → recover a patch by key. Add a failing command and an oversized log to confirm that your loop handles the current result limitations honestly.

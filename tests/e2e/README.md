@@ -1,4 +1,4 @@
-# End-to-end tests (W11)
+# End-to-end tests
 
 Executable coverage: `tests/e2e/flow.rs` (`cargo test -p codespace-server --test e2e`).
 

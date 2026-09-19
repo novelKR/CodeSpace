@@ -1,39 +1,41 @@
-# Public documentation and the documentation site
+<a id="public-documentation-and-the-documentation-site"></a>
+
+# Maintaining the documentation
 
 [English](documentation.md) | [한국어](ko/documentation.md)
 
-English files are the editorial source. Root guides use matching
-`.ko.md` files. Guides under `docs/` use `docs/ko/`. Keep reciprocal
-language links. Commands, code blocks, identifiers, and support
-conditions must stay the same across each pair.
+The published site and repository guides share the same maintained Markdown. English is the editorial source; each maintained guide has a reviewed Korean counterpart. Improve unclear English first, then write natural Korean with the same behavior, limits, and examples.
 
-The [document registry](translations.json) records stable IDs,
-navigation groups, preserved anchors, source/translation paths, and
-both reviewed file hashes. The hashes detect drift. They do not prove
-semantic equivalence or human approval. Review both complete documents
-before recording the pair.
+## Editorial review
 
-```sh
+Check each page against current code, configuration, and tests. Separate implemented behavior, configured availability, test coverage, and actual deployment evidence. Describe what the reader can do before introducing internal implementation names. Explain necessary technical terms on first use.
+
+Avoid unexplained work-package numbers, past-session claims, repeated negative comparisons, and unrelated repository names. Keep dependency attribution and useful source links. Translate table explanations and navigation labels; preserve API identifiers. Korean prose should read naturally on its own, rather than mirror English word order.
+
+Give each fact a primary reference page and link to it elsewhere. Keep installation instructions reproducible, distinguish placeholders from runnable examples, and explain uncertain outcomes instead of implying success. Review the complete pair a second time for consistency before recording hashes.
+
+## Registry and compatibility
+
+The [registry](translations.json) maps stable document IDs, routes, navigation groups, anchors, and reviewed file hashes. Root guides use `.ko.md`; other translations live under `docs/ko/`. Keep links within the current language where a counterpart exists.
+
+Preserve existing routes and old heading anchors when renaming sections, using explicit compatibility anchors near the replacement section. New maintained guides require both languages and a registry entry. Hashes detect later edits; they do not prove semantic equivalence or replace editorial review.
+
+After reviewing each changed pair, record its ID explicitly:
+
+```bash
+python3 -B scripts/check_docs.py record --id agent-integration
 python3 -B scripts/check_docs.py
-python3 -B scripts/check_docs.py record --id documentation
 ```
 
-`record` is for an editor after reviewing that document pair. Select
-each reviewed ID explicitly. A new maintained Markdown document needs
-its Korean edition and a registry entry. CI never updates review
-records automatically.
+Do not refresh every hash just to silence a failure. Check that the rendered page, copied Markdown, language navigation, and preserved links still match the intended content.
 
-## Documentation site
+<a id="documentation-site"></a>
 
-The site uses VitePress 1.6.4, Node 24.21.0, and npm 11.19.0 with the
-committed [npm lock](../docs-site/package-lock.json). The site
-implementation is MIT, copied from docs-actions and adapted here. See
-[site provenance](../docs-site/PROVENANCE.json). Project documentation
-stays Apache-2.0.
+## Build and preview
 
-Do not start the Vite development server. From the repository root:
+Use Node 24.21.0, npm 11.19.0, and Python 3.11 or later. CI uses Python 3.14. Set `DOCS_PYTHON` if the executable has another name. The site uses the committed VitePress lockfile; do not update dependencies as part of a wording change.
 
-```sh
+```bash
 npm ci --prefix docs-site --ignore-scripts
 npm test --prefix docs-site
 npm run build --prefix docs-site
@@ -41,28 +43,14 @@ python3 -B docs-site/scripts/site.py check
 python3 -B docs-site/scripts/site.py preview
 ```
 
-The preview listens at `http://127.0.0.1:43141/CodeSpace/`. Rebuild
-after edits. The preview has no hot module replacement. English is at
-the site root and Korean is under `/ko/`. Maintained pages live under
-`/guide/` and `/ko/guide/`. Copy Page copies the current language's
-maintained Markdown. Local search stays in the browser.
+Preview is `http://127.0.0.1:43141/CodeSpace/`. After edits, stop preview, rebuild, and restart preview: it serves only files matching the manifest loaded at startup. Use this verified static preview instead of the Vite development server. English is at the root and Korean under `/ko/`; guides use `/guide/` and `/ko/guide/`. Copy page uses the current language's maintained Markdown. Search runs locally in the browser.
 
-Set `DOCS_PYTHON` when the Python executable has another name. Use
-Python 3.11 or later. CI selects Python 3.14.
+Check desktop and narrow layouts in both themes, including long code/table content. Exercise navigation, language switching, search, and copying. A passing registry/build check alone does not establish readability or correctness.
 
-## Publication
+<a id="publication"></a>
 
-Pull requests run a read-only docs build and keep a review artifact.
-They do not deploy. A `main` push or a manual `main` run packages the
-same verified directory and calls the pinned docs-actions reusable
-workflow. Grant only that deployment job `pages: write` and
-`id-token: write`. Do not use `secrets: inherit`.
+## Publication and attribution
 
-The pin is [`.github/docs-pages-deploy.lock.json`](../.github/docs-pages-deploy.lock.json).
-Adopt a new SHA only after reviewing that commit, its license scope,
-and successful central CI.
+PRs build a review artifact and do not deploy. A main push or manual main workflow packages the verified directory for GitHub Pages. Build metadata records the source commit and source hashes; a successful artifact upload is not proof of a live deployment.
 
-GitHub Pages source, the `github-pages` environment, and allowing the
-public reusable workflow are repository settings. They are not applied
-by this documentation build. A successful local build or retained
-artifact is not a live site.
+The site implementation is MIT; project documentation is Apache-2.0. Preserve [site provenance](../docs-site/PROVENANCE.json), dependency notices, and licensing files. The publication workflow uses a reviewed external action recorded in [the deployment lock](../.github/docs-pages-deploy.lock.json); change it only as a separate reviewed dependency update. Repository Pages/environment settings are operator-managed, not created by this build.

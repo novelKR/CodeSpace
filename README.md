@@ -2,67 +2,43 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-Personal **execution-tools MCP server**. ChatGPT, Cursor, or another MCP
-client decides what to do. This process reads workspace files, applies
-Codex-format patches through a pinned Rust `codex-apply-patch` engine,
-and runs managed commands in the registered workspace.
+CodeSpace is an MCP (Model Context Protocol) server. It gives an external coding agent a workspace it can inspect, edit, and run commands in through MCP. Your agent plans the work and interprets results; CodeSpace checks workspace permissions, performs operations, and keeps their execution state. It does not call a model or run an agent loop.
 
-The server is a **Cargo workspace** built with [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)
-(stdio and Streamable HTTP). There is no TypeScript gateway and no legacy
-`native/patch-worker`. The gateway talks to a Rust `codespace-patch`
-helper over JSON stdin/stdout. That helper process calls Codex
-**in-process**. `exec_command` currently spawns a **host** process
-(`tokio::process::Command`) with the workspace as cwd. Isolated Linux
-dispatch is the target runner boundary, not the current exec path.
-Opt-in `CODESPACE_RUNNER=uds` talks CodeSpace JSON to
-`codespace-codex-runtime`; that is not Linux isolation.
+<a id="run"></a>
 
-This is **not**:
+## Start with a registered workspace
 
-- a fork of CoS or cokacremote
-- a Codex agent wrapper
-- a host that calls a model internally
-- a completed Linux sandbox runner
+Follow [installation and first connection](docs/operations.md) to build the server and patch helper, register a project directory, and connect over stdio or Streamable HTTP. Starting the binary without a workspace registry leaves it with no accessible projects.
 
-There are no internal model calls. The MCP client owns judgment; CodeSpace
-owns execution contracts: path policy, operation idempotency, patch
-apply/rollback reporting, and process lifetime.
+Then use the [Agent Loop integration guide](docs/agent-integration.md) for the read → patch → run → inspect cycle, including cancellation and uncertain results. The [documentation overview](docs/index.md) points to reference material.
 
-## Status
+## Available tools
 
-Live MCP tools include `workspace_info`, `read`, `find`, `apply_patch`,
-`operation_status`, `exec_command`, `write_stdin`, `read_process`,
-`terminate_process`, `work_open`, `steer_status`, `steer_claim_next`,
-`steer_complete`, and `work_finish`. Codex V4A apply is `crates/patch`
-inside the `codespace-patch` helper
-(see [docs/upstream-lock.md](docs/upstream-lock.md)).
-Codex product runtime stays out; primitive reuse:
-[docs/codex-reuse.md](docs/codex-reuse.md).
-Execution-only (no Responses API):
-[docs/execution-substrate.md](docs/execution-substrate.md).
-Deferred user intent is edited on HTTP `/inbox` (not MCP).
+| Purpose | Tools |
+| --- | --- |
+| Inspect the environment and files | `workspace_info`, `find`, `read` |
+| Apply a patch and retrieve its recorded state | `apply_patch`, `operation_status` |
+| Run and control a process | `exec_command`, `read_process`, `write_stdin`, `terminate_process` |
+| Track a logical job and queued user instructions | `work_open`, `steer_status`, `steer_claim_next`, `steer_complete`, `work_finish` |
 
-Current vs target process layout:
-[docs/architecture.md](docs/architecture.md).
-Install, HTTP/stdio, logs, and recovery:
-[docs/operations.md](docs/operations.md).
-Do not commit features directly to `main`.
+Both transports expose the same tools. The HTTP `/inbox` API lets a user-facing client manage instruction drafts; it is a JSON API, not a browser inbox application.
 
-## Run
+<a id="status"></a>
 
-```bash
-cargo run -p codespace-server --bin codespace-mcp
-# Streamable HTTP at /mcp (default 127.0.0.1:8787); user inbox at /inbox:
-cargo run -p codespace-server --bin codespace-mcp -- --http
-```
+## Execution and current limits
 
-Tests: `cargo test --workspace` and
-`cargo test --manifest-path crates/patch/Cargo.toml` and
-`cargo test --manifest-path crates/codex-runtime/Cargo.toml`. ChatGPT Custom
-Connector steps and what is **not** verified:
-[docs/chatgpt-connector.md](docs/chatgpt-connector.md).
-Operator install: [docs/operations.md](docs/operations.md).
+The default runner executes on the server host. An optional Unix-socket worker moves execution into a separate process on that same host. On Linux, a successful sandbox-helper probe enables command isolation and network enforcement. These are separate choices: UDS alone does not provide sandboxing. See [runner isolation](docs/runner-isolation.md).
+
+CodeSpace reuses pinned Codex execution libraries for patches, terminal sessions, filesystem operations, and Linux sandboxing. [Codex reuse](docs/codex-reuse.md) explains which components are connected and which responsibilities stay in CodeSpace.
+
+For agent integrations, account for these limits:
+
+- Process results expose output and EOF, but no exit code. EOF alone cannot establish that a test passed.
+- Process output is bounded; dropped output has no explicit flag in the MCP result.
+- A live command blocks another command or patch in the same workspace. A development server cannot remain running while that workspace is patched.
+- Process handles do not survive server restart. Patch-operation records persist only when a database path is configured.
+- Container dispatch and a full OAuth server are not implemented. A live ChatGPT account connection remains unverified.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0. See [LICENSE](LICENSE) and [dependency attribution](NOTICE).

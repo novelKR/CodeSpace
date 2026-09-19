@@ -1,91 +1,51 @@
+<a id="러너-격리"></a>
+
 # 러너 격리
 
 [English](../runner-isolation.md) | [한국어](runner-isolation.md)
 
-**목표** 실행 격리 OS는 Linux 컨테이너입니다. **현재** `exec_command`는
-호스트 프로세스입니다. Linux 헬퍼 probe가 성공하면 pipe와 PTY spawn이
-같은 `codespace-linux-sandbox run --plan` argv를 씁니다(bubblewrap +
-`no_new_privs`/seccomp; Codex 변환은 그 프로세스 안). prepare /
-protocol / helper OS spawn 실패는 `PROCESS_SPAWN_FAILED`입니다.
-managed helper가 spawn된 뒤 `run --plan` load, Restricted self-exec,
-Enabled 프록시 spawn, inner sandbox 실패는 managed process exit입니다.
-probe가 실패하면(macOS, bwrap 없음) Restricted는 샌드박스
-없이 실행하고 `workspace_info`는 `none`을 광고합니다.
-Enabled는 헬퍼 없이 `PROCESS_SPAWN_FAILED`이며 호스트 네트워크가
-아닙니다.
-게이트웨이 단위 시험은 macOS에서 실행할 수 있습니다. 그것은
-개발 노트북에서 Linux 격리를 검증했다는 주장이 아닙니다.
+실행을 담당하는 프로세스, 명령에 적용하는 샌드박스, 컨테이너로 실행을 옮기는 기능은 서로 다릅니다. 현재 앞의 두 가지는 구현되어 있으며 컨테이너 실행은 아직 연결되지 않았습니다.
 
-## compose 픽스처가 하는 일
+<a id="이후-프로세스-분리"></a>
+<a id="이후-프로세스-분리"></a>
 
-[`deploy/compose.yml`](../../deploy/compose.yml)은 **격리 픽스처**입니다.
-비특권 사용자(`uid 10001`)로 실행하고, 워크스페이스만 `/workspace`에
-바인드 마운트한 뒤 sleep합니다. `codespace-mcp` / `codespace-patch`를
-실어 보내지 않으며 `exec_command`에 **연결되어 있지 않습니다**.
+## 호스트와 worker 실행
 
-마운트하지 않는 것:
+`in-process`는 `codespace-mcp` 안에서 프로세스를 관리합니다. `uds`(Unix domain socket, Unix 도메인 소켓)는 같은 호스트의 `codespace-codex-runtime` 안에서 같은 관리 코드를 실행합니다. worker는 시작 시 Codex의 프로세스 보호 설정을 적용하고 전용 Unix 소켓을 엽니다. worker 자체를 보호하는 것과 실행할 명령에 샌드박스를 적용하는 것은 별개입니다.
 
-- host `$HOME`
-- SSH agent socket
-- `/var/run/docker.sock`
-- gateway `.env`, Bearer files, or SQLite
+게이트웨이는 임시 디렉터리 또는 `CODESPACE_RUNNER_DIR` 아래에 권한 0700의 고유 디렉터리를 만듭니다. 내부 통신은 u32 길이 접두부, 버전 3 핸드셰이크, 요청 ID, 프로세스 종료 이벤트를 사용하는 CodeSpace JSON입니다. Codex App Server RPC가 아닙니다. 같은 연결에서의 요청 재처리는 재접속 복구를 뜻하지 않습니다. 게이트웨이와 worker 연결이 끊기면 관리 중인 worker와 자식 프로세스가 종료되고 핸들이 사라집니다.
 
-지금은 compose 픽스처에 러너 제어 소켓이 없습니다. 이 픽스처에 호스트
-Docker 소켓이나 이후 제어 소켓을 실수로 추가하지 마세요. 선택적
-`CODESPACE_RUNNER=uds`는 이 픽스처 밖의 **비공개** 게이트웨이↔워커
-Unix 소켓을 씁니다. 게이트웨이가 unique 0700 leaf를 만듭니다
-(`$TMPDIR/codespace-runner-<pid>-<rand>/` 또는
-`$CODESPACE_RUNNER_DIR/run-<pid>-<rand>/`). 소켓은 항상
-`$dir/runner.sock`입니다. 살아있는 소켓은 `connect`로 조사하며
-`ConnectionRefused` leftover만 unlink합니다. `/tmp` 자체는 chmod하지
-않습니다.
+<a id="macos-docker-없음"></a>
+<a id="macos-docker-없음"></a>
 
-## macOS / Docker 없음
+## Linux 명령 샌드박스
 
-`codespace-runner::PathSandbox`는 단위 시험과 `read` / `find` / versions에
-같은 상대 경로 + 심링크 + 특수 파일 규칙을 적용합니다. 워크스페이스
-인가이지, 레이스에 안전한 I/O가 아닙니다. 파일 바이트, metadata, mkdir,
-chmod, remove, 제한된 walk는 격리된 `crates/file-system`(`codespace-fs`,
-no-follow `LOCAL_FS`)을 탑니다. PathSandbox의 lstat과 어댑터 open 사이에
-살아 있는 프로세스가 트리를 바꿀 수 있습니다. 안전 경계는 no-follow
-I/O입니다. Docker를 쓰지
-않으면 **Linux 컨테이너 격리는 검증되지 않습니다**. 호스트
-seccomp/AppArmor와 Docker Desktop 대 Linux 엔진 차이도 검증되지 않습니다.
+파이프와 PTY 실행 모두 같은 Linux 도우미 경로를 사용합니다. Linux에서 `CODESPACE_LINUX_SANDBOX_BIN` 또는 실행 파일 옆의 `codespace-linux-sandbox`를 검사하고, 성공하면 샌드박스 준비·실행을 사용합니다. 검사 결과는 해당 프로세스에서 캐시됩니다.
 
-## 이후 프로세스 분리
+```text
+Runner → 도우미 prepare (CodeSpace JSON, 프로토콜 1)
+       ← 실행 계획 파일 경로
+Runner → 관리 프로세스로 도우미 run --plan 실행
+       → Codex 샌드박스 설정 → 요청한 명령
+```
 
-오늘은 기본으로 `codespace-mcp`가 한 프로세스입니다. `crates/runner`가
-`InProcessRunner`(`PathSandbox`, `apply_patch` 트랜잭션 하나, 호스트
-감독)와 선택적 Unix 소켓 `UdsRunner` 클라이언트를 호스팅합니다.
-워커는 격리된 `crates/codex-runtime`(`codespace-codex-runtime`)입니다.
-`codex_process_hardening::pre_main_hardening()`은 `main`의 첫 줄로
-유지합니다(워커/헬퍼 **프로세스** 강화이지 command sandbox가 아닙니다.
-`ctor` 없음). 그다음 `$dir/runner.sock`에 bind만 합니다(부모 chmod
-없음). 프로세스당 `InProcessRunner`는 **하나**입니다. 와이어는 **u32
-length-prefix + CodeSpace JSON**입니다 (`protocol: 3`, Hello 핸드셰이크,
-`request_id` `rrpc-…`, 이벤트에 `ProcessExited`). App Server가 아닙니다.
-P0 UDS는 1:1입니다. 게이트웨이가 워커 자식을 소유합니다(`kill_on_drop`).
-연결 끊김이나 게이트웨이 종료는 워커와 호스트 자식을 죽입니다.
-`process_id`는 살아남지 않으며 재연결은 없습니다. 러너 `Replay`는 같은
-연결에서만 동작합니다. 그 **전송**은 구현되어 있으며 선택적입니다
-(`CODESPACE_RUNNER=uds` / `CODESPACE_RUNTIME_BIN`). **같은 호스트**이며
-Linux 격리를 주장하지 않습니다. Linux command sandbox는 그 같은
-`InProcessRunner` spawn(`helper probe` / `prepare` / `run --plan`)이며
-두 번째 전송 재작성이 아닙니다. 소켓
-프리미티브로 `codex-uds`를 선호하세요. Runner RPC는 CodeSpace 계약으로
-남습니다.
+Codex 권한 변환과 샌드박스 인자는 실행 파일 전용 도우미 안에서 처리합니다. 실행 계획은 권한 0600의 비공개 파일이며 도우미가 읽어 실행에 사용합니다. Runner는 작은 프로토콜 crate에만 의존하며 샌드박스 구현 라이브러리를 직접 가져오지 않습니다. restricted 실행은 도우미 프로세스가 자신을 실행 명령으로 교체하며, enabled 실행은 도우미가 프록시를 유지하면서 샌드박스 자식 프로세스를 기다립니다.
 
-Linux 격리는 여전히 목표 OS입니다. Landlock, seccomp, PTY 헬퍼, UDS,
-파일시스템 역학, 네트워크 격리는 **기본 자체 스택이 아닙니다**. 업스트림
-실행 서브그래프를 선호하세요
-([codex-reuse.md](codex-reuse.md)). 단계:
-process-hardening → PTY → UDS/path → filesystem → linux-sandbox →
-network (filesystem은 `crates/file-system`, linux-sandbox는
-`crates/linux-sandbox` 바이너리와 `crates/linux-sandbox-protocol`).
-`codex-linux-sandbox`는 컨테이너 옆에 둘 수
-있습니다. 그 `codex-core` **dev-dep**는 제품 그래프에서 빼 두세요.
-P0 network(`Enabled` + 관리 프록시)는 가져왔습니다. `codex-exec`는
-거절된 채로 남습니다. `codex-exec-server`는 참고 / 이후 백엔드이며
-영구 거절은 아닙니다. 게이트웨이 정책이 유일한 허용 경로입니다. compose
-픽스처에 호스트 Docker 소켓이나 이후 제어 소켓을 실수로 마운트하지
-마세요.
+최초 검사가 실패하면 `restricted`는 비격리 호스트 실행을 허용하며, 실행 정보에 `command_sandbox: none`과 OS 네트워크 집행 없음이 표시됩니다. `enabled`는 도우미가 없으면 실패합니다. 최초 검사가 성공한 뒤 준비·프로토콜·시작 오류가 발생하면 비격리 실행으로 대체하지 않고 `PROCESS_SPAWN_FAILED`를 반환합니다. 이미 시작된 도우미 내부의 실패는 프로세스 종료로 관측되며 현재 공개 MCP 결과에는 종료 코드가 없습니다.
+
+## 네트워크와 파일 접근 범위
+
+restricted 모드는 네트워크 네임스페이스 분리와 seccomp 제한을 사용합니다. enabled 모드는 격리된 네트워크 네임스페이스와 관리 HTTP 프록시를 사용합니다. 프록시 우회 환경변수를 비워 루프백 HTTP도 프록시를 거치게 합니다. 호스트 네트워크에 직접 연결하는 방식으로 대체 실행하지 않습니다. 목적지 도메인별 제한이나 모든 네트워크 클라이언트의 호환성을 보장하는 기능은 아닙니다.
+
+실제 조건은 `workspace_info.execution`에서 확인하세요. 파일 도구의 작업 공간 범위는 명령 샌드박스와 별도로 적용됩니다. 논리적 경로 검사 뒤에서 `codespace-fs`가 no-follow I/O를 수행합니다. 패치 도우미에는 별도의 경로 검사와 Codex 패치 옵션이 있으며, 명령 샌드박스가 모든 파일 도구를 자동으로 감싸지는 않습니다.
+
+샌드박스 명령은 사용자 홈의 도구 체인을 마운트하지 않고 제한된 시스템 PATH를 사용합니다. 필요한 컴파일러, 패키지 캐시, 실행 파일을 실행 환경에 준비하세요. 호스트에서 동작하는 명령도 샌드박스 안에서는 실행 파일이나 의존성을 찾지 못할 수 있습니다.
+
+<a id="compose-픽스처가-하는-일"></a>
+<a id="compose-픽스처가-하는-일"></a>
+
+## 컨테이너 실험 구성과 검증
+
+`deploy/compose.yml`은 선택한 작업 공간만 `/workspace`에 마운트하고 일반 사용자로 대기하는 컨테이너입니다. 서버를 설치하거나 Runner를 시작하지 않으며 `exec_command` 요청을 받지 않습니다. 이 구성을 시작했다고 MCP 명령 샌드박스가 활성화되는 것은 아닙니다.
+
+CI의 Linux 격리 작업은 bubblewrap을 설치하고 격리 테스트에서 도우미 사용 가능 여부를 필수로 확인합니다. macOS 검사는 호스트 동작을 대상으로 하며 Linux 정책 집행을 검증하지 않습니다. 커널 탈출, Docker Desktop 차이, 임의의 원격 배포 환경은 별도 평가가 필요합니다. 설치는 [운영](operations.md), 신뢰 조건은 [보안 모델](security-model.md)을 참고하세요.

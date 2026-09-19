@@ -1,8 +1,13 @@
-# Deploy examples
+# Container isolation fixture
 
-See [docs/operations.md](../docs/operations.md) for install, env vars,
-recovery, and what is unverified.
+This fixture starts a non-root `sleep infinity` process. It does not install
+CodeSpace, start an MCP server, or receive Runner commands. Registering a
+`linux-container` environment does not make it an implemented backend.
 
-- `Dockerfile` / `compose.yml`: unprivileged Linux runner. The only bind
-  mount is `${CODESPACE_WORKSPACE}` → `/workspace`. Do not add host home,
-  SSH agent, Docker socket, or gateway secrets.
+`Dockerfile` / `compose.yml` mount only `${CODESPACE_WORKSPACE}` at `/workspace`.
+Do not add host home directories, SSH agent or Docker sockets, or gateway secrets.
+
+For an operational MCP server and the optional Linux sandbox helper, follow
+[installation and operations](../docs/operations.md). The distinction between
+host execution, the UDS worker, and command isolation is explained in
+[runner isolation](../docs/runner-isolation.md).

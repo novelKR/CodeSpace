@@ -2,24 +2,22 @@
 
 [English](index.md) | [한국어](ko/index.md)
 
-CodeSpace is a personal execution-tools MCP server. An outer client
-decides what to do. This process never calls a model. It reads files,
-applies Codex-format patches, and runs managed commands in a registered
-workspace.
+Use CodeSpace as the execution layer beneath your own coding agent. Start with a local workspace, establish an MCP connection, then add the execution and recovery rules your agent needs.
 
-## Find your next step
+<a id="find-your-next-step"></a>
 
-- [Getting started](../README.md) — tools, run commands, and license
-- [Operations](operations.md) — install, run, logs, and recovery
-- [ChatGPT connector](chatgpt-connector.md) — stdio, HTTP, and unverified account checks
-- [Architecture](architecture.md) — current and target process layout
-- [Execution substrate](execution-substrate.md) — no-model execution invariant
-- [Protocol compatibility](protocol-compatibility.md) — MCP 2025-11-25 baseline
-- [Behavior differences](behavior-differences.md) — product policy vs crate defaults
-- [Security model](security-model.md) — gateway policy and trust boundaries
-- [Runner isolation](runner-isolation.md) — current host exec and target Linux container
-- [Error codes](error-codes.md) — transport failure vs execution error
-- [Codex reuse](codex-reuse.md) — product vs primitive
-- [Upstream lock](upstream-lock.md) — pinned Codex submodule
-- [Upstream pin update](upstream-update.md) — deliberate release checklist
-- [Documentation site](documentation.md) — bilingual registry and Pages
+## Choose a guide
+
+| Your goal | Start here |
+| --- | --- |
+| Understand the product and its limits | [Getting started](../README.md) |
+| Install and connect a workspace | [Operations](operations.md) |
+| Build a read, edit, run, and recovery loop | [Agent Loop integration](agent-integration.md) |
+| Evaluate a ChatGPT connection | [ChatGPT connection status](chatgpt-connector.md) |
+| Understand module responsibilities | [Architecture](architecture.md) and [execution contracts](execution-substrate.md) |
+| Check permissions and isolation | [Security model](security-model.md) and [runner isolation](runner-isolation.md) |
+| Handle protocol and tool results | [Protocol compatibility](protocol-compatibility.md), [patch behavior](behavior-differences.md), [error codes](error-codes.md) |
+| Maintain Codex dependencies | [Reuse scope](codex-reuse.md), [pinned revision](upstream-lock.md), [update procedure](upstream-update.md) |
+| Edit or publish these guides | [Documentation maintenance](documentation.md) |
+
+The implementation defines supported behavior. A test description identifies coverage; it is not a claim that a particular installation or external account was tested. Read the execution contract returned by `workspace_info` for the workspace you actually use.
