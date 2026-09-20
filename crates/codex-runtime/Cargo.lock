@@ -761,6 +761,8 @@ dependencies = [
 name = "codespace-codex-runtime"
 version = "0.6.0"
 dependencies = [
+ "codespace-domain",
+ "codespace-policy",
  "codespace-runner",
  "codex-process-hardening",
  "codex-uds",

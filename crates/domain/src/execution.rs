@@ -38,6 +38,40 @@ pub struct EffectivePermissionInfo {
     pub exec: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessLifetimeOwner {
+    Runner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessDisconnectAction {
+    KeepRunning,
+    Terminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessRestartRecovery {
+    None,
+}
+
+/// Advertised process-lifetime contract. The runner instance owns the
+/// process, not the MCP session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessLifetimeInfo {
+    pub owner: ProcessLifetimeOwner,
+    /// Streamable HTTP session end, request cancel, or MCP client detach.
+    pub client_disconnect: ProcessDisconnectAction,
+    /// Gateway↔worker UDS loss.
+    pub runner_disconnect: ProcessDisconnectAction,
+    /// Gateway process exit, including stdio EOF.
+    pub gateway_shutdown: ProcessDisconnectAction,
+    /// Restart does not restore `process_id`. Lost spawn responses are not discovered.
+    pub restart_recovery: ProcessRestartRecovery,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PtyCapabilityInfo {
     pub supported: bool,
@@ -62,6 +96,7 @@ pub struct ProcessCapabilityInfo {
     /// master stream.
     pub output_combined: bool,
     pub tty: PtyCapabilityInfo,
+    pub lifetime: ProcessLifetimeInfo,
 }
 
 /// Static eligibility of a file operation in this workspace.
@@ -193,7 +228,14 @@ impl WorkspaceExecutionInfo {
                     default: false,
                     initial_rows: PTY_INITIAL_ROWS,
                     initial_cols: PTY_INITIAL_COLS,
-                    resize_supported: false,
+                    resize_supported: true,
+                },
+                lifetime: ProcessLifetimeInfo {
+                    owner: ProcessLifetimeOwner::Runner,
+                    client_disconnect: ProcessDisconnectAction::KeepRunning,
+                    runner_disconnect: ProcessDisconnectAction::Terminate,
+                    gateway_shutdown: ProcessDisconnectAction::Terminate,
+                    restart_recovery: ProcessRestartRecovery::None,
                 },
             }),
         };
@@ -305,8 +347,22 @@ mod tests {
         assert!(!caps.tty.default);
         assert_eq!(caps.tty.initial_rows, 24);
         assert_eq!(caps.tty.initial_cols, 80);
-        assert!(!caps.tty.resize_supported);
+        assert!(caps.tty.resize_supported);
         assert!(caps.output_combined);
+        assert_eq!(caps.lifetime.owner, ProcessLifetimeOwner::Runner);
+        assert_eq!(
+            caps.lifetime.client_disconnect,
+            ProcessDisconnectAction::KeepRunning
+        );
+        assert_eq!(
+            caps.lifetime.runner_disconnect,
+            ProcessDisconnectAction::Terminate
+        );
+        assert_eq!(
+            caps.lifetime.gateway_shutdown,
+            ProcessDisconnectAction::Terminate
+        );
+        assert_eq!(caps.lifetime.restart_recovery, ProcessRestartRecovery::None);
         assert_eq!(exec.isolation.command_sandbox, CommandSandboxState::None);
         assert_eq!(exec.network.policy, NetworkPolicyState::Restricted);
         assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
@@ -325,6 +381,30 @@ mod tests {
         assert_eq!(json["network"]["enforcement"], "none");
         assert_eq!(json["process"]["available"], true);
         assert_eq!(json["process"]["capabilities"]["tty"]["supported"], true);
+        assert_eq!(
+            json["process"]["capabilities"]["tty"]["resize_supported"],
+            true
+        );
+        assert_eq!(
+            json["process"]["capabilities"]["lifetime"]["owner"],
+            "runner"
+        );
+        assert_eq!(
+            json["process"]["capabilities"]["lifetime"]["client_disconnect"],
+            "keep_running"
+        );
+        assert_eq!(
+            json["process"]["capabilities"]["lifetime"]["runner_disconnect"],
+            "terminate"
+        );
+        assert_eq!(
+            json["process"]["capabilities"]["lifetime"]["gateway_shutdown"],
+            "terminate"
+        );
+        assert_eq!(
+            json["process"]["capabilities"]["lifetime"]["restart_recovery"],
+            "none"
+        );
     }
 
     #[test]

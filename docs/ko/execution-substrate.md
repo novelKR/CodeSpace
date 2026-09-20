@@ -42,13 +42,13 @@
 
 ## 실행과 결과 관측
 
-게이트웨이는 내부 Runner 요청에 작업 공간 루트 cwd, 러너 환경 기본값, 시간·출력 제한, PTY 선택, 정책을 채웁니다. 현재 터미널 옵션으로 공개된 것은 `tty`뿐입니다. `tty_size`는 spawn 인자가 아닙니다. 공개 호출은 임의의 cwd·환경변수·제한 시간 변경을 받지 않습니다. 기본값은 [운영](operations.md), 결과 처리는 [Agent Loop 연동](agent-integration.md)을 참고하세요.
+게이트웨이는 내부 Runner 요청에 작업 공간 루트 cwd, 러너 환경 기본값, 시간·출력 제한, PTY 선택, 정책을 채웁니다. spawn 시 공개된 터미널 옵션은 `tty`뿐입니다. `tty_size`는 spawn 인자가 아닙니다. 실행 중인 PTY는 `process_resize`로 크기를 바꿉니다. 공개 호출은 임의의 cwd·환경변수·제한 시간 변경을 받지 않습니다. 기본값은 [운영](operations.md), 결과 처리는 [Agent Loop 연동](agent-integration.md)을 참고하세요.
 
-`exec_command`는 디스패치 식별(`process_id`, `dispatch_status`)만 반환합니다. 종료 판정은 `process_status`의 `running`/`exited`와 termination 메타데이터를 사용합니다. `read_process`는 `output_lost`와 `retained_from`을 포함한 출력을 반환합니다. EOF는 성공이 아닙니다. 핸들이 만료된 뒤의 조회는 새 상태가 아니라 `PROCESS_NOT_FOUND`입니다. Linux 샌드박스에서 wait 상태는 관리 자식(헬퍼 argv)의 코드이며, 사용자 argv와 동일하다고 문서화하지 않습니다.
+`exec_command`는 디스패치 식별(`process_id`, `dispatch_status`)만 반환합니다. 종료 판정은 `process_status`의 `running`/`exited`와 termination 메타데이터를 사용합니다. 실행 중인 PTY 크기는 `process_resize`로 바꿉니다. `read_process`는 `output_lost`와 `retained_from`을 포함한 출력을 반환합니다. EOF는 성공이 아닙니다. 핸들이 만료된 뒤의 조회는 새 상태가 아니라 `PROCESS_NOT_FOUND`입니다. 파이프 프로세스의 크기 변경은 `PROCESS_NOT_TTY`, 종료된 핸들은 `PROCESS_NOT_RUNNING`입니다. Linux 샌드박스에서 wait 상태는 관리 자식(헬퍼 argv)의 코드이며, 사용자 argv와 동일하다고 문서화하지 않습니다.
 
 작업 공간 잠금은 패치와 명령이 동시에 파일을 변경하지 못하게 합니다. 명령 실행 중에도 읽기와 검색은 가능하므로 파일 I/O는 사전 경로 검사에만 의존하지 않고 파일을 여는 시점의 심볼릭 링크 변경도 거부해야 합니다. Runner 파일 작업은 `codespace-fs`, 패치 적용은 별도 패치 도우미를 사용합니다. `operation_status`는 기록된 패치 원장(`kind`는 `patch`)을 조회하며, 실행 중인 명령은 `process_id`로만 다루고 이 조회로 복구하지 않습니다.
 
-UDS 전송과 Linux 샌드박스 준비는 서로 다른 프로토콜과 실패 경계를 가집니다. UDS 변경 요청이 일부만 전달되면 결과가 불확실할 수 있습니다. 연결이 끊겼다는 이유만으로 새 변경 요청을 보내지 마세요. 프로세스·격리 규칙 전체는 [러너 격리](runner-isolation.md)에 설명합니다.
+UDS 전송과 Linux 샌드박스 준비는 서로 다른 프로토콜과 실패 경계를 가집니다. UDS 변경 요청이 일부만 전달되면 결과가 불확실할 수 있습니다. 연결이 끊겼다는 이유만으로 새 변경 요청을 보내지 마세요. 프로세스 수명은 러너 인스턴스가 소유합니다. MCP/HTTP 클라이언트 끊김은 프로세스를 유지하고, UDS 게이트웨이↔worker 단절이나 게이트웨이 종료는 소유 서브트리를 종료합니다. 영속적인 프로세스 복구는 없습니다. 프로세스·격리 규칙 전체는 [러너 격리](runner-isolation.md)에 설명합니다.
 
 <a id="승인과-mcp-리비전"></a>
 <a id="승인과-mcp-리비전"></a>
@@ -78,7 +78,7 @@ Runner는 해당 작업 공간에서 처음 `read`·`find`·`version`·`apply_pa
 
 ## 아직 제공하지 않는 기능
 
-PTY 크기 변경(`process_resize`는 제공하지 않음), 파일 범위·페이지 인자, 영속적인 프로세스 복구, 컨테이너·원격 실행, 자원 큐 스케줄러도 제공하지 않습니다. MCP `fs/watch`, UDS watch 이벤트, 쓰기 원인 분류도 제공하지 않습니다. 내부 타입이나 협상된 프로토콜 플래그가 존재한다고 해당 기능을 호출할 수 있는 것은 아닙니다.
+파일 범위·페이지 인자, 영속적인 프로세스 복구, 컨테이너·원격 실행, 자원 큐 스케줄러도 제공하지 않습니다. MCP `fs/watch`, UDS watch 이벤트, 쓰기 원인 분류도 제공하지 않습니다. 내부 타입이나 협상된 프로토콜 플래그가 존재한다고 해당 기능을 호출할 수 있는 것은 아닙니다.
 
 ## 구현 경계 유지
 

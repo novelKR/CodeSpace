@@ -37,13 +37,13 @@ The operator registry maps `read-only` and `workspace-write` to effective permis
 
 ## Execution and observation
 
-Gateway fills workspace-root cwd, runner-local environment defaults, time/output limits, PTY choice, and policy into the internal Runner request. Only `tty` is exposed as a terminal option today. `tty_size` is not a spawn argument. Public calls do not accept arbitrary cwd/env/timeout overrides. See [operations](operations.md) for defaults and [Agent Loop integration](agent-integration.md) for result handling.
+Gateway fills workspace-root cwd, runner-local environment defaults, time/output limits, PTY choice, and policy into the internal Runner request. Only `tty` is exposed as a spawn-time terminal option. `tty_size` is not a spawn argument. A running PTY is resized with `process_resize`. Public calls do not accept arbitrary cwd/env/timeout overrides. See [operations](operations.md) for defaults and [Agent Loop integration](agent-integration.md) for result handling.
 
-`exec_command` returns dispatch identity (`process_id`, `dispatch_status`). `process_status` reports `running` or `exited` plus termination metadata. `read_process` reports output including `output_lost` and `retained_from`. EOF is not success. After handle eviction the next lookup is `PROCESS_NOT_FOUND`, not a new state. On Linux sandbox, the wait status is that of the managed child (the helper argv); it is not documented as identical to the user argv.
+`exec_command` returns dispatch identity (`process_id`, `dispatch_status`). `process_status` reports `running` or `exited` plus termination metadata. `process_resize` changes the size of a running PTY. `read_process` reports output including `output_lost` and `retained_from`. EOF is not success. After handle eviction the next lookup is `PROCESS_NOT_FOUND`, not a new state. Pipe-backed resize is `PROCESS_NOT_TTY`; an exited handle is `PROCESS_NOT_RUNNING`. On Linux sandbox, the wait status is that of the managed child (the helper argv); it is not documented as identical to the user argv.
 
 A workspace mutation lease prevents simultaneous patch/exec mutations. Read and find remain available while a command runs, so filesystem I/O must reject symlink races at open time rather than rely on a prior path check. Runner file operations use `codespace-fs`; patch execution uses the separate patch helper. `operation_status` exposes the recorded patch ledger (`kind` is `patch`); live commands stay on `process_id` and are not recovered through that lookup.
 
-UDS transport and Linux sandbox preparation have distinct protocols and failure boundaries. A partially delivered UDS mutation may yield an uncertain result; never retry it as a new mutation merely because the connection failed. The complete process and isolation rules belong in [runner isolation](runner-isolation.md).
+UDS transport and Linux sandbox preparation have distinct protocols and failure boundaries. A partially delivered UDS mutation may yield an uncertain result; never retry it as a new mutation merely because the connection failed. Process lifetime is owned by the runner instance: MCP/HTTP client disconnect keeps the process running, while UDS gateway↔worker loss or gateway shutdown terminates the owned subtree. There is no durable process recovery. The complete process and isolation rules belong in [runner isolation](runner-isolation.md).
 
 <a id="approval-and-mcp-revision"></a>
 <a id="scheduler-after-the-single-write-lock"></a>
@@ -69,7 +69,7 @@ When the operator sets workspace `approvals` to `confirm`, a policy-allowed `app
 
 ## What remains unimplemented
 
-PTY resize (`process_resize` is not provided), file range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
+File range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
 
 ## Maintaining the boundary
 

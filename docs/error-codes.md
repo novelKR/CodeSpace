@@ -38,6 +38,8 @@ Errors use uppercase identifiers and a message. An `operation_id` may be present
 | `OPERATION_KEY_CONFLICT` | Same patch key was used with different arguments |
 | `OPERATION_NOT_FOUND` | Unknown lookup ID/key, or not exactly one identifier supplied |
 | `PROCESS_NOT_FOUND` | Process handle missing, expired, or stdin already closed on write |
+| `PROCESS_NOT_TTY` | `process_resize` on a pipe-backed (`tty: false`) process |
+| `PROCESS_NOT_RUNNING` | `process_resize` on a handle that exists but is not running |
 | `OUTPUT_LIMIT` | Helper output exceeded its bound; process reads instead discard old bytes |
 | `TIMEOUT` | A managed command or helper exceeded its time limit |
 | `WORK_NOT_FOUND` | Unknown logical work |

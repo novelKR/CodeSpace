@@ -18,7 +18,7 @@ Then use the [Agent Loop integration guide](docs/agent-integration.md) for the r
 | --- | --- |
 | Inspect the environment and files | `workspace_info`, `find`, `read` |
 | Apply a patch and retrieve its recorded state | `apply_patch`, `operation_status` |
-| Run and control a process | `exec_command`, `read_process`, `process_status`, `write_stdin`, `terminate_process` |
+| Run and control a process | `exec_command`, `read_process`, `process_status`, `process_resize`, `write_stdin`, `terminate_process` |
 | Track a logical job and queued user instructions | `work_open`, `steer_status`, `steer_claim_next`, `steer_complete`, `work_finish` |
 
 Both transports expose the same tools. The HTTP `/inbox` API lets a user-facing client manage instruction drafts; it is a JSON API, not a browser inbox application.
@@ -35,8 +35,9 @@ For agent integrations, account for these limits:
 
 - Judge process exit with `process_status`. EOF from `read_process` is not success.
 - Process output is bounded. `output_lost` means the retained window is not the complete log.
+- Resize a running PTY with `process_resize`. Spawn size stays 24×80; `tty_size` is not an `exec_command` argument.
 - A live command blocks another command or patch in the same workspace. A development server cannot remain running while that workspace is patched.
-- Process handles do not survive server restart. Patch-operation records persist only when a database path is configured.
+- Process handles do not survive server restart. HTTP/MCP client disconnect does not kill them. UDS worker loss and gateway shutdown do. Patch-operation records persist only when a database path is configured.
 - Container dispatch and a full OAuth server are not implemented. A live ChatGPT account connection remains unverified.
 
 ## License

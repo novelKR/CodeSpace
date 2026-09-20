@@ -24,6 +24,8 @@ pub enum ErrorCode {
     OperationKeyConflict,
     OperationNotFound,
     ProcessNotFound,
+    ProcessNotTty,
+    ProcessNotRunning,
     OutputLimit,
     Timeout,
     WorkNotFound,
@@ -108,6 +110,10 @@ mod tests {
         assert_eq!(json, "\"INVALID_COMMAND\"");
         let json = serde_json::to_string(&ErrorCode::ProcessSpawnFailed).unwrap();
         assert_eq!(json, "\"PROCESS_SPAWN_FAILED\"");
+        let json = serde_json::to_string(&ErrorCode::ProcessNotTty).unwrap();
+        assert_eq!(json, "\"PROCESS_NOT_TTY\"");
+        let json = serde_json::to_string(&ErrorCode::ProcessNotRunning).unwrap();
+        assert_eq!(json, "\"PROCESS_NOT_RUNNING\"");
         let json = serde_json::to_string(&ErrorCode::FileNotFound).unwrap();
         assert_eq!(json, "\"FILE_NOT_FOUND\"");
         let json = serde_json::to_string(&ErrorCode::PathNotDirectory).unwrap();

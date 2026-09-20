@@ -116,7 +116,7 @@ pub use api::{
     default_exec_timeout_ms, runner_local_exec_env, RunnerApplyPatchRequest,
     RunnerApplyPatchResult, RunnerCwd, RunnerError, RunnerExecEnv, RunnerExecPolicy,
     RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
-    RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
+    RunnerResizeResult, RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
 };
 pub use files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT, VERSION_ABSENT};
 pub use patch_helper::ensure_helper_for_tests;
@@ -182,6 +182,12 @@ pub trait Runner: Send + Sync {
         &self,
         process_id: &ProcessId,
     ) -> impl std::future::Future<Output = Result<RunnerProcessStatus, RunnerError>> + Send;
+    fn resize(
+        &self,
+        process_id: &ProcessId,
+        rows: u16,
+        cols: u16,
+    ) -> impl std::future::Future<Output = Result<RunnerResizeResult, RunnerError>> + Send;
     fn terminate(
         &self,
         process_id: &ProcessId,
@@ -240,6 +246,16 @@ impl Runner for InProcessRunner {
         process_id: &ProcessId,
     ) -> Result<RunnerProcessStatus, RunnerError> {
         self.host_process_status(process_id)
+            .map_err(RunnerError::from)
+    }
+
+    async fn resize(
+        &self,
+        process_id: &ProcessId,
+        rows: u16,
+        cols: u16,
+    ) -> Result<RunnerResizeResult, RunnerError> {
+        self.host_resize(process_id, rows, cols)
             .map_err(RunnerError::from)
     }
 
@@ -334,6 +350,18 @@ impl Runner for RuntimeBackend {
         match self {
             Self::InProcess(runner) => runner.process_status(process_id).await,
             Self::Uds(runner) => runner.process_status(process_id).await,
+        }
+    }
+
+    async fn resize(
+        &self,
+        process_id: &ProcessId,
+        rows: u16,
+        cols: u16,
+    ) -> Result<RunnerResizeResult, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.resize(process_id, rows, cols).await,
+            Self::Uds(runner) => runner.resize(process_id, rows, cols).await,
         }
     }
 

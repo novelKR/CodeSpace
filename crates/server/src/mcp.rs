@@ -7,11 +7,11 @@ use codespace_domain::{
     ClientEnvironmentKind, CoordinationHint, EffectivePermissionInfo, EnvironmentExecutionInfo,
     ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ExecDispatchStatus, FindParams,
     FindResult, NetworkPolicyState, OperationResumeParams, OperationResumeResult,
-    OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ProcessStatusParams,
-    ProcessStatusResult, ReadParams, ReadProcessParams, ReadProcessResult, ReadResult,
-    SteerClaimNextResult, SteerCompleteParams, SteerStatusResult, TerminateProcessParams,
-    WorkFinishResult, WorkId, WorkIdParams, WorkOpenParams, WorkOpenResult, WorkspaceExecutionInfo,
-    WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
+    OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ProcessResizeParams,
+    ProcessResizeResult, ProcessStatusParams, ProcessStatusResult, ReadParams, ReadProcessParams,
+    ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams, SteerStatusResult,
+    TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams, WorkOpenParams, WorkOpenResult,
+    WorkspaceExecutionInfo, WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
 };
 use codespace_policy::{
     allow, Action, ClientClaims, EnvironmentKind, NetworkAxis, PermissionProfile, Registry,
@@ -65,7 +65,8 @@ continue, but apply_patch or another exec_command may return WORKSPACE_BUSY \
 until the process exits or is terminated.
 
 exec_command.tty is optional and defaults to false. tty=true attaches a \
-fixed 24x80 PTY. PTY resize is not currently supported. Use tty=true only \
+fixed 24x80 PTY. Use process_resize on a running PTY to change rows and \
+cols. tty_size is not an exec_command argument. Use tty=true only \
 when the command requires terminal semantics or an interactive TUI.
 
 Executable workspaces currently use host execution. When \
@@ -88,9 +89,9 @@ operation_resume; resume re-checks policy.
 
 If exec_command reports dispatch_status=unknown, the spawn may have occurred. \
 Do not blindly start a duplicate process. The returned process_id identifies \
-the uncertain attempt. Use read_process, process_status, or terminate_process \
-when the backend remains reachable; do not assume that unknown means the \
-process did not start.
+the uncertain attempt. Use read_process, process_status, process_resize, or \
+terminate_process when the backend remains reachable; do not assume that \
+unknown means the process did not start.
 
 process_id is a lifecycle handle after spawn. exec_command returns dispatch \
 identity only. Use process_status to observe state running or exited. \
@@ -102,8 +103,18 @@ unknown are not success even when eof is true.
 read_process results include output_lost and retained_from. If output_lost is \
 true, the retained window is not the complete log.
 
-tty_size is not an exec_command argument. PTY resize is not currently \
-supported.
+Managed process lifetime is owned by the runner instance, not the MCP \
+session. Client or HTTP disconnect keeps the process running. Losing the \
+UDS worker connection or shutting down the gateway terminates the owned \
+subtree and drops handles. Restart does not recover process_id. If you lose \
+the spawn response before receiving process_id, do not search for the lost \
+handle and do not start a duplicate command.
+
+process_resize requires a running PTY-backed process. Pipe processes return \
+PROCESS_NOT_TTY. An exited handle returns PROCESS_NOT_RUNNING. A missing \
+handle returns PROCESS_NOT_FOUND.
+
+tty_size is not an exec_command argument.
 
 Claim user intents only at major checkpoints and before work_finish.";
 
@@ -240,7 +251,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, process_status, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process, process_status, or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a 24x80 PTY; use process_resize to change the size of a running PTY. tty_size is not an exec_command argument. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, process_status, process_resize, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process, process_status, process_resize, or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
     )]
     async fn exec_command(
         &self,
@@ -333,6 +344,27 @@ impl CodeSpace {
             output_total: result.output_total,
             output_retained_from: result.output_retained_from,
             eof: result.eof,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
+    }
+
+    #[tool(
+        name = "process_resize",
+        description = "Change the PTY size of a running managed process. Requires tty=true spawn. rows and cols must be at least 1. Pipe-backed processes return PROCESS_NOT_TTY. An exited handle returns PROCESS_NOT_RUNNING. Unknown process_id is rejected."
+    )]
+    async fn process_resize(
+        &self,
+        Parameters(params): Parameters<ProcessResizeParams>,
+    ) -> Result<Json<ProcessResizeResult>, String> {
+        let result = self
+            .runner
+            .resize(&params.process_id, params.rows, params.cols)
+            .await
+            .map_err(runner_err_json)?;
+        Ok(Json(ProcessResizeResult {
+            ok: true,
+            rows: result.rows,
+            cols: result.cols,
             coordination: self.process_hint(&params.process_id.0).await,
         }))
     }
@@ -1028,10 +1060,14 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("fixed 24x80 PTY"), "{text}");
+        assert!(text.contains("process_resize"), "{text}");
+        assert!(text.contains("owned by the runner instance"), "{text}");
         assert!(
-            text.contains("PTY resize is not currently supported"),
+            text.contains("Client or HTTP disconnect keeps the process running"),
             "{text}"
         );
+        assert!(text.contains("PROCESS_NOT_TTY"), "{text}");
+        assert!(text.contains("PROCESS_NOT_RUNNING"), "{text}");
         assert!(text.contains("WORKSPACE_BUSY"), "{text}");
         assert!(text.contains("command_sandbox is linux-sandbox"), "{text}");
         assert!(
@@ -1124,9 +1160,25 @@ mod tests {
             .expect("capabilities")
             .tty;
         assert!(tty.supported);
-        assert!(!tty.resize_supported);
+        assert!(tty.resize_supported);
         assert_eq!(exec.network.policy, NetworkPolicyState::Restricted);
         let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            json["execution"]["process"]["capabilities"]["lifetime"]["owner"],
+            "runner"
+        );
+        assert_eq!(
+            json["execution"]["process"]["capabilities"]["lifetime"]["client_disconnect"],
+            "keep_running"
+        );
+        assert_eq!(
+            json["execution"]["process"]["capabilities"]["lifetime"]["runner_disconnect"],
+            "terminate"
+        );
+        assert_eq!(
+            json["execution"]["process"]["capabilities"]["lifetime"]["restart_recovery"],
+            "none"
+        );
         assert!(json.get("environment_id").is_none());
         assert!(!json.to_string().contains("\"environment_id\""));
     }

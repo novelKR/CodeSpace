@@ -10,7 +10,9 @@ There are three separate questions: which process runs the work, whether command
 
 `in-process` runs the supervisor inside `codespace-mcp`. `uds` (Unix domain socket) runs that supervisor inside `codespace-codex-runtime` on the same host. The worker starts with Codex process hardening and binds a private Unix socket. Hardening the worker does not sandbox its commands.
 
-The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 4, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery. Gateway/worker disconnect ends the owned worker and its children; process handles are lost.
+The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 5, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery.
+
+Managed process lifetime is owned by the runner instance, not the MCP connection. Streamable HTTP or MCP client disconnect keeps processes running. Gateway/worker UDS disconnect or gateway shutdown (including stdio EOF) ends the owned worker and its children; process handles are lost. Restart does not restore `process_id`.
 
 <a id="macos-no-docker"></a>
 

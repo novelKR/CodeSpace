@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use codespace_domain::{
     Profile, WorkspaceId, LIVE_TOOLS, SERVER_NAME, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND,
-    TOOL_OPERATION_STATUS, TOOL_PROCESS_STATUS, TOOL_READ, TOOL_STEER_CLAIM_NEXT,
-    TOOL_STEER_COMPLETE, TOOL_STEER_STATUS, TOOL_WORKSPACE_INFO, TOOL_WORK_FINISH, TOOL_WORK_OPEN,
-    TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
+    TOOL_OPERATION_STATUS, TOOL_PROCESS_RESIZE, TOOL_PROCESS_STATUS, TOOL_READ,
+    TOOL_STEER_CLAIM_NEXT, TOOL_STEER_COMPLETE, TOOL_STEER_STATUS, TOOL_WORKSPACE_INFO,
+    TOOL_WORK_FINISH, TOOL_WORK_OPEN, TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
 };
 use codespace_policy::{Registry, Workspace};
 use codespace_server::config::{HttpConfig, INBOX_PATH, MCP_PATH};
@@ -60,6 +60,10 @@ fn assert_live_tools(names: impl IntoIterator<Item = impl AsRef<str>>) {
     assert!(
         names.iter().any(|n| n == TOOL_PROCESS_STATUS),
         "tools/list must include process_status, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == TOOL_PROCESS_RESIZE),
+        "tools/list must include process_resize, got {names:?}"
     );
     assert_eq!(names, expected);
 }
@@ -286,6 +290,35 @@ async fn connect_http(
         )
         .await
         .expect("http initialize")
+}
+
+#[tokio::test]
+async fn http_forced_2025_11_25_process_resize_caps() {
+    let (_root, addr, _store) = spawn_http_workspace().await;
+    let client = connect_http(addr, ProtocolVersion::V_2025_11_25, lifecycle_1125()).await;
+    let tools = client.list_all_tools().await.expect("tools/list");
+    assert_live_tools(tools.iter().map(|t| t.name.as_ref()));
+    assert!(tools.iter().any(|t| t.name.as_ref() == TOOL_PROCESS_RESIZE));
+    let body = payload(
+        &client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_WORKSPACE_INFO)
+                    .with_arguments(object!({ "workspace_id": "demo" })),
+            )
+            .await
+            .expect("workspace_info"),
+    );
+    let tty = &body["execution"]["process"]["capabilities"]["tty"];
+    assert_eq!(tty["resize_supported"], true);
+    assert_eq!(tty["initial_rows"], 24);
+    assert_eq!(tty["initial_cols"], 80);
+    let lifetime = &body["execution"]["process"]["capabilities"]["lifetime"];
+    assert_eq!(lifetime["owner"], "runner");
+    assert_eq!(lifetime["client_disconnect"], "keep_running");
+    assert_eq!(lifetime["runner_disconnect"], "terminate");
+    assert_eq!(lifetime["gateway_shutdown"], "terminate");
+    assert_eq!(lifetime["restart_recovery"], "none");
+    client.cancel().await.expect("cancel http");
 }
 
 #[tokio::test]

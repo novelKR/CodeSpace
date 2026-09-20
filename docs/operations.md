@@ -107,7 +107,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. The default remains `in-process`.
+The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. MCP/HTTP client disconnect does not kill those processes. The default remains `in-process`.
 
 <a id="logs"></a>
 <a id="recovery-after-disconnect-or-restart"></a>
@@ -120,7 +120,7 @@ The worker runs on the same host and is not a container. The gateway creates a p
 | `CODESPACE_OPERATIONS_DB` unset | In-memory patch operations and instruction queue; lost on restart |
 | `CODESPACE_PROCESS_TIMEOUT_SECS` | Positive integer; default 30 seconds; set in the runner environment |
 | `CODESPACE_MAX_PROCESSES` | Default 8 live processes across the runner; workspace occupancy still applies |
-| Process output | Last 256 KiB retained; stdout/stderr combined; `read_process` reports `output_lost` and `retained_from`; `process_status` reports termination |
+| Process output | Last 256 KiB retained; stdout/stderr combined; `read_process` reports `output_lost` and `retained_from`; `process_status` reports termination; `process_resize` resizes a running PTY |
 | Completed handles | Default retention up to 15 minutes and 64 completed entries; not durable |
 
 Store logs and the database outside the managed workspace, with tokens and gateway configuration. Rotate stderr capture yourself. Do not log Bearer tokens or commit real credentials. Deleting the database also deletes patch idempotency records and confirmation-hold rows.

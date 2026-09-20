@@ -1,6 +1,7 @@
 use codespace_domain::{
-    LIVE_TOOLS, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_FIND, TOOL_PROCESS_STATUS, TOOL_READ,
-    TOOL_READ_PROCESS, TOOL_TERMINATE_PROCESS, TOOL_WORKSPACE_INFO, TOOL_WRITE_STDIN,
+    LIVE_TOOLS, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_FIND, TOOL_PROCESS_RESIZE,
+    TOOL_PROCESS_STATUS, TOOL_READ, TOOL_READ_PROCESS, TOOL_TERMINATE_PROCESS, TOOL_WORKSPACE_INFO,
+    TOOL_WRITE_STDIN,
 };
 use codespace_server::config::{HttpConfig, MCP_PATH};
 use codespace_server::http::router_with_registry;
@@ -667,6 +668,10 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         names.contains(&TOOL_PROCESS_STATUS),
         "LIVE_TOOLS must include process_status, got {names:?}"
     );
+    assert!(
+        names.contains(&TOOL_PROCESS_RESIZE),
+        "LIVE_TOOLS must include process_resize, got {names:?}"
+    );
 
     let status_tool = tools
         .iter()
@@ -681,6 +686,29 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     assert!(
         status_dumped.contains("output_total"),
         "process_status result schema must include output_total: {status_dumped}"
+    );
+
+    let resize_tool = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == TOOL_PROCESS_RESIZE)
+        .expect("process_resize");
+    let resize_in = serde_json::to_value(&resize_tool.input_schema).unwrap();
+    let resize_in_dumped = resize_in.to_string();
+    assert!(
+        resize_in_dumped.contains("process_id"),
+        "process_resize input must include process_id: {resize_in_dumped}"
+    );
+    assert!(
+        resize_in_dumped.contains("rows") && resize_in_dumped.contains("cols"),
+        "process_resize input must include rows and cols: {resize_in_dumped}"
+    );
+    let resize_out = serde_json::to_value(resize_tool.output_schema.as_ref()).unwrap();
+    let resize_out_dumped = resize_out.to_string();
+    assert!(
+        resize_out_dumped.contains("\"ok\"")
+            && resize_out_dumped.contains("rows")
+            && resize_out_dumped.contains("cols"),
+        "process_resize result schema must include ok, rows, cols: {resize_out_dumped}"
     );
 
     let exec = tools
@@ -762,7 +790,27 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     assert_eq!(exec["process"]["capabilities"]["tty"]["supported"], true);
     assert_eq!(
         exec["process"]["capabilities"]["tty"]["resize_supported"],
-        false
+        true
+    );
+    assert_eq!(
+        exec["process"]["capabilities"]["lifetime"]["owner"],
+        "runner"
+    );
+    assert_eq!(
+        exec["process"]["capabilities"]["lifetime"]["client_disconnect"],
+        "keep_running"
+    );
+    assert_eq!(
+        exec["process"]["capabilities"]["lifetime"]["runner_disconnect"],
+        "terminate"
+    );
+    assert_eq!(
+        exec["process"]["capabilities"]["lifetime"]["gateway_shutdown"],
+        "terminate"
+    );
+    assert_eq!(
+        exec["process"]["capabilities"]["lifetime"]["restart_recovery"],
+        "none"
     );
     if codespace_runner::linux_sandbox_available() {
         assert_eq!(exec["isolation"]["command_sandbox"], "linux-sandbox");
@@ -819,5 +867,203 @@ async fn exec_tty_true_sees_a_tty() {
                 .with_arguments(object!({ "process_id": pid })),
         )
         .await;
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn process_resize_pty_roundtrip_and_error_codes() {
+    let (_root, cfg) = write_workspace("workspace-write");
+    let client = spawn_client(&cfg, false, &[]).await;
+    let started = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": [
+                    "/bin/sh",
+                    "-c",
+                    "stty -echo; printf 'start:%s\\n' \"$(stty size)\"; IFS= read _line; printf 'after:%s\\n' \"$(stty size)\""
+                ],
+                "tty": true
+            })),
+        )
+        .await
+        .expect("exec tty resize");
+    let pid = payload(&started)["process_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut chunk = String::new();
+    for _ in 0..50 {
+        let read = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_READ_PROCESS)
+                    .with_arguments(object!({ "process_id": pid, "cursor": 0 })),
+            )
+            .await
+            .expect("read");
+        chunk = payload(&read)["chunk"]
+            .as_str()
+            .unwrap_or("")
+            .replace("\r\n", "\n");
+        if chunk.contains("start:24 80") {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        chunk.contains("start:24 80"),
+        "initial PTY size, got {chunk:?}"
+    );
+    let resized = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_PROCESS_RESIZE).with_arguments(object!({
+                "process_id": pid,
+                "rows": 40,
+                "cols": 120
+            })),
+        )
+        .await
+        .expect("process_resize");
+    let body = payload(&resized);
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["rows"], 40);
+    assert_eq!(body["cols"], 120);
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_WRITE_STDIN)
+                .with_arguments(object!({ "process_id": pid, "data": "go\n" })),
+        )
+        .await
+        .expect("write go");
+    for _ in 0..50 {
+        let read = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_READ_PROCESS)
+                    .with_arguments(object!({ "process_id": pid, "cursor": 0 })),
+            )
+            .await
+            .expect("read after resize");
+        chunk = payload(&read)["chunk"]
+            .as_str()
+            .unwrap_or("")
+            .replace("\r\n", "\n");
+        if chunk.contains("after:40 120") || payload(&read)["eof"] == true {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        chunk.contains("after:40 120"),
+        "resized PTY size, got {chunk:?}"
+    );
+    for _ in 0..50 {
+        let status = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_PROCESS_STATUS)
+                    .with_arguments(object!({ "process_id": pid })),
+            )
+            .await
+            .expect("status");
+        if payload(&status)["state"] == "exited" {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+
+    let missing = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_PROCESS_RESIZE).with_arguments(object!({
+                "process_id": "proc-invented",
+                "rows": 24,
+                "cols": 80
+            })),
+        )
+        .await;
+    let missing_text = err_text(&missing);
+    assert!(missing_text.contains("PROCESS_NOT_FOUND"), "{missing_text}");
+
+    let pipe = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sleep", "30"]
+            })),
+        )
+        .await
+        .expect("pipe sleep");
+    let pipe_pid = payload(&pipe)["process_id"].as_str().unwrap().to_string();
+    let not_tty = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_PROCESS_RESIZE).with_arguments(object!({
+                "process_id": pipe_pid,
+                "rows": 24,
+                "cols": 80
+            })),
+        )
+        .await;
+    let not_tty_text = err_text(&not_tty);
+    assert!(not_tty_text.contains("PROCESS_NOT_TTY"), "{not_tty_text}");
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_TERMINATE_PROCESS)
+                .with_arguments(object!({ "process_id": pipe_pid })),
+        )
+        .await;
+    for _ in 0..50 {
+        let status = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_PROCESS_STATUS)
+                    .with_arguments(object!({ "process_id": pipe_pid })),
+            )
+            .await
+            .expect("pipe status");
+        if payload(&status)["state"] == "exited" {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+
+    let finished = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/echo", "done"],
+                "tty": true
+            })),
+        )
+        .await
+        .expect("tty true exit");
+    let finished_pid = payload(&finished)["process_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for _ in 0..50 {
+        let status = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_PROCESS_STATUS)
+                    .with_arguments(object!({ "process_id": finished_pid })),
+            )
+            .await
+            .expect("status");
+        if payload(&status)["state"] == "exited" {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    let not_running = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_PROCESS_RESIZE).with_arguments(object!({
+                "process_id": finished_pid,
+                "rows": 24,
+                "cols": 80
+            })),
+        )
+        .await;
+    let not_running_text = err_text(&not_running);
+    assert!(
+        not_running_text.contains("PROCESS_NOT_RUNNING"),
+        "{not_running_text}"
+    );
+
     client.cancel().await.expect("cancel");
 }
