@@ -7,11 +7,11 @@ use codespace_domain::{
     ClientEnvironmentKind, CoordinationHint, EffectivePermissionInfo, EnvironmentExecutionInfo,
     ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ExecDispatchStatus, FindParams,
     FindResult, NetworkPolicyState, OperationResumeParams, OperationResumeResult,
-    OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ReadParams,
-    ReadProcessParams, ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams,
-    SteerStatusResult, TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams,
-    WorkOpenParams, WorkOpenResult, WorkspaceExecutionInfo, WorkspaceInfo, WorkspaceInfoParams,
-    WriteStdinParams,
+    OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ProcessStatusParams,
+    ProcessStatusResult, ReadParams, ReadProcessParams, ReadProcessResult, ReadResult,
+    SteerClaimNextResult, SteerCompleteParams, SteerStatusResult, TerminateProcessParams,
+    WorkFinishResult, WorkId, WorkIdParams, WorkOpenParams, WorkOpenResult, WorkspaceExecutionInfo,
+    WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
 };
 use codespace_policy::{
     allow, Action, ClientClaims, EnvironmentKind, NetworkAxis, PermissionProfile, Registry,
@@ -88,8 +88,22 @@ operation_resume; resume re-checks policy.
 
 If exec_command reports dispatch_status=unknown, the spawn may have occurred. \
 Do not blindly start a duplicate process. The returned process_id identifies \
-the uncertain attempt. Use read_process or terminate_process when the backend \
-remains reachable; do not assume that unknown means the process did not start.
+the uncertain attempt. Use read_process, process_status, or terminate_process \
+when the backend remains reachable; do not assume that unknown means the \
+process did not start.
+
+process_id is a lifecycle handle after spawn. exec_command returns dispatch \
+identity only. Use process_status to observe state running or exited. \
+termination is present only after exit and is one of exited, timeout, \
+terminated, or unknown. exit_code is present only when termination is exited. \
+EOF from read_process is not a successful exit. timeout, terminated, and \
+unknown are not success even when eof is true.
+
+read_process results include output_lost and retained_from. If output_lost is \
+true, the retained window is not the complete log.
+
+tty_size is not an exec_command argument. PTY resize is not currently \
+supported.
 
 Claim user intents only at major checkpoints and before work_finish.";
 
@@ -226,7 +240,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, process_status, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process, process_status, or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
     )]
     async fn exec_command(
         &self,
@@ -273,7 +287,7 @@ impl CodeSpace {
 
     #[tool(
         name = "read_process",
-        description = "Read output from a managed process starting at cursor. Output is bounded; process_id cannot be invented."
+        description = "Read output from a managed process starting at cursor. Output is bounded; output_lost means the retained window is not the complete log. process_id cannot be invented."
     )]
     async fn read_process(
         &self,
@@ -291,6 +305,33 @@ impl CodeSpace {
             process_id: result.process_id,
             cursor: result.cursor,
             chunk: result.chunk,
+            eof: result.eof,
+            output_lost: result.output_lost,
+            retained_from: result.retained_from,
+            coordination: self.process_hint(&params.process_id.0).await,
+        }))
+    }
+
+    #[tool(
+        name = "process_status",
+        description = "Observe a managed process lifecycle. state is running or exited. termination is present only after exit (exited, timeout, terminated, or unknown). exit_code is present only when termination is exited. EOF is not success. Unknown process_id is rejected."
+    )]
+    async fn process_status(
+        &self,
+        Parameters(params): Parameters<ProcessStatusParams>,
+    ) -> Result<Json<ProcessStatusResult>, String> {
+        let result = self
+            .runner
+            .process_status(&params.process_id)
+            .await
+            .map_err(runner_err_json)?;
+        Ok(Json(ProcessStatusResult {
+            process_id: result.process_id,
+            state: result.state,
+            exit_code: result.exit_code,
+            termination: result.termination,
+            output_total: result.output_total,
+            output_retained_from: result.output_retained_from,
             eof: result.eof,
             coordination: self.process_hint(&params.process_id.0).await,
         }))
@@ -1022,6 +1063,16 @@ mod tests {
         assert!(text.contains("dispatch_status=unknown"), "{text}");
         assert!(text.contains("uncertain attempt"), "{text}");
         assert!(text.contains("backend remains reachable"), "{text}");
+        assert!(text.contains("process_status"), "{text}");
+        assert!(text.contains("output_lost"), "{text}");
+        assert!(
+            text.contains("EOF from read_process is not a successful exit"),
+            "{text}"
+        );
+        assert!(
+            text.contains("tty_size is not an exec_command argument"),
+            "{text}"
+        );
         assert!(
             !text.contains("inspect or terminate that handle rather than"),
             "{text}"

@@ -26,7 +26,8 @@ use crate::wire::{
 };
 use crate::{
     Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult, RunnerError, RunnerExecRequest,
-    RunnerExecResult, RunnerReadProcess, RunnerReadResult, RunnerWriteStdin, ShellRelease,
+    RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
+    ShellRelease,
 };
 
 /// Transport deadline for one RPC. Longer than the default exec timeout
@@ -378,6 +379,21 @@ impl Runner for UdsRunner {
     async fn read_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, RunnerError> {
         match self.call(RunnerOp::ReadProcess { request: req }).await? {
             RunnerOpResult::ReadProcess(result) => Ok(result),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn process_status(
+        &self,
+        process_id: &ProcessId,
+    ) -> Result<RunnerProcessStatus, RunnerError> {
+        match self
+            .call(RunnerOp::ProcessStatus {
+                process_id: process_id.clone(),
+            })
+            .await?
+        {
+            RunnerOpResult::ProcessStatus(result) => Ok(result),
             other => Err(unexpected(other)),
         }
     }

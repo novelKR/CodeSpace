@@ -10,7 +10,7 @@ There are three separate questions: which process runs the work, whether command
 
 `in-process` runs the supervisor inside `codespace-mcp`. `uds` (Unix domain socket) runs that supervisor inside `codespace-codex-runtime` on the same host. The worker starts with Codex process hardening and binds a private Unix socket. Hardening the worker does not sandbox its commands.
 
-The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 3, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery. Gateway/worker disconnect ends the owned worker and its children; process handles are lost.
+The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 4, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery. Gateway/worker disconnect ends the owned worker and its children; process handles are lost.
 
 <a id="macos-no-docker"></a>
 
@@ -27,7 +27,7 @@ Runner → managed helper run --plan
 
 Codex permission translation and sandbox arguments stay inside the binary-only helper. The plan is a private 0600 file consumed by the helper. The runner depends on the small protocol crate, not the sandbox implementation library. Restricted execution uses self-exec; enabled execution keeps a helper-owned proxy while waiting for its sandbox child.
 
-A failed initial probe permits unsandboxed host execution for `restricted`; the contract reports `command_sandbox: none` and no OS network enforcement. `enabled` requires the helper and fails without it. Once a probe succeeds, later prepare/protocol/spawn errors never fall back to unsandboxed execution. They report `PROCESS_SPAWN_FAILED`. Failure inside an already-started helper is observed as process termination; the public MCP result currently has no exit code.
+A failed initial probe permits unsandboxed host execution for `restricted`; the contract reports `command_sandbox: none` and no OS network enforcement. `enabled` requires the helper and fails without it. Once a probe succeeds, later prepare/protocol/spawn errors never fall back to unsandboxed execution. They report `PROCESS_SPAWN_FAILED`. Failure inside an already-started helper is observed as process termination through `process_status`. That wait status belongs to the managed child (helper argv) and is not documented as identical to the user argv.
 
 ## Network and filesystem scope
 

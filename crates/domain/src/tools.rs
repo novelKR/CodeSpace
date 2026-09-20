@@ -8,6 +8,7 @@ pub const TOOL_APPLY_PATCH: &str = "apply_patch";
 pub const TOOL_EXEC_COMMAND: &str = "exec_command";
 pub const TOOL_WRITE_STDIN: &str = "write_stdin";
 pub const TOOL_READ_PROCESS: &str = "read_process";
+pub const TOOL_PROCESS_STATUS: &str = "process_status";
 pub const TOOL_TERMINATE_PROCESS: &str = "terminate_process";
 pub const TOOL_OPERATION_STATUS: &str = "operation_status";
 pub const TOOL_WORK_OPEN: &str = "work_open";
@@ -33,6 +34,7 @@ pub const LIVE_TOOLS: &[&str] = &[
     TOOL_EXEC_COMMAND,
     TOOL_WRITE_STDIN,
     TOOL_READ_PROCESS,
+    TOOL_PROCESS_STATUS,
     TOOL_TERMINATE_PROCESS,
     TOOL_WORK_OPEN,
     TOOL_STEER_STATUS,

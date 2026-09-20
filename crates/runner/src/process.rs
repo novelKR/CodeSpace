@@ -10,7 +10,9 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use codespace_domain::{ErrorBody, ErrorCode, ProcessId, Profile};
+use codespace_domain::{
+    ErrorBody, ErrorCode, ProcessId, ProcessState, ProcessTermination, Profile,
+};
 use codespace_linux_sandbox_protocol::SandboxNetwork;
 use codespace_policy::{NetworkAxis, Workspace};
 
@@ -22,8 +24,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::{
-    runner_local_exec_env, RunnerCwd, RunnerExecRequest, RunnerExecResult, RunnerReadProcess,
-    RunnerReadResult, RunnerWriteStdin,
+    runner_local_exec_env, RunnerCwd, RunnerExecRequest, RunnerExecResult, RunnerProcessStatus,
+    RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
 };
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -70,6 +72,7 @@ struct Slot {
     io: SessionIo,
     output: Arc<Mutex<OutputBuf>>,
     completed_at: Arc<Mutex<Option<Instant>>>,
+    lifecycle: Arc<Mutex<Lifecycle>>,
 }
 
 enum SessionIo {
@@ -89,6 +92,7 @@ struct SpawnCtx {
     timeout: Duration,
     output: Arc<Mutex<OutputBuf>>,
     completed_at: Arc<Mutex<Option<Instant>>>,
+    lifecycle: Arc<Mutex<Lifecycle>>,
     process_id: String,
 }
 
@@ -99,6 +103,92 @@ struct OutputBuf {
     bytes: Vec<u8>,
     eof: bool,
     timed_out: bool,
+}
+
+#[derive(Clone, Copy)]
+struct LifecycleSnapshot {
+    state: ProcessState,
+    exit_code: Option<i32>,
+    termination: Option<ProcessTermination>,
+}
+
+#[derive(Clone, Copy)]
+enum KillIntent {
+    Timeout,
+    Terminated,
+}
+
+struct Lifecycle {
+    finished: bool,
+    kill_intent: Option<KillIntent>,
+    snapshot: LifecycleSnapshot,
+}
+
+impl Lifecycle {
+    fn new() -> Self {
+        Self {
+            finished: false,
+            kill_intent: None,
+            snapshot: LifecycleSnapshot {
+                state: ProcessState::Running,
+                exit_code: None,
+                termination: None,
+            },
+        }
+    }
+
+    fn note_kill(&mut self, intent: KillIntent) {
+        if self.kill_intent.is_none() {
+            self.kill_intent = Some(intent);
+        }
+    }
+
+    fn finish_wait(&mut self, code: Option<i32>) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        match self.kill_intent {
+            Some(KillIntent::Timeout) => {
+                self.snapshot = LifecycleSnapshot {
+                    state: ProcessState::Exited,
+                    exit_code: None,
+                    termination: Some(ProcessTermination::Timeout),
+                };
+            }
+            Some(KillIntent::Terminated) => {
+                self.snapshot = LifecycleSnapshot {
+                    state: ProcessState::Exited,
+                    exit_code: None,
+                    termination: Some(ProcessTermination::Terminated),
+                };
+            }
+            None => {
+                self.snapshot = LifecycleSnapshot {
+                    state: ProcessState::Exited,
+                    exit_code: code,
+                    termination: Some(ProcessTermination::Exited),
+                };
+            }
+        }
+    }
+
+    fn finish_lost(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let termination = match self.kill_intent {
+            Some(KillIntent::Timeout) => ProcessTermination::Timeout,
+            Some(KillIntent::Terminated) => ProcessTermination::Terminated,
+            None => ProcessTermination::Unknown,
+        };
+        self.snapshot = LifecycleSnapshot {
+            state: ProcessState::Exited,
+            exit_code: None,
+            termination: Some(termination),
+        };
+    }
 }
 
 impl InProcessRunner {
@@ -164,6 +254,7 @@ impl InProcessRunner {
             timeout,
             output: Arc::new(Mutex::new(OutputBuf::default())),
             completed_at: Arc::new(Mutex::new(None)),
+            lifecycle: Arc::new(Mutex::new(Lifecycle::new())),
             process_id: req.process_id.0.clone(),
         };
         if req.tty {
@@ -185,6 +276,7 @@ impl InProcessRunner {
             timeout,
             output,
             completed_at,
+            lifecycle,
             process_id,
         } = ctx;
         let launch = exec_launch(ws, &req)?;
@@ -219,6 +311,7 @@ impl InProcessRunner {
             },
             output: output.clone(),
             completed_at: completed_at.clone(),
+            lifecycle: lifecycle.clone(),
         };
         {
             let mut map = self.inner.lock().expect("runner");
@@ -244,10 +337,11 @@ impl InProcessRunner {
 
         let wait_child = child.clone();
         let wait_out = output.clone();
+        let wait_life = lifecycle.clone();
         let wait_release = self.on_release.clone();
         let wait_process = process_id;
         tokio::spawn(async move {
-            reap_child(wait_child).await;
+            reap_child(wait_child, wait_life).await;
             join_pump(out_handle).await;
             join_pump(err_handle).await;
             if let Ok(mut buf) = wait_out.lock() {
@@ -261,13 +355,31 @@ impl InProcessRunner {
 
         let timeout_child = child;
         let timeout_out = output;
+        let timeout_life = lifecycle;
         tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
             let mut ch = timeout_child.lock().expect("child");
-            if ch.try_wait().ok().flatten().is_none() {
-                let _ = ch.start_kill();
-                if let Ok(mut buf) = timeout_out.lock() {
-                    buf.timed_out = true;
+            let mut life = timeout_life.lock().expect("lifecycle");
+            if life.finished {
+                return;
+            }
+            match ch.try_wait() {
+                Ok(Some(status)) => life.finish_wait(status.code()),
+                Ok(None) => {
+                    life.note_kill(KillIntent::Timeout);
+                    let _ = ch.start_kill();
+                    drop(life);
+                    if let Ok(mut buf) = timeout_out.lock() {
+                        buf.timed_out = true;
+                    }
+                }
+                Err(_) => {
+                    life.note_kill(KillIntent::Timeout);
+                    life.finish_lost();
+                    drop(life);
+                    if let Ok(mut buf) = timeout_out.lock() {
+                        buf.timed_out = true;
+                    }
                 }
             }
         });
@@ -289,6 +401,7 @@ impl InProcessRunner {
             timeout,
             output,
             completed_at,
+            lifecycle,
             process_id,
         } = ctx;
         let launch = exec_launch(ws, &req)?;
@@ -328,6 +441,7 @@ impl InProcessRunner {
             },
             output: output.clone(),
             completed_at: completed_at.clone(),
+            lifecycle: lifecycle.clone(),
         };
         {
             let mut map = self.inner.lock().expect("runner");
@@ -349,10 +463,14 @@ impl InProcessRunner {
             ))
         };
         let wait_out = output.clone();
+        let wait_life = lifecycle.clone();
         let wait_release = self.on_release.clone();
         let wait_process = process_id;
         tokio::spawn(async move {
-            let _ = exit.await;
+            match exit.await {
+                Ok(code) => wait_life.lock().expect("lifecycle").finish_wait(Some(code)),
+                Err(_) => wait_life.lock().expect("lifecycle").finish_lost(),
+            }
             join_pump(out_handle).await;
             if let Ok(mut buf) = wait_out.lock() {
                 buf.eof = true;
@@ -365,13 +483,18 @@ impl InProcessRunner {
 
         let timeout_session = session;
         let timeout_out = output;
+        let timeout_life = lifecycle;
         tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
-            if !timeout_session.has_exited() {
-                timeout_session.kill();
-                if let Ok(mut buf) = timeout_out.lock() {
-                    buf.timed_out = true;
-                }
+            let mut life = timeout_life.lock().expect("lifecycle");
+            if life.finished || timeout_session.has_exited() {
+                return;
+            }
+            life.note_kill(KillIntent::Timeout);
+            drop(life);
+            timeout_session.kill();
+            if let Ok(mut buf) = timeout_out.lock() {
+                buf.timed_out = true;
             }
         });
 
@@ -444,6 +567,30 @@ impl InProcessRunner {
             cursor: next,
             chunk: String::from_utf8_lossy(&chunk).into_owned(),
             eof: buf.eof && next >= buf.total,
+            output_lost: buf.dropped > 0,
+            retained_from: buf.dropped,
+        })
+    }
+
+    pub fn host_process_status(
+        &self,
+        process_id: &ProcessId,
+    ) -> Result<RunnerProcessStatus, ErrorBody> {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        let slot = map
+            .get(&process_id.0)
+            .ok_or_else(|| missing(&process_id.0))?;
+        let snap = slot.lifecycle.lock().expect("lifecycle").snapshot;
+        let buf = slot.output.lock().expect("output");
+        Ok(RunnerProcessStatus {
+            process_id: process_id.clone(),
+            state: snap.state,
+            exit_code: snap.exit_code,
+            termination: snap.termination,
+            output_total: buf.total,
+            output_retained_from: buf.dropped,
+            eof: buf.eof,
         })
     }
 
@@ -479,12 +626,24 @@ impl InProcessRunner {
     }
 }
 
-async fn reap_child(child: Arc<Mutex<Child>>) {
+async fn reap_child(child: Arc<Mutex<Child>>, lifecycle: Arc<Mutex<Lifecycle>>) {
     loop {
         {
             let mut ch = child.lock().expect("child");
-            if ch.try_wait().ok().flatten().is_some() {
+            let mut life = lifecycle.lock().expect("lifecycle");
+            if life.finished {
                 return;
+            }
+            match ch.try_wait() {
+                Ok(Some(status)) => {
+                    life.finish_wait(status.code());
+                    return;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    life.finish_lost();
+                    return;
+                }
             }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -501,18 +660,34 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
     match &slot.io {
         SessionIo::Pipe { child, .. } => {
             let mut child = child.lock().expect("child");
-            if child.try_wait().ok().flatten().is_some() {
+            let mut life = slot.lifecycle.lock().expect("lifecycle");
+            if life.finished {
                 return Ok(false);
             }
-            child
-                .start_kill()
-                .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
-            Ok(true)
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    life.finish_wait(status.code());
+                    Ok(false)
+                }
+                Ok(None) => {
+                    life.note_kill(KillIntent::Terminated);
+                    child
+                        .start_kill()
+                        .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+                    Ok(true)
+                }
+                Err(_) => {
+                    life.finish_lost();
+                    Ok(false)
+                }
+            }
         }
         SessionIo::Pty { session, .. } => {
-            if session.has_exited() {
+            let mut life = slot.lifecycle.lock().expect("lifecycle");
+            if life.finished || session.has_exited() {
                 return Ok(false);
             }
+            life.note_kill(KillIntent::Terminated);
             session.kill();
             Ok(true)
         }
@@ -693,6 +868,17 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         chunk
+    }
+
+    async fn wait_exited(runner: &InProcessRunner, process_id: &ProcessId) -> RunnerProcessStatus {
+        for _ in 0..250 {
+            let status = runner.process_status(process_id).await.unwrap();
+            if status.state == ProcessState::Exited {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("process did not exit: {}", process_id.0)
     }
 
     fn workspace(root: &std::path::Path) -> Workspace {
@@ -1134,5 +1320,151 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(eof, "SIGTERM on the helper must reap the sandbox tree");
+    }
+
+    #[tokio::test]
+    async fn echo_status_is_exited_zero() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-echo-status".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/echo".into(), "hi".into()],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.state, ProcessState::Exited);
+        assert_eq!(status.termination, Some(ProcessTermination::Exited));
+        assert_eq!(status.exit_code, Some(0));
+        assert!(status.eof);
+        let read = runner
+            .read_process(RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        assert!(!read.output_lost);
+        assert_eq!(read.retained_from, 0);
+    }
+
+    #[tokio::test]
+    async fn false_status_is_exited_one() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-false-status".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/usr/bin/false".into()],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.state, ProcessState::Exited);
+        assert_eq!(status.termination, Some(ProcessTermination::Exited));
+        assert_eq!(status.exit_code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn timeout_status_has_no_exit_code() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-timeout-status".into());
+        let mut req = RunnerExecRequest::for_host(
+            vec!["/bin/sleep".into(), "30".into()],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.timeout_ms = 50;
+        runner.exec(&ws, req).await.unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.state, ProcessState::Exited);
+        assert_eq!(status.termination, Some(ProcessTermination::Timeout));
+        assert!(status.exit_code.is_none());
+        let err = runner
+            .read_process(RunnerReadProcess {
+                process_id,
+                cursor: status.output_total,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.as_execution().map(|body| body.code),
+            Some(ErrorCode::Timeout)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_status_has_no_exit_code() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-term-status".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/sleep".into(), "30".into()],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        runner.kill_host(&process_id).unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.state, ProcessState::Exited);
+        assert_eq!(status.termination, Some(ProcessTermination::Terminated));
+        assert!(status.exit_code.is_none());
+    }
+
+    #[tokio::test]
+    async fn overflow_read_exposes_output_loss() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-overflow".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "dd if=/dev/zero bs=1024 count=300 2>/dev/null".into(),
+                    ],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        assert!(status.output_total > crate::MAX_OUTPUT_BYTES as u64);
+        assert!(status.output_retained_from > 0);
+        let read = runner
+            .read_process(RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        assert!(read.output_lost);
+        assert_eq!(read.retained_from, status.output_retained_from);
+        assert!(read.cursor >= read.retained_from);
     }
 }

@@ -40,7 +40,7 @@ CodeSpace는 특정 버전에 고정한 Codex 소스의 실행 라이브러리�
 
 핵심 crate에는 직접적인 Codex 의존성이 없습니다. 어댑터는 고정된 업스트림의 workspace 의존성을 수용하기 위해 별도의 Cargo workspace로 구성합니다. 파일 시스템·PTY 어댑터는 Runner의 라이브러리 의존성이며, 패치와 Linux 샌드박스는 도우미 프로세스를 사용합니다. Cargo workspace를 분리하는 것만으로 프로세스나 보안 경계가 생기지는 않습니다.
 
-Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-linux-sandbox-protocol`에는 CodeSpace가 정의한 핸드셰이크 데이터만 있고 Codex 타입은 없습니다. worker의 UDS 프로토콜 버전 3과 샌드박스 도우미 프로토콜 버전 1은 별개의 계약입니다.
+Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-linux-sandbox-protocol`에는 CodeSpace가 정의한 핸드셰이크 데이터만 있고 Codex 타입은 없습니다. worker의 UDS 프로토콜 버전 4와 샌드박스 도우미 프로토콜 버전 1은 별개의 계약입니다.
 
 <a id="정책-대-메커니즘"></a>
 <a id="정책-대-메커니즘"></a>

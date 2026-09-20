@@ -134,7 +134,7 @@ async fn hello_on_live_socket() {
     match parsed.result {
         Some(RunnerOpResult::Hello { protocol }) => {
             assert_eq!(protocol, WIRE_PROTOCOL);
-            assert_eq!(protocol, 3);
+            assert_eq!(protocol, 4);
         }
         other => panic!("unexpected hello {other:?}"),
     }

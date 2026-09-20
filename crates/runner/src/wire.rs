@@ -15,11 +15,11 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::{
     InProcessRunner, Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult, RunnerError,
-    RunnerExecRequest, RunnerExecResult, RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
-    ShellRelease,
+    RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
+    RunnerWriteStdin, ShellRelease,
 };
 
-pub const WIRE_PROTOCOL: u32 = 3;
+pub const WIRE_PROTOCOL: u32 = 4;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
 
@@ -137,6 +137,9 @@ pub enum RunnerOp {
     ReadProcess {
         request: RunnerReadProcess,
     },
+    ProcessStatus {
+        process_id: ProcessId,
+    },
     Terminate {
         process_id: ProcessId,
     },
@@ -162,6 +165,7 @@ pub enum RunnerOpResult {
     Exec(RunnerExecResult),
     WriteStdin,
     ReadProcess(RunnerReadResult),
+    ProcessStatus(RunnerProcessStatus),
     Terminate,
     WorkspaceOf(Option<String>),
     TerminateWorkspace(u32),
@@ -341,6 +345,10 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
             .read_process(request)
             .await
             .map(RunnerOpResult::ReadProcess),
+        RunnerOp::ProcessStatus { process_id } => runner
+            .process_status(&process_id)
+            .await
+            .map(RunnerOpResult::ProcessStatus),
         RunnerOp::Terminate { process_id } => runner
             .terminate(&process_id)
             .await
@@ -371,8 +379,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_protocol_is_v3() {
-        assert_eq!(WIRE_PROTOCOL, 3);
+    fn wire_protocol_is_v4() {
+        assert_eq!(WIRE_PROTOCOL, 4);
     }
 
     #[tokio::test]
@@ -475,6 +483,25 @@ mod tests {
         assert!(parsed.error.is_some());
         let eof = read_frame(&mut read).await.unwrap();
         assert!(eof.is_none());
+    }
+
+    #[tokio::test]
+    async fn protocol_3_hello_is_rejected() {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (worker, events) = host_worker();
+        tokio::spawn(async move {
+            serve_runner_connection(server, worker, events)
+                .await
+                .expect("serve");
+        });
+        let (mut read, mut write) = client.into_split();
+        let mut envelope = WireEnvelope::request("rrpc-old".into(), RunnerOp::Hello);
+        envelope.protocol = 3;
+        write_frame(&mut write, &envelope).await.unwrap();
+        let reply = read_frame(&mut read).await.unwrap().unwrap();
+        let parsed: WireEnvelope = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(parsed.ok, Some(false));
+        assert!(parsed.error.is_some());
     }
 
     #[tokio::test]

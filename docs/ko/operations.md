@@ -128,7 +128,7 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 | `CODESPACE_OPERATIONS_DB` 미설정 | 패치 작업과 지시 큐를 메모리에 보관하며 재시작 시 사라짐 |
 | `CODESPACE_PROCESS_TIMEOUT_SECS` | 양의 정수. 기본 30초. 러너 환경에 설정 |
 | `CODESPACE_MAX_PROCESSES` | 러너 전체의 실행 중 프로세스 기본 상한 8개. 작업 공간별 점유 규칙도 적용 |
-| 프로세스 출력 | 마지막 256 KiB 보관. stdout/stderr를 합치며 MCP 결과에 유실 표시와 종료 코드가 없음 |
+| 프로세스 출력 | 마지막 256 KiB 보관. stdout/stderr를 합침. `read_process`는 `output_lost`와 `retained_from`을 보고하고, 종료는 `process_status`로 조회 |
 | 종료된 핸들 | 기본 최대 15분, 최대 64개 보관. 영구 저장하지 않음 |
 
 로그와 데이터베이스는 토큰·게이트웨이 설정과 같이 관리 대상 작업 공간 밖에 두세요. stderr 로그의 보관·순환은 운영자가 관리합니다. Bearer 토큰을 로그나 커밋에 넣지 마세요. 데이터베이스를 삭제하면 패치 중복 실행 방지 기록과 확인 홀드 행도 사라집니다.
