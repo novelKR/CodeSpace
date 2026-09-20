@@ -26,6 +26,7 @@ The operator registry maps `read-only` and `workspace-write` to effective permis
 | Permission profile | Gateway-owned meaning of allowed file and process actions |
 | Operation | Persisted patch ledger with `operation_id`, optional idempotency key, `files`/`changes` hashes, and minted/finished events. Look up with `operation_status`. Does not track exec |
 | Process | Server-issued handle for a command; memory-only |
+| Confirmation hold | Operator `approvals` setting; row in the `approvals` table (`pending`/`granted`/`resuming` until a terminal result); not a patch operation, privilege grant, or isolation boundary |
 | Work | Logical job and user-instruction queue; separate from a transport session |
 
 `environment_id` is not an MCP tool argument. A network proxy URL or Codex user configuration supplied by the model does not become execution authority.
@@ -49,9 +50,15 @@ UDS transport and Linux sandbox preparation have distinct protocols and failure 
 <a id="hooks-and-skills"></a>
 <a id="roadmap-implementation-later"></a>
 
+## Confirmation holds
+
+`approval_create`, `approval_resolve`, and `operation_resume` are callable. They hold a mutation the workspace profile already allows until the hold is granted. This is not a security boundary: they do not escalate permissions, apply `{ "network": true }` or `ClientClaims.approved`, or write V4A snapshots into the patch operations ledger. The same MCP caller can grant.
+
+When the operator sets workspace `approvals` to `confirm`, a policy-allowed `apply_patch` or `exec_command` returns `APPROVAL_REQUIRED` with an `approval_id` before `begin()` or spawn. Retrying the same logical request reuses that active hold. `off` (the default) still runs those tools immediately; the three tools remain listed so an explicit `approval_create` can open a hold. Grant does not change the profile. Resume claims `granted` into `resuming`, re-checks `allow()`, then runs the existing apply or exec inner path. `consumed` is recorded only together with the terminal result. A later resume returns that result, recovers a patch from the operations ledger, or returns `APPROVAL_AMBIGUOUS`. Interrupted exec is not respawned. A denied policy stays `UNAUTHORIZED`. Exec remains on `process_id`. v1 does not authenticate host versus model. The server guarantees the policy re-check on resume plus that durability contract.
+
 ## What remains unimplemented
 
-Process exit codes and explicit output-loss metadata are not exposed to MCP. PTY resize, file range/pagination arguments, durable process recovery, container/remote dispatch, approval-resume tools, and a resource queue scheduler remain absent. Richer internal types and negotiated protocol flags do not imply those features are callable.
+Process exit codes and explicit output-loss metadata are not exposed to MCP. PTY resize, file range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. Richer internal types and negotiated protocol flags do not imply those features are callable.
 
 ## Maintaining the boundary
 

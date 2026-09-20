@@ -642,7 +642,7 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     names.sort();
     let mut expected = LIVE_TOOLS.to_vec();
     expected.sort();
-    assert_eq!(names, expected, "LIVE_TOOLS must stay unchanged");
+    assert_eq!(names, expected, "tools/list must match LIVE_TOOLS");
 
     let exec = tools
         .iter()

@@ -19,7 +19,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-`execution.files.*.available`, `execution.process.available`, `execution.isolation.command_sandbox`, `execution.network`를 확인합니다. 도구 목록은 제공되는 기능을, 작업 공간 정보는 해당 환경의 권한과 지원 여부를 나타냅니다. 사용 가능 표시는 작업 공간 예약을 뜻하지 않습니다. 읽기 전용 작업 공간에서는 명령을 실행할 수 없습니다.
+`execution.files.*.available`, `execution.process.available`, `execution.isolation.command_sandbox`, `execution.network`, `execution.approvals`를 확인합니다. 도구 목록은 제공되는 기능을, 작업 공간 정보는 해당 환경의 권한과 지원 여부를 나타냅니다. 사용 가능 표시는 작업 공간 예약을 뜻하지 않습니다. 읽기 전용 작업 공간에서는 명령을 실행할 수 없습니다. `approvals`는 운영자 설정이며 클라이언트가 권한을 올리는 인자가 아닙니다.
 
 ## 파일 읽기와 패치
 
@@ -130,10 +130,38 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 
 실행 중인 명령은 작업 공간을 점유합니다. 패치를 적용하거나 다른 명령을 시작하려면 기존 명령이 끝날 때까지 기다리거나 종료하세요. 읽기와 검색은 계속 가능합니다. 개발 서버를 오래 실행하는 작업 흐름이라면 수정 전에 서버를 멈추는 절차가 필요합니다.
 
+## 보류된 변경 확인
+
+기본 작업 공간에서는 허용된 패치와 명령이 바로 실행됩니다. 운영자가 `approvals`를 `confirm`으로 두면 해당 도구는 디스크에 쓰거나 프로세스를 만들지 않고 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 워크플로 일시정지이며 권한 부여나 격리 경계가 아니고, `read-only`를 쓰기·실행으로 올리는 방법도 아닙니다. `approved: true`나 `network: true` 같은 추가 인자도 권한을 주지 않습니다. 같은 MCP 호출자가 홀드를 grant할 수 있습니다.
+
+```json
+{
+  "name": "approval_resolve",
+  "arguments": {
+    "approval_id": "APPROVAL_ID_FROM_HOLD",
+    "decision": "grant"
+  }
+}
+```
+
+```json
+{
+  "name": "operation_resume",
+  "arguments": {
+    "approval_id": "APPROVAL_ID_FROM_HOLD"
+  }
+}
+```
+
+`approval_resolve`는 권한 프로필을 바꾸지 않습니다. `operation_resume`은 정책을 다시 검사한 뒤 원래 패치·실행 경로를 한 번 돌립니다. `consumed`는 단말 결과가 저장된 뒤에만 기록됩니다. 같은 홀드를 다시 재개하면 저장한 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`가 반환됩니다. 중단된 exec 재개는 다시 spawn하지 않습니다. 거절은 단말입니다. `approvals`가 `off`여도 세 도구는 목록에 있으며, 그때는 명시적 `approval_create`만 홀드를 만듭니다. v1은 호스트와 모델을 구분하지 않으므로 같은 MCP 호출자가 grant할 수 있습니다.
+
 ## 재시도와 복구
 
 | 상황 | 에이전트가 해야 할 일 |
 | --- | --- |
+| `APPROVAL_REQUIRED` | 정책은 허용했으나 실행 전 확인이 필요함. `approval_resolve` 후 `operation_resume`. 추가 권한 부여로 보지 않기 |
+| `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 거절되었거나, 재개가 이미 진행 중임 |
+| `APPROVAL_AMBIGUOUS` | 재개가 중단되어 단말 결과를 모름. exec는 다시 spawn하지 않기. 패치는 `operation_status`로 복구될 수 있음 |
 | 패치 응답을 받지 못함 | 원래 키 또는 알고 있는 작업 ID로 `operation_status` 조회 |
 | `VERSION_CONFLICT` | 현재 파일을 읽고 새 패치 작성. 이전 패치를 강제로 적용하지 않기 |
 | `OPERATION_KEY_CONFLICT` | 다른 인자에 사용된 키이므로 이전 요청 확인 |

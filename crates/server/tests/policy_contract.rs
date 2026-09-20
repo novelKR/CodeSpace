@@ -1,4 +1,4 @@
-use codespace_domain::TOOL_WORKSPACE_INFO;
+use codespace_domain::{TOOL_APPLY_PATCH, TOOL_WORKSPACE_INFO};
 use rmcp::{
     model::CallToolRequestParams,
     object,
@@ -65,6 +65,29 @@ async fn unknown_workspace_is_rejected_known_is_selector() {
     assert_eq!(body["workspace_id"], "demo");
     assert_eq!(body["workspace_id_is_credential"], false);
     assert_eq!(body["profile"], "read-only");
+
+    let apply = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": "*** Begin Patch\n*** Add File: x.txt\n+x\n*** End Patch\n",
+                "approved": true
+            })),
+        )
+        .await;
+    let apply_text = match &apply {
+        Ok(result) => result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join(""),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        apply_text.contains("UNAUTHORIZED"),
+        "approved=true must not unlock read-only apply_patch: {apply_text}"
+    );
 
     client.cancel().await.expect("cancel");
 }

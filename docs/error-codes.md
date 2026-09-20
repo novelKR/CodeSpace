@@ -16,7 +16,7 @@ Authentication rejection before a handler creates no operation. A disconnect or 
 
 ## Tool error codes
 
-Errors use uppercase identifiers and a message. An `operation_id` may be present if a patch record was created before the failure. Policy, occupancy, and key-conflict failures before that point do not have one.
+Errors use uppercase identifiers and a message. An `operation_id` may be present if a patch record was created before the failure. An `approval_id` is present on confirmation-hold errors. Policy, occupancy, and key-conflict failures before a patch record do not have an operation id.
 
 | Code | Meaning |
 | --- | --- |
@@ -47,6 +47,10 @@ Errors use uppercase identifiers and a message. An `operation_id` may be present
 | `INTENT_NOT_EDITABLE` | Instruction state does not permit editing |
 | `INTENT_REVISION_CONFLICT` | Instruction revision changed |
 | `QUEUE_NOT_EMPTY` | Reserved code; work_finish currently returns closed:false |
+| `APPROVAL_REQUIRED` | Policy allowed the mutation; confirmation is required before execution. Includes `approval_id`. Not a privilege grant |
+| `APPROVAL_NOT_FOUND` | Unknown confirmation-hold id |
+| `APPROVAL_CONFLICT` | Hold is still pending, already decided, or a resume is already in progress |
+| `APPROVAL_AMBIGUOUS` | Resume was interrupted and the terminal result is not on disk. Includes `approval_id`; patch cases may also include `operation_id` |
 
 ## Dispatch and completion
 

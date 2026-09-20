@@ -15,11 +15,15 @@ pub const TOOL_STEER_STATUS: &str = "steer_status";
 pub const TOOL_STEER_CLAIM_NEXT: &str = "steer_claim_next";
 pub const TOOL_STEER_COMPLETE: &str = "steer_complete";
 pub const TOOL_WORK_FINISH: &str = "work_finish";
+pub const TOOL_APPROVAL_CREATE: &str = "approval_create";
+pub const TOOL_APPROVAL_RESOLVE: &str = "approval_resolve";
+pub const TOOL_OPERATION_RESUME: &str = "operation_resume";
 
 pub const TRANSPORT_STDIO: &str = "stdio";
 pub const TRANSPORT_STREAMABLE_HTTP: &str = "streamable-http";
 
-/// Tools registered in this release.
+/// Tools registered in this release. Contract tests require `tools/list` to
+/// match this list.
 pub const LIVE_TOOLS: &[&str] = &[
     TOOL_WORKSPACE_INFO,
     TOOL_READ,
@@ -35,6 +39,9 @@ pub const LIVE_TOOLS: &[&str] = &[
     TOOL_STEER_CLAIM_NEXT,
     TOOL_STEER_COMPLETE,
     TOOL_WORK_FINISH,
+    TOOL_APPROVAL_CREATE,
+    TOOL_APPROVAL_RESOLVE,
+    TOOL_OPERATION_RESUME,
 ];
 pub const W03_EXPOSED_TOOLS: &[&str] = LIVE_TOOLS;
 

@@ -45,7 +45,8 @@ Create an existing project directory and a registry outside it. Replace `/absolu
     "demo": {
       "root": "/absolute/path/to/project",
       "profile": "workspace-write",
-      "network": "restricted"
+      "network": "restricted",
+      "approvals": "off"
     }
   }
 }
@@ -54,6 +55,8 @@ Create an existing project directory and a registry outside it. Replace `/absolu
 Save this as `workspaces.json` in the CodeSpace checkout. `read-only` permits reads; `workspace-write` also permits patches and commands. Only the operator registers roots and chooses permissions. A tool's `workspace_id` selects a registration; it grants no permission by itself.
 
 `network` defaults to `restricted`. `enabled` requires the Linux helper and routes supported HTTP traffic through its managed proxy; it does not grant unrestricted host networking. Without a working helper, `enabled` execution fails. With `restricted` and no helper, host execution is possible but network restrictions are not OS-enforced. Use the reported enforcement state when deciding whether an environment is suitable.
+
+`approvals` defaults to `off`, which runs policy-allowed patches and commands immediately. `confirm` holds those tools before `begin()` or spawn and returns `APPROVAL_REQUIRED` with an `approval_id`. Retrying the same patch or exec reuses the active hold. It is operator JSON like `network`, not an MCP argument, and it does not escalate the profile. Confirmation rows share `CODESPACE_OPERATIONS_DB` in an `approvals` table, separate from the patch operations ledger. While a hold is `pending`, `granted`, or `resuming`, that table stores the V4A patch or exec argv. After `denied` or `consumed`, the body is replaced with digest metadata (tool, workspace, fingerprint). The patch ledger keeps hashes, not patch text. See [Agent Loop integration](agent-integration.md) for resolve and resume.
 
 <a id="run-the-gateway"></a>
 
@@ -120,9 +123,9 @@ The worker runs on the same host and is not a container. The gateway creates a p
 | Process output | Last 256 KiB retained; stdout/stderr combined; no explicit loss flag or exit code in MCP results |
 | Completed handles | Default retention up to 15 minutes and 64 completed entries; not durable |
 
-Store logs and the database outside the managed workspace. Rotate stderr capture yourself. Do not log Bearer tokens or commit real credentials. Deleting the database also deletes patch idempotency records.
+Store logs and the database outside the managed workspace, with tokens and gateway configuration. Rotate stderr capture yourself. Do not log Bearer tokens or commit real credentials. Deleting the database also deletes patch idempotency records and confirmation-hold rows.
 
-After losing a patch response, query `operation_status` with exactly one of `operation_id` or `operation_key`. An unfinished record becomes `unknown` after restart; inspect files before deciding what to do. Processes use `process_id` and cannot be recovered through `operation_status`. See [retry and recovery rules](agent-integration.md).
+After losing a patch response, query `operation_status` with exactly one of `operation_id` or `operation_key`. An unfinished record becomes `unknown` after restart; inspect files before deciding what to do. Processes use `process_id` and cannot be recovered through `operation_status`. A confirmation hold that was `resuming` when the process died may recover a patch from that ledger, replay a stored terminal result, or return `APPROVAL_AMBIGUOUS`; exec is not respawned. See [retry and recovery rules](agent-integration.md).
 
 <a id="linux-isolation-fixture"></a>
 <a id="what-this-document-does-not-verify"></a>

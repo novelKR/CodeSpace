@@ -2,9 +2,11 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use codespace_domain::{
-    workspace_info, ApplyPatchParams, ApplyPatchResult, ClientEnvironmentKind, CoordinationHint,
-    EffectivePermissionInfo, EnvironmentExecutionInfo, ErrorBody, ErrorCode, ExecCommandParams,
-    ExecCommandResult, ExecDispatchStatus, FindParams, FindResult, NetworkPolicyState,
+    workspace_info, ApplyPatchParams, ApplyPatchResult, ApprovalCreateParams, ApprovalCreateResult,
+    ApprovalId, ApprovalResolveParams, ApprovalResolveResult, ApprovalState, ApprovalTargetTool,
+    ClientEnvironmentKind, CoordinationHint, EffectivePermissionInfo, EnvironmentExecutionInfo,
+    ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ExecDispatchStatus, FindParams,
+    FindResult, NetworkPolicyState, OperationResumeParams, OperationResumeResult,
     OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ReadParams,
     ReadProcessParams, ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams,
     SteerStatusResult, TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams,
@@ -19,7 +21,7 @@ use codespace_runner::{
     linux_sandbox_available, Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest,
     RunnerReadProcess, RunnerWriteStdin, RuntimeBackend,
 };
-use codespace_store::{Begin, Store};
+use codespace_store::{Begin, ResumeClaim, Store, StoredOperation};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -77,6 +79,12 @@ permission.
 
 Treat apply_patch status=unknown as possibly executed. Do not blindly retry \
 the mutation with a new operation_key.
+
+When a workspace is configured with approvals=confirm, allowed apply_patch \
+and exec_command calls return APPROVAL_REQUIRED instead of executing. That \
+hold is a workflow pause, not a privilege grant or isolation boundary. The \
+same MCP caller can grant it with approval_resolve. Then call \
+operation_resume; resume re-checks policy.
 
 If exec_command reports dispatch_status=unknown, the spawn may have occurred. \
 Do not blindly start a duplicate process. The returned process_id identifies \
@@ -181,12 +189,21 @@ impl CodeSpace {
 
     #[tool(
         name = "apply_patch",
-        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply. status=unknown means the mutation may have executed but its result could not be confirmed. Do not retry the same mutation under a new operation_key. operation_key provides replay/idempotency for the same logical mutation."
+        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply. status=unknown means the mutation may have executed but its result could not be confirmed. Do not retry the same mutation under a new operation_key. operation_key provides replay/idempotency for the same logical mutation. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before begin() and does not write."
     )]
     async fn apply_patch(
         &self,
         Parameters(params): Parameters<ApplyPatchParams>,
     ) -> Result<Json<ApplyPatchResult>, String> {
+        let ws = self
+            .registry
+            .get(&params.workspace_id.0)
+            .map_err(err_json)?;
+        allow(ws, Action::Write, &ClientClaims::default()).map_err(err_json)?;
+        ws.require_file_write().map_err(err_json)?;
+        if let Err(err) = self.maybe_hold_patch(ws, &params) {
+            return Err(err_json(err));
+        }
         self.apply_patch_inner(params)
             .await
             .map(Json)
@@ -209,7 +226,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a fixed 24x80 PTY; resize is not supported. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
     )]
     async fn exec_command(
         &self,
@@ -222,34 +239,15 @@ impl CodeSpace {
         allow(ws, Action::Exec, &ClientClaims::default()).map_err(err_json)?;
         ws.require_exec().map_err(err_json)?;
         if params.command.is_empty() || params.command[0].is_empty() {
-            return Err(err_json(ErrorBody::new(
-                ErrorCode::InvalidCommand,
-                "command must be a non-empty argv (no shell)",
-            )));
+            return Err(err_json(invalid_argv()));
         }
-        let process_id = ProcessId(format!("proc-{}", Uuid::new_v4()));
-        self.store
-            .mark_shell_busy(&params.workspace_id.0, &process_id.0)
-            .map_err(err_json)?;
-        let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
-        req.policy.network = ws.network;
-        req.tty = params.tty;
-        match self.runner.exec(ws, req).await {
-            Ok(result) => Ok(Json(ExecCommandResult {
-                process_id: result.process_id,
-                dispatch_status: ExecDispatchStatus::Confirmed,
-                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
-            })),
-            Err(RunnerError::TransportAmbiguous { .. }) => Ok(Json(ExecCommandResult {
-                process_id,
-                dispatch_status: ExecDispatchStatus::Unknown,
-                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
-            })),
-            Err(err) => {
-                self.store.release_process(&process_id.0);
-                Err(runner_err_json(err))
-            }
+        if let Err(err) = self.maybe_hold_exec(ws, &params) {
+            return Err(err_json(err));
         }
+        self.exec_command_inner(params)
+            .await
+            .map(Json)
+            .map_err(err_json)
     }
 
     #[tool(
@@ -388,6 +386,47 @@ impl CodeSpace {
             .map(Json)
             .map_err(err_json)
     }
+
+    #[tool(
+        name = "approval_create",
+        description = "Create a pending confirmation hold for an already-allowed apply_patch or exec_command. Policy denial returns UNAUTHORIZED and creates no row. This does not grant write/exec rights and does not change the profile. The same MCP caller can later grant the hold."
+    )]
+    async fn approval_create(
+        &self,
+        Parameters(params): Parameters<ApprovalCreateParams>,
+    ) -> Result<Json<ApprovalCreateResult>, String> {
+        self.approval_create_inner(params)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "approval_resolve",
+        description = "Grant or deny a pending confirmation hold. grant does not change the permission profile and is not an isolation boundary; the same MCP caller can grant. deny is terminal. Resume a granted hold with operation_resume."
+    )]
+    async fn approval_resolve(
+        &self,
+        Parameters(params): Parameters<ApprovalResolveParams>,
+    ) -> Result<Json<ApprovalResolveResult>, String> {
+        self.store
+            .resolve_approval(&params.approval_id, params.decision)
+            .map(Json)
+            .map_err(err_json)
+    }
+
+    #[tool(
+        name = "operation_resume",
+        description = "Run a granted confirmation hold once after re-checking allow(). Repeating the same approval_id returns the stored terminal result, recovers a recorded patch from the operations ledger, or returns APPROVAL_AMBIGUOUS. This is not a privilege escalation."
+    )]
+    async fn operation_resume(
+        &self,
+        Parameters(params): Parameters<OperationResumeParams>,
+    ) -> Result<Json<OperationResumeResult>, String> {
+        self.operation_resume_inner(params)
+            .await
+            .map(Json)
+            .map_err(err_json)
+    }
 }
 
 impl CodeSpace {
@@ -478,6 +517,284 @@ impl CodeSpace {
         result.coordination = self.hint(workspace_id, work_id);
         result
     }
+
+    fn maybe_hold_patch(&self, ws: &Workspace, params: &ApplyPatchParams) -> Result<(), ErrorBody> {
+        if !ws.approvals.holds_mutations() {
+            return Ok(());
+        }
+        let snapshot = serde_json::to_value(params)
+            .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+        let created = self.store.create_approval(
+            &ws.id.0,
+            ApprovalTargetTool::ApplyPatch,
+            &Store::fingerprint(params),
+            snapshot,
+        )?;
+        Err(approval_required(&created.approval_id))
+    }
+
+    fn maybe_hold_exec(&self, ws: &Workspace, params: &ExecCommandParams) -> Result<(), ErrorBody> {
+        if !ws.approvals.holds_mutations() {
+            return Ok(());
+        }
+        let snapshot = serde_json::to_value(params)
+            .map_err(|err| ErrorBody::new(ErrorCode::InvalidCommand, err.to_string()))?;
+        let created = self.store.create_approval(
+            &ws.id.0,
+            ApprovalTargetTool::ExecCommand,
+            &Store::exec_fingerprint(params),
+            snapshot,
+        )?;
+        Err(approval_required(&created.approval_id))
+    }
+
+    fn approval_create_inner(
+        &self,
+        params: ApprovalCreateParams,
+    ) -> Result<ApprovalCreateResult, ErrorBody> {
+        match params.tool {
+            ApprovalTargetTool::ApplyPatch => {
+                let args: ApplyPatchParams = serde_json::from_value(params.arguments)
+                    .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+                let snapshot = serde_json::to_value(&args)
+                    .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+                let ws = self.registry.get(&args.workspace_id.0)?;
+                allow(ws, Action::Write, &ClientClaims::default())?;
+                ws.require_file_write()?;
+                let created = self.store.create_approval(
+                    &ws.id.0,
+                    ApprovalTargetTool::ApplyPatch,
+                    &Store::fingerprint(&args),
+                    snapshot,
+                )?;
+                Ok(ApprovalCreateResult {
+                    approval_id: created.approval_id,
+                    state: created.state,
+                })
+            }
+            ApprovalTargetTool::ExecCommand => {
+                let args: ExecCommandParams = serde_json::from_value(params.arguments)
+                    .map_err(|err| ErrorBody::new(ErrorCode::InvalidCommand, err.to_string()))?;
+                if args.command.is_empty() || args.command[0].is_empty() {
+                    return Err(invalid_argv());
+                }
+                let snapshot = serde_json::to_value(&args)
+                    .map_err(|err| ErrorBody::new(ErrorCode::InvalidCommand, err.to_string()))?;
+                let ws = self.registry.get(&args.workspace_id.0)?;
+                allow(ws, Action::Exec, &ClientClaims::default())?;
+                ws.require_exec()?;
+                let created = self.store.create_approval(
+                    &ws.id.0,
+                    ApprovalTargetTool::ExecCommand,
+                    &Store::exec_fingerprint(&args),
+                    snapshot,
+                )?;
+                Ok(ApprovalCreateResult {
+                    approval_id: created.approval_id,
+                    state: created.state,
+                })
+            }
+        }
+    }
+
+    async fn operation_resume_inner(
+        &self,
+        params: OperationResumeParams,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        match self.store.claim_resume(&params.approval_id)? {
+            ResumeClaim::ReplaySuccess(result) => Ok(result),
+            ResumeClaim::ReplayError(err) => Err(err),
+            ResumeClaim::Execute(record, _guard) => {
+                let outcome = self.execute_approved(record.clone()).await;
+                self.commit_resume(&record.approval_id, outcome)
+            }
+            ResumeClaim::Reconcile(record, _guard) => self.reconcile_resume(record).await,
+        }
+    }
+
+    fn commit_resume(
+        &self,
+        approval_id: &ApprovalId,
+        outcome: Result<OperationResumeResult, ErrorBody>,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        match &outcome {
+            Ok(success) => match self.store.finish_resume(approval_id, Ok(success)) {
+                Ok(()) => Ok(success.clone()),
+                Err(mut err) => {
+                    if err.approval_id.is_none() {
+                        err = err.with_approval_id(approval_id.0.as_str());
+                    }
+                    if err.operation_id.is_none() {
+                        if let Some(op) = success.apply_patch.as_ref() {
+                            err = err.with_operation_id(op.operation_id.0.clone());
+                        }
+                    }
+                    if err.code != ErrorCode::ApprovalAmbiguous {
+                        err.code = ErrorCode::ApprovalAmbiguous;
+                        err.message =
+                            "mutation may have completed; resume result was not persisted".into();
+                    }
+                    Err(err)
+                }
+            },
+            Err(err) => match self.store.finish_resume(approval_id, Err(err)) {
+                Ok(()) => outcome,
+                Err(_) => outcome,
+            },
+        }
+    }
+
+    async fn reconcile_resume(
+        &self,
+        record: codespace_store::ApprovalRecord,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        match record.tool {
+            ApprovalTargetTool::ApplyPatch => {
+                if let Some(stored) = self.lookup_patch_ledger(&record)? {
+                    let result = OperationResumeResult {
+                        approval_id: record.approval_id.clone(),
+                        state: ApprovalState::Consumed,
+                        apply_patch: Some(self.with_hint(
+                            stored.result,
+                            &record.workspace_id,
+                            None,
+                        )),
+                        exec_command: None,
+                    };
+                    return self.commit_resume(&record.approval_id, Ok(result));
+                }
+                if params_scrubbed(&record.params_json) {
+                    let err = ErrorBody::new(
+                        ErrorCode::ApprovalAmbiguous,
+                        "resume was interrupted and the snapshot is no longer available",
+                    )
+                    .with_approval_id(record.approval_id.0.as_str());
+                    return self.commit_resume(&record.approval_id, Err(err));
+                }
+                let outcome = self.execute_approved(record.clone()).await;
+                self.commit_resume(&record.approval_id, outcome)
+            }
+            ApprovalTargetTool::ExecCommand => {
+                let err = ErrorBody::new(
+                    ErrorCode::ApprovalAmbiguous,
+                    "exec resume is ambiguous after interruption; the process was not restarted",
+                )
+                .with_approval_id(record.approval_id.0.as_str());
+                self.commit_resume(&record.approval_id, Err(err))
+            }
+        }
+    }
+
+    fn lookup_patch_ledger(
+        &self,
+        record: &codespace_store::ApprovalRecord,
+    ) -> Result<Option<StoredOperation>, ErrorBody> {
+        if let Ok(params) = serde_json::from_str::<ApplyPatchParams>(&record.params_json) {
+            if let Some(key) = params.operation_key.as_ref() {
+                match self.store.status_lookup(None, Some(key)) {
+                    Ok(status) => return Ok(Some(self.store.get(&status.operation_id)?)),
+                    Err(err) if err.code == ErrorCode::OperationNotFound => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            return self.store.find_operation_by_fingerprint(
+                &record.workspace_id,
+                &Store::fingerprint(&params),
+                record.resolved_at,
+            );
+        }
+        self.store.find_operation_by_fingerprint(
+            &record.workspace_id,
+            &record.fingerprint,
+            record.resolved_at,
+        )
+    }
+
+    async fn execute_approved(
+        &self,
+        record: codespace_store::ApprovalRecord,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        match record.tool {
+            ApprovalTargetTool::ApplyPatch => {
+                let params: ApplyPatchParams = serde_json::from_str(&record.params_json)
+                    .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+                let result = self.apply_patch_inner(params).await?;
+                Ok(OperationResumeResult {
+                    approval_id: record.approval_id,
+                    state: ApprovalState::Consumed,
+                    apply_patch: Some(result),
+                    exec_command: None,
+                })
+            }
+            ApprovalTargetTool::ExecCommand => {
+                let params: ExecCommandParams = serde_json::from_str(&record.params_json)
+                    .map_err(|err| ErrorBody::new(ErrorCode::InvalidCommand, err.to_string()))?;
+                let result = self.exec_command_inner(params).await?;
+                Ok(OperationResumeResult {
+                    approval_id: record.approval_id,
+                    state: ApprovalState::Consumed,
+                    apply_patch: None,
+                    exec_command: Some(result),
+                })
+            }
+        }
+    }
+
+    async fn exec_command_inner(
+        &self,
+        params: ExecCommandParams,
+    ) -> Result<ExecCommandResult, ErrorBody> {
+        let ws = self.registry.get(&params.workspace_id.0)?;
+        allow(ws, Action::Exec, &ClientClaims::default())?;
+        ws.require_exec()?;
+        if params.command.is_empty() || params.command[0].is_empty() {
+            return Err(invalid_argv());
+        }
+        let process_id = ProcessId(format!("proc-{}", Uuid::new_v4()));
+        self.store
+            .mark_shell_busy(&params.workspace_id.0, &process_id.0)?;
+        let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
+        req.policy.network = ws.network;
+        req.tty = params.tty;
+        match self.runner.exec(ws, req).await {
+            Ok(result) => Ok(ExecCommandResult {
+                process_id: result.process_id,
+                dispatch_status: ExecDispatchStatus::Confirmed,
+                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
+            }),
+            Err(RunnerError::TransportAmbiguous { .. }) => Ok(ExecCommandResult {
+                process_id,
+                dispatch_status: ExecDispatchStatus::Unknown,
+                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
+            }),
+            Err(err) => {
+                self.store.release_process(&process_id.0);
+                Err(err.into_error_body())
+            }
+        }
+    }
+}
+
+fn invalid_argv() -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::InvalidCommand,
+        "command must be a non-empty argv (no shell)",
+    )
+}
+
+fn approval_required(id: &ApprovalId) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::ApprovalRequired,
+        "confirmation is required before this allowed mutation can run",
+    )
+    .with_approval_id(id.0.as_str())
+}
+
+fn params_scrubbed(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("scrubbed").and_then(|flag| flag.as_bool()))
+        .unwrap_or(false)
 }
 
 fn runner_err_json(err: RunnerError) -> String {
@@ -513,11 +830,12 @@ fn workspace_execution_info(ws: &Workspace) -> WorkspaceExecutionInfo {
         file_read_supported: ws.environment_kind.file_read_supported(),
         file_write_supported: ws.environment_kind.file_write_supported(),
     };
-    let info = WorkspaceExecutionInfo::from_effective(
+    let mut info = WorkspaceExecutionInfo::from_effective(
         environment,
         permissions,
         client_network_policy(policy.network),
     );
+    info.approvals = ws.approvals;
     advertise_linux_sandbox(info)
 }
 
@@ -620,6 +938,7 @@ mod tests {
         assert_eq!(exec.permissions.write, policy.allows(Action::Write));
         assert_eq!(exec.permissions.exec, policy.allows(Action::Exec));
         assert_eq!(exec.network.policy, client_network_policy(policy.network));
+        assert_eq!(exec.approvals, ws.approvals);
         assert!(!exec.network.client_may_escalate);
         assert_eq!(
             exec.environment.exec_supported,
@@ -708,6 +1027,11 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("major checkpoints"), "{text}");
+        assert!(text.contains("approvals=confirm"), "{text}");
+        assert!(text.contains("APPROVAL_REQUIRED"), "{text}");
+        assert!(text.contains("not a privilege grant"), "{text}");
+        assert!(text.contains("same MCP caller can grant"), "{text}");
+        assert!(text.contains("isolation boundary"), "{text}");
     }
 
     #[test]
