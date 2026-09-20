@@ -109,6 +109,7 @@ mod process;
 mod rollback;
 mod socket;
 mod uds;
+mod watch;
 mod wire;
 
 pub use api::{
@@ -135,6 +136,7 @@ pub use socket::{
     runner_socket_path, RUNNER_SOCKET_NAME,
 };
 pub use uds::{DisconnectHook, UdsRunner, RUNNER_CALL_DEADLINE};
+pub use watch::{FsWatchEvent, FsWatchKind, WatchClosed, WatchSubscription};
 pub use wire::{
     host_worker, read_frame, serve_runner_connection, write_frame, RunnerEvent, RunnerOp,
     RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,

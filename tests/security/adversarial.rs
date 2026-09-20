@@ -254,6 +254,46 @@ async fn version_conflict_and_context_mismatch_are_not_applied() {
     client.cancel().await.expect("cancel");
 }
 
+#[tokio::test]
+async fn discarded_watch_hints_do_not_replace_version_conflict() {
+    let (root, cfg, ws) = write_ws("workspace-write");
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, Some(&db)).await;
+
+    let read = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ)
+                .with_arguments(object!({ "workspace_id": "demo", "path": "keep.txt" })),
+        )
+        .await
+        .expect("read");
+    let version = payload(&read)["version"].as_str().unwrap().to_string();
+    std::fs::write(ws.join("keep.txt"), "externally-edited\n").unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let conflict = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": "*** Begin Patch\n*** Update File: keep.txt\n@@\n-keep\n+new\n*** End Patch\n",
+                "expected_versions": { "keep.txt": version },
+                "operation_key": "watch-ignored-1"
+            })),
+        )
+        .await;
+    let text = err_text(&conflict);
+    assert!(
+        text.contains("VERSION_CONFLICT") || text.contains("version"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("keep.txt")).unwrap(),
+        "externally-edited\n"
+    );
+
+    client.cancel().await.expect("cancel");
+}
+
 async fn spawn_http(config: HttpConfig) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
