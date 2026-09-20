@@ -71,9 +71,9 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-명령은 인자 배열입니다. 셸을 명시적으로 실행하지 않는 한 셸 따옴표, 파이프, `&&`는 해석되지 않습니다. 작업 디렉터리는 작업 공간 루트이며 환경변수와 제한 시간은 운영자 설정을 따릅니다. 터미널이 필요한 프로그램은 `"tty": true`로 가상 터미널(PTY)을 할당합니다. 크기는 24×80으로 고정되며 크기 변경 API는 없습니다.
+명령은 인자 배열입니다. 셸을 명시적으로 실행하지 않는 한 셸 따옴표, 파이프, `&&`는 해석되지 않습니다. 작업 디렉터리는 작업 공간 루트이며 환경변수와 제한 시간은 운영자 설정을 따릅니다. 터미널이 필요한 프로그램은 `"tty": true`로 가상 터미널(PTY)을 할당합니다. 크기는 24×80으로 고정됩니다. `tty_size`는 `exec_command` 인자가 아니며, 크기 변경 도구는 없습니다.
 
-응답에는 서버가 발급한 `process_id`와 `dispatch_status`가 있습니다. `confirmed`는 실행 요청이 확인되었다는 뜻이며 **명령의 성공을 뜻하지 않습니다**. ID를 저장한 뒤 적절한 간격으로 출력을 조회하고, 매번 반환된 커서를 다음 조회에 사용합니다.
+응답에는 서버가 발급한 `process_id`와 `dispatch_status`가 있습니다. `confirmed`는 실행 요청이 확인되었다는 뜻이며 **명령의 성공을 뜻하지 않습니다**. ID를 저장한 뒤 출력을 `read_process`로 조회하고, 종료는 `process_status`로 판정하세요. 출력 조회 시 매번 반환된 커서를 다음 조회에 사용합니다.
 
 ```json
 {
@@ -85,7 +85,16 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-결과에는 `chunk`, `cursor`, `eof`가 있습니다. stdout/stderr는 구분 없이 합쳐집니다. EOF는 출력 수집이 끝났다는 뜻이며 성공 종료를 나타내지 않습니다. 현재 MCP에는 종료 코드가 없고, 마지막 256 KiB만 보관하므로 앞부분이 별도 표시 없이 사라질 수 있습니다. EOF나 불완전한 로그만으로 빌드·테스트 성공을 선언하지 마세요. 신뢰할 수 있는 작업별 결과로 성공을 확인할 수 없다면 미검증으로 보고해야 합니다.
+결과에는 `chunk`, `cursor`, `eof`, `output_lost`, `retained_from`이 있습니다. stdout/stderr는 구분 없이 합쳐집니다. EOF는 출력 수집이 끝났다는 뜻이며 성공 종료를 나타내지 않습니다. 종료는 `process_status`로 판정합니다. `state`는 `running` 또는 `exited`입니다. 종료 후 `termination`은 `exited`·`timeout`·`terminated`·`unknown` 중 하나입니다. `exit_code`는 `termination`이 `exited`일 때만 있을 수 있습니다. `timeout`·`terminated`·`unknown`은 `eof`가 참이어도 성공이 아닙니다. 마지막 256 KiB만 보관합니다. `output_lost`가 참이면 보관 창이 전체 로그가 아닙니다. EOF나 불완전한 로그만으로 빌드·테스트 성공을 선언하지 마세요. 신뢰할 수 있는 작업별 결과로 성공을 확인할 수 없다면 미검증으로 보고해야 합니다.
+
+```json
+{
+  "name": "process_status",
+  "arguments": {
+    "process_id": "PROCESS_ID_FROM_EXEC"
+  }
+}
+```
 
 
 
@@ -103,7 +112,9 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
   "process_id": "SERVER_ISSUED_PROCESS_ID",
   "cursor": 12,
   "chunk": "agent-smoke\n",
-  "eof": true
+  "eof": true,
+  "output_lost": false,
+  "retained_from": 0
 }
 ```
 

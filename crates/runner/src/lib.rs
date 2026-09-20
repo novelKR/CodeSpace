@@ -115,8 +115,8 @@ mod wire;
 pub use api::{
     default_exec_timeout_ms, runner_local_exec_env, RunnerApplyPatchRequest,
     RunnerApplyPatchResult, RunnerCwd, RunnerError, RunnerExecEnv, RunnerExecPolicy,
-    RunnerExecRequest, RunnerExecResult, RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
-    DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
+    RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
+    RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
 };
 pub use files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT, VERSION_ABSENT};
 pub use patch_helper::ensure_helper_for_tests;
@@ -178,6 +178,10 @@ pub trait Runner: Send + Sync {
         &self,
         req: RunnerReadProcess,
     ) -> impl std::future::Future<Output = Result<RunnerReadResult, RunnerError>> + Send;
+    fn process_status(
+        &self,
+        process_id: &ProcessId,
+    ) -> impl std::future::Future<Output = Result<RunnerProcessStatus, RunnerError>> + Send;
     fn terminate(
         &self,
         process_id: &ProcessId,
@@ -229,6 +233,14 @@ impl Runner for InProcessRunner {
 
     async fn read_process(&self, req: RunnerReadProcess) -> Result<RunnerReadResult, RunnerError> {
         self.read_host_process(req).map_err(RunnerError::from)
+    }
+
+    async fn process_status(
+        &self,
+        process_id: &ProcessId,
+    ) -> Result<RunnerProcessStatus, RunnerError> {
+        self.host_process_status(process_id)
+            .map_err(RunnerError::from)
     }
 
     async fn terminate(&self, process_id: &ProcessId) -> Result<(), RunnerError> {
@@ -312,6 +324,16 @@ impl Runner for RuntimeBackend {
         match self {
             Self::InProcess(runner) => runner.read_process(req).await,
             Self::Uds(runner) => runner.read_process(req).await,
+        }
+    }
+
+    async fn process_status(
+        &self,
+        process_id: &ProcessId,
+    ) -> Result<RunnerProcessStatus, RunnerError> {
+        match self {
+            Self::InProcess(runner) => runner.process_status(process_id).await,
+            Self::Uds(runner) => runner.process_status(process_id).await,
         }
     }
 

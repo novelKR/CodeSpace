@@ -56,6 +56,6 @@ Errors use uppercase identifiers and a message. An `operation_id` may be present
 
 `dispatch_status: unknown` is a successful exec result describing an uncertain dispatch, not proof that no process started. Use the returned process handle if reachable and avoid duplicate launches. `confirmed` acknowledges dispatch; it does not mean command success.
 
-Linux helper preparation/protocol/start errors occur before a managed process exists and use `PROCESS_SPAWN_FAILED`. Once the helper is running, plan load, inner sandbox, or proxy-start failure becomes process termination. There is currently no exit-code field in the public result, so a completed output stream is insufficient success evidence.
+Linux helper preparation/protocol/start errors occur before a managed process exists and use `PROCESS_SPAWN_FAILED`. Once the helper is running, plan load, inner sandbox, or proxy-start failure becomes process termination. Use `process_status` to observe that outcome; EOF is not success. On Linux sandbox the wait status belongs to the managed child (helper argv).
 
 For patches, see the [status table and rollback limits](behavior-differences.md). For retries, timeouts, missing handles, and user-instruction completion, follow [Agent Loop integration](agent-integration.md). A `work_finish` response with `closed: false` and `reason: "pending_user_input"` is an application result, not a transport failure.

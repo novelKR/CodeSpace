@@ -120,7 +120,7 @@ The worker runs on the same host and is not a container. The gateway creates a p
 | `CODESPACE_OPERATIONS_DB` unset | In-memory patch operations and instruction queue; lost on restart |
 | `CODESPACE_PROCESS_TIMEOUT_SECS` | Positive integer; default 30 seconds; set in the runner environment |
 | `CODESPACE_MAX_PROCESSES` | Default 8 live processes across the runner; workspace occupancy still applies |
-| Process output | Last 256 KiB retained; stdout/stderr combined; no explicit loss flag or exit code in MCP results |
+| Process output | Last 256 KiB retained; stdout/stderr combined; `read_process` reports `output_lost` and `retained_from`; `process_status` reports termination |
 | Completed handles | Default retention up to 15 minutes and 64 completed entries; not durable |
 
 Store logs and the database outside the managed workspace, with tokens and gateway configuration. Rotate stderr capture yourself. Do not log Bearer tokens or commit real credentials. Deleting the database also deletes patch idempotency records and confirmation-hold rows.

@@ -71,9 +71,9 @@ A preview returns `status: "checked"` without writing. To apply, send the same p
 }
 ```
 
-The command is an argument array. Shell quoting, pipes, and `&&` are not interpreted unless you explicitly launch a shell. The working directory is the workspace root; environment and timeout are operator-controlled. Add `"tty": true` to allocate a pseudo-terminal (PTY) when a program requires a terminal (fixed 24×80; no resize API).
+The command is an argument array. Shell quoting, pipes, and `&&` are not interpreted unless you explicitly launch a shell. The working directory is the workspace root; environment and timeout are operator-controlled. Add `"tty": true` to allocate a pseudo-terminal (PTY) when a program requires a terminal. The size is fixed at 24×80. `tty_size` is not an `exec_command` argument, and there is no resize tool.
 
-The response contains a server-issued `process_id` and `dispatch_status`. `confirmed` means dispatch was acknowledged, **not that the command succeeded**. Save the ID, then poll with a modest delay and pass the returned cursor into the next read:
+The response contains a server-issued `process_id` and `dispatch_status`. `confirmed` means dispatch was acknowledged, **not that the command succeeded**. Save the ID. Poll output with `read_process` using the returned cursor, and judge exit with `process_status`.
 
 ```json
 {
@@ -85,7 +85,16 @@ The response contains a server-issued `process_id` and `dispatch_status`. `confi
 }
 ```
 
-Each result has `chunk`, `cursor`, and `eof`. Output combines stdout/stderr without preserving their identity. EOF means output collection is complete; it is not a successful exit status. MCP currently exposes no exit code. The last 256 KiB are retained and older bytes can be dropped without an explicit loss flag. Do not claim a build or test passed solely from EOF or an incomplete log. If success cannot be established from a reliable task-specific result, report it as unverified.
+Each result has `chunk`, `cursor`, `eof`, `output_lost`, and `retained_from`. Output combines stdout/stderr without preserving their identity. EOF means output collection is complete; it is not a successful exit status. Judge termination with `process_status`: `state` is `running` or `exited`. After exit, `termination` is `exited`, `timeout`, `terminated`, or `unknown`. `exit_code` is present only when `termination` is `exited`. `timeout`, `terminated`, and `unknown` are not success, even when `eof` is true. The last 256 KiB are retained. If `output_lost` is true, the retained window is not the complete log. Do not claim a build or test passed solely from EOF or an incomplete log. If success cannot be established from a reliable task-specific result, report it as unverified.
+
+```json
+{
+  "name": "process_status",
+  "arguments": {
+    "process_id": "PROCESS_ID_FROM_EXEC"
+  }
+}
+```
 
 
 
@@ -103,7 +112,9 @@ These example result bodies illustrate the command above. IDs are placeholders: 
   "process_id": "SERVER_ISSUED_PROCESS_ID",
   "cursor": 12,
   "chunk": "agent-smoke\n",
-  "eof": true
+  "eof": true,
+  "output_lost": false,
+  "retained_from": 0
 }
 ```
 

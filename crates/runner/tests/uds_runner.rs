@@ -112,6 +112,57 @@ async fn uds_runner_read_and_exec_over_length_prefix() {
 }
 
 #[tokio::test]
+async fn uds_process_status_echo_and_protocol_4_hello() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    runner.handshake().await.expect("hello protocol 4");
+    let dir = tempdir().unwrap();
+    let ws = workspace(dir.path());
+    let process_id = ProcessId("proc-uds-status".into());
+    runner
+        .exec(
+            &ws,
+            RunnerExecRequest::for_host(
+                vec!["/bin/echo".into(), "ok".into()],
+                process_id.clone(),
+                Profile::WorkspaceWrite,
+            ),
+        )
+        .await
+        .unwrap();
+    let mut status = None;
+    for _ in 0..50 {
+        let got = runner.process_status(&process_id).await.unwrap();
+        if got.state == codespace_domain::ProcessState::Exited {
+            status = Some(got);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let status = status.expect("process_status exited");
+    assert_eq!(
+        status.termination,
+        Some(codespace_domain::ProcessTermination::Exited)
+    );
+    assert_eq!(status.exit_code, Some(0));
+    let read = runner
+        .read_process(codespace_runner::RunnerReadProcess {
+            process_id,
+            cursor: 0,
+        })
+        .await
+        .unwrap();
+    assert!(!read.output_lost);
+    assert_eq!(read.retained_from, 0);
+}
+
+#[tokio::test]
 async fn uds_apply_patch_lost_response_is_ambiguous() {
     let (client, server) = UnixStream::pair().expect("unix pair");
     tokio::spawn(async move {

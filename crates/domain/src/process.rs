@@ -54,8 +54,61 @@ pub struct ReadProcessResult {
     pub cursor: u64,
     pub chunk: String,
     pub eof: bool,
+    /// True when the retained window does not start at byte 0.
+    pub output_lost: bool,
+    /// First retained process-output offset (`dropped` in the runner).
+    pub retained_from: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordination: Option<CoordinationHint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessState {
+    Running,
+    Exited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessTermination {
+    Exited,
+    Timeout,
+    Terminated,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessStatusParams {
+    pub process_id: ProcessId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessStatusResult {
+    pub process_id: ProcessId,
+    pub state: ProcessState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination: Option<ProcessTermination>,
+    pub output_total: u64,
+    pub output_retained_from: u64,
+    pub eof: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<CoordinationHint>,
+}
+
+impl ProcessStatusResult {
+    pub fn invariants_hold(&self) -> bool {
+        match self.state {
+            ProcessState::Running => self.exit_code.is_none() && self.termination.is_none(),
+            ProcessState::Exited => match self.termination {
+                Some(ProcessTermination::Exited) => true,
+                Some(_) => self.exit_code.is_none(),
+                None => false,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -140,5 +193,113 @@ mod tests {
             schema.to_string().contains("dispatch_status"),
             "result schema must include dispatch_status: {schema}"
         );
+    }
+
+    #[test]
+    fn running_status_omits_exit_code() {
+        let json = serde_json::to_value(ProcessStatusResult {
+            process_id: ProcessId("proc-1".into()),
+            state: ProcessState::Running,
+            exit_code: None,
+            termination: None,
+            output_total: 0,
+            output_retained_from: 0,
+            eof: false,
+            coordination: None,
+        })
+        .unwrap();
+        assert_eq!(json["state"], "running");
+        assert!(json.get("exit_code").is_none());
+        assert!(json.get("termination").is_none());
+        assert!(ProcessStatusResult {
+            process_id: ProcessId("proc-1".into()),
+            state: ProcessState::Running,
+            exit_code: None,
+            termination: None,
+            output_total: 0,
+            output_retained_from: 0,
+            eof: false,
+            coordination: None,
+        }
+        .invariants_hold());
+        assert!(!ProcessStatusResult {
+            process_id: ProcessId("proc-1".into()),
+            state: ProcessState::Running,
+            exit_code: Some(0),
+            termination: None,
+            output_total: 0,
+            output_retained_from: 0,
+            eof: false,
+            coordination: None,
+        }
+        .invariants_hold());
+        let schema = serde_json::to_value(schemars::schema_for!(ProcessStatusResult)).unwrap();
+        let dumped = schema.to_string();
+        assert!(dumped.contains("output_total"), "{dumped}");
+        assert!(dumped.contains("termination"), "{dumped}");
+    }
+
+    #[test]
+    fn exited_success_may_include_exit_code() {
+        let json = serde_json::to_value(ProcessStatusResult {
+            process_id: ProcessId("proc-1".into()),
+            state: ProcessState::Exited,
+            exit_code: Some(0),
+            termination: Some(ProcessTermination::Exited),
+            output_total: 12,
+            output_retained_from: 0,
+            eof: true,
+            coordination: None,
+        })
+        .unwrap();
+        assert_eq!(json["state"], "exited");
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["termination"], "exited");
+    }
+
+    #[test]
+    fn timeout_status_has_no_exit_code() {
+        let json = serde_json::to_value(ProcessStatusResult {
+            process_id: ProcessId("proc-1".into()),
+            state: ProcessState::Exited,
+            exit_code: None,
+            termination: Some(ProcessTermination::Timeout),
+            output_total: 0,
+            output_retained_from: 0,
+            eof: true,
+            coordination: None,
+        })
+        .unwrap();
+        assert_eq!(json["termination"], "timeout");
+        assert!(json.get("exit_code").is_none());
+    }
+
+    #[test]
+    fn read_process_result_exposes_output_loss() {
+        let json = serde_json::to_value(ReadProcessResult {
+            process_id: ProcessId("proc-1".into()),
+            cursor: 10,
+            chunk: String::new(),
+            eof: false,
+            output_lost: true,
+            retained_from: 8,
+            coordination: None,
+        })
+        .unwrap();
+        assert_eq!(json["output_lost"], true);
+        assert_eq!(json["retained_from"], 8);
+        let schema = serde_json::to_value(schemars::schema_for!(ReadProcessResult)).unwrap();
+        let dumped = schema.to_string();
+        assert!(dumped.contains("output_lost"), "{dumped}");
+        assert!(dumped.contains("retained_from"), "{dumped}");
+    }
+
+    #[test]
+    fn process_status_params_are_process_id_only() {
+        let schema = serde_json::to_value(schemars::schema_for!(ProcessStatusParams)).unwrap();
+        let dumped = schema.to_string();
+        assert!(dumped.contains("process_id"), "{dumped}");
+        assert!(!dumped.contains("tty_size"), "{dumped}");
+        assert!(!dumped.contains("signal"), "{dumped}");
     }
 }

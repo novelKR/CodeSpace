@@ -74,8 +74,8 @@
         "작업-공간을-등록하고-시작하기",
         "제공하는-도구"
       ],
-      "source_sha256": "fbeb688c943ac78e3ae3a0441dedce9c553dd25470eadabcc037429990263c32",
-      "translation_sha256": "32c41ce394799ac7603f463e9ef7d5a8afab3dc61845c45eef05d03eab11e319"
+      "source_sha256": "55ba1a154bb3023a458c9dcbb395e465004c45073a9b623be50e42795590acc6",
+      "translation_sha256": "2e13cae976e4d4baa4a997c223714cf5cd6bdd4dde59ee2ce673e10cbf11cd70"
     },
     {
       "id": "agent-integration",
@@ -100,8 +100,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "f00270e95b2bc084a9bacf7b9deeb2d9027c74f3debbd09e7f0d5fe629a157c8",
-      "translation_sha256": "0303b0f054ece5e2a7c4ea2c2a78e18247c578b53420ab53352a7f6e682066f5"
+      "source_sha256": "1686f596d2c7b19c9f557b791a0b1ff242950efca0d4cd6ac3c34730f9eb4609",
+      "translation_sha256": "8a4d988446b81e1fc139596ff6bd858bb26b8a48b06465d2035efda6cdbe2afe"
     },
     {
       "id": "operations",
@@ -152,8 +152,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "2b4070638407f6cf73a0c18d65edb8e8bc76d7cb0e30708ac8dab2d04fbc50ab",
-      "translation_sha256": "47adcf45d36bd8e054e5351b564e60d5962cec35f3a853e03450e7bed6b693de"
+      "source_sha256": "aefe37ed26f44ca4cc620b085df753ea5c24d03f74538b83e791a6a4d67504d2",
+      "translation_sha256": "a39fb9446b2270c41ff739a14acff192d864c996758dbea97cc05230b5636e5e"
     },
     {
       "id": "chatgpt-connector",
@@ -303,8 +303,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "07174574aa201e3d86e301916a09348a0fd6a2ff47d70f45c7473cb3cd956bf4",
-      "translation_sha256": "24e6a8d39012ddb4e863bb243099f83c5a303335180d46262e08166d460d0f1d"
+      "source_sha256": "c84e0751e3fb3c7d1cd0b418caa66ff6778777437d4c29a83e93b1ff2a5a6910",
+      "translation_sha256": "eb6b798eea0cc1ca1ca8664878c20b364c9b3d32939a09f8bfd4b104361b65cf"
     },
     {
       "id": "protocol-compatibility",
@@ -445,8 +445,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "c9343ac59489e008a55f90d0fbfa7a66890b03abc08c4a65729685db602c72c1",
-      "translation_sha256": "c7c2298fedf0ebec6d527663d03575460cc3ae83f7f1277d30ddd6a25942c530"
+      "source_sha256": "174e4e9586869fe059cc9fdd2560af691144f60bb654ad0cbc47d58d4dadf0f7",
+      "translation_sha256": "63d96306ef71b2ec08545eda3a243e01cf6a3d7a6c8de7ef907af1124188875b"
     },
     {
       "id": "error-codes",
@@ -474,8 +474,8 @@
         "전송-실패",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "fdd866544ae59e232ebd64e9f24d533a2cdd6d082edb813ab195722f220e2119",
-      "translation_sha256": "596d66ecaf86dcb4f57a314bbb6b9abba4ec70f77a701a6272f2df64cc63b9d3"
+      "source_sha256": "c98cf2d562179238225427fe4c8b417849894b3895ddfc7add31022e968dfb56",
+      "translation_sha256": "abdf30713cfd0bd5409064356bf32e8208d370fb9f332bae7e0d2c3cb4eaee56"
     },
     {
       "id": "codex-reuse",
@@ -554,8 +554,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "408fed15492f21f73f9c1cf1c97ed43b4e964905db68508cad9fb3cd5f9be6dd",
-      "translation_sha256": "7c206a8c5f58b57460d3a35d4ae74767ca1e22b0621b27f8db17d0657036347d"
+      "source_sha256": "69d28fae0800ebc4837e7fc4249ad43405967c67f9ba453d8d5144a3f98ab0f8",
+      "translation_sha256": "7435e3a93f81e400ec084acdf6cf2f333eff56fadf39a8e66e95e5ac7b43e770"
     },
     {
       "id": "upstream-lock",

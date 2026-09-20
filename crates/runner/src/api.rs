@@ -4,7 +4,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use codespace_domain::{ErrorBody, ErrorCode, FileChange, PatchStatus, ProcessId, Profile};
+use codespace_domain::{
+    ErrorBody, ErrorCode, FileChange, PatchStatus, ProcessId, ProcessState, ProcessTermination,
+    Profile,
+};
 use codespace_policy::NetworkAxis;
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +115,23 @@ pub struct RunnerReadResult {
     pub process_id: ProcessId,
     pub cursor: u64,
     pub chunk: String,
+    pub eof: bool,
+    #[serde(default)]
+    pub output_lost: bool,
+    #[serde(default)]
+    pub retained_from: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunnerProcessStatus {
+    pub process_id: ProcessId,
+    pub state: ProcessState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination: Option<ProcessTermination>,
+    pub output_total: u64,
+    pub output_retained_from: u64,
     pub eof: bool,
 }
 

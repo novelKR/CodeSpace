@@ -37,7 +37,9 @@ The operator registry maps `read-only` and `workspace-write` to effective permis
 
 ## Execution and observation
 
-Gateway fills workspace-root cwd, runner-local environment defaults, time/output limits, PTY choice, and policy into the internal Runner request. Only `tty` is exposed as a terminal option today. Public calls do not accept arbitrary cwd/env/timeout overrides. See [operations](operations.md) for defaults and [Agent Loop integration](agent-integration.md) for result handling.
+Gateway fills workspace-root cwd, runner-local environment defaults, time/output limits, PTY choice, and policy into the internal Runner request. Only `tty` is exposed as a terminal option today. `tty_size` is not a spawn argument. Public calls do not accept arbitrary cwd/env/timeout overrides. See [operations](operations.md) for defaults and [Agent Loop integration](agent-integration.md) for result handling.
+
+`exec_command` returns dispatch identity (`process_id`, `dispatch_status`). `process_status` reports `running` or `exited` plus termination metadata. `read_process` reports output including `output_lost` and `retained_from`. EOF is not success. After handle eviction the next lookup is `PROCESS_NOT_FOUND`, not a new state. On Linux sandbox, the wait status is that of the managed child (the helper argv); it is not documented as identical to the user argv.
 
 A workspace mutation lease prevents simultaneous patch/exec mutations. Read and find remain available while a command runs, so filesystem I/O must reject symlink races at open time rather than rely on a prior path check. Runner file operations use `codespace-fs`; patch execution uses the separate patch helper. `operation_status` exposes the recorded patch ledger (`kind` is `patch`); live commands stay on `process_id` and are not recovered through that lookup.
 
@@ -67,7 +69,7 @@ When the operator sets workspace `approvals` to `confirm`, a policy-allowed `app
 
 ## What remains unimplemented
 
-Process exit codes and explicit output-loss metadata are not exposed to MCP. PTY resize, file range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
+PTY resize (`process_resize` is not provided), file range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
 
 ## Maintaining the boundary
 

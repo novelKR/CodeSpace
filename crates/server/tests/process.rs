@@ -1,6 +1,6 @@
 use codespace_domain::{
-    LIVE_TOOLS, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_FIND, TOOL_READ, TOOL_READ_PROCESS,
-    TOOL_TERMINATE_PROCESS, TOOL_WORKSPACE_INFO, TOOL_WRITE_STDIN,
+    LIVE_TOOLS, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND, TOOL_FIND, TOOL_PROCESS_STATUS, TOOL_READ,
+    TOOL_READ_PROCESS, TOOL_TERMINATE_PROCESS, TOOL_WORKSPACE_INFO, TOOL_WRITE_STDIN,
 };
 use codespace_server::config::{HttpConfig, MCP_PATH};
 use codespace_server::http::router_with_registry;
@@ -114,6 +114,26 @@ async fn exec_echo_is_readable_and_unknown_id_is_rejected() {
         chunk.contains("hello-codespace"),
         "missing process output: {chunk:?}"
     );
+
+    let mut status_body = serde_json::Value::Null;
+    for _ in 0..50 {
+        let status = client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_PROCESS_STATUS)
+                    .with_arguments(object!({ "process_id": pid })),
+            )
+            .await
+            .expect("process_status");
+        status_body = payload(&status);
+        if status_body["state"] == "exited" {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert_eq!(status_body["state"], "exited");
+    assert_eq!(status_body["termination"], "exited");
+    assert_eq!(status_body["exit_code"], 0);
+    assert_eq!(status_body["eof"], true);
 
     let missing = client
         .call_tool(
@@ -643,6 +663,25 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     let mut expected = LIVE_TOOLS.to_vec();
     expected.sort();
     assert_eq!(names, expected, "tools/list must match LIVE_TOOLS");
+    assert!(
+        names.contains(&TOOL_PROCESS_STATUS),
+        "LIVE_TOOLS must include process_status, got {names:?}"
+    );
+
+    let status_tool = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == TOOL_PROCESS_STATUS)
+        .expect("process_status");
+    let status_out = serde_json::to_value(status_tool.output_schema.as_ref()).unwrap();
+    let status_dumped = status_out.to_string();
+    assert!(
+        status_dumped.contains("termination"),
+        "process_status result schema must include termination: {status_dumped}"
+    );
+    assert!(
+        status_dumped.contains("output_total"),
+        "process_status result schema must include output_total: {status_dumped}"
+    );
 
     let exec = tools
         .iter()

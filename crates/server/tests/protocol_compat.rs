@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use codespace_domain::{
     Profile, WorkspaceId, LIVE_TOOLS, SERVER_NAME, TOOL_APPLY_PATCH, TOOL_EXEC_COMMAND,
-    TOOL_OPERATION_STATUS, TOOL_READ, TOOL_STEER_CLAIM_NEXT, TOOL_STEER_COMPLETE,
-    TOOL_STEER_STATUS, TOOL_WORKSPACE_INFO, TOOL_WORK_FINISH, TOOL_WORK_OPEN, TRANSPORT_STDIO,
-    TRANSPORT_STREAMABLE_HTTP,
+    TOOL_OPERATION_STATUS, TOOL_PROCESS_STATUS, TOOL_READ, TOOL_STEER_CLAIM_NEXT,
+    TOOL_STEER_COMPLETE, TOOL_STEER_STATUS, TOOL_WORKSPACE_INFO, TOOL_WORK_FINISH, TOOL_WORK_OPEN,
+    TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP,
 };
 use codespace_policy::{Registry, Workspace};
 use codespace_server::config::{HttpConfig, INBOX_PATH, MCP_PATH};
@@ -56,6 +56,10 @@ fn assert_live_tools(names: impl IntoIterator<Item = impl AsRef<str>>) {
     assert!(
         names.iter().any(|n| n == TOOL_WORKSPACE_INFO),
         "tools/list must include workspace_info, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == TOOL_PROCESS_STATUS),
+        "tools/list must include process_status, got {names:?}"
     );
     assert_eq!(names, expected);
 }
