@@ -50,9 +50,9 @@ UDS transport and Linux sandbox preparation have distinct protocols and failure 
 
 ## Filesystem observation
 
-The Runner may start a recursive filesystem watcher for a workspace on the first `read`, `find`, `version`, or `apply_patch` call. Events are workspace-relative invalidation hints (`Create`, `Modify`, `Remove`, `Rename`, `ResyncRequired`) with an `epoch` and a delivery `seq`. They are not an MCP tool, not a permission decision, and not a mutation precondition.
+The Runner may start a recursive filesystem watcher for a workspace on the first `read`, `find`, `version`, or `apply_patch` call. Events are workspace-relative invalidation hints (`Create`, `Modify`, `Remove`, `Rename`, `ResyncRequired`) with an `epoch` and a delivery `seq`. They are not an MCP tool, not a permission decision, and not a mutation precondition. Watch paths are workspace-relative invalidation names. Emitting a path does not imply that the path is readable, writable, regular, or non-symlink; normal file operations continue to enforce `PathSandbox`.
 
-`expected_versions` and `VERSION_CONFLICT` remain the authoritative apply guard. Missing, coalesced, or restarted watch events must never make `apply_patch` succeed when the on-disk hash no longer matches. Overflow, receive failure, or an unclassifiable event yields `ResyncRequired` on the same epoch (treat any consumer cache as fully untrusted). Restarting the watcher increments `epoch` and also emits `ResyncRequired`. This substrate does not classify self-generated versus external writes, keep a lossless event ledger, or send watch events over UDS.
+`expected_versions` and `VERSION_CONFLICT` remain the authoritative apply guard. Missing, coalesced, or restarted watch events must never make `apply_patch` succeed when the on-disk hash no longer matches. Overflow, receive failure (including a lagged subscriber), or an unclassifiable event yields `ResyncRequired` on the same epoch (treat any consumer cache as fully untrusted). Restarting the watcher increments `epoch` and also emits `ResyncRequired` only after a replacement watcher is running. This substrate does not classify self-generated versus external writes, keep a lossless event ledger, or send watch events over UDS.
 
 `find` stays a bounded glob walk. It is not a watch API.
 
@@ -67,7 +67,7 @@ When the operator sets workspace `approvals` to `confirm`, a policy-allowed `app
 
 ## What remains unimplemented
 
-Process exit codes and explicit output-loss metadata are not exposed to MCP. PTY resize, file range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, `STALE_READ`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
+Process exit codes and explicit output-loss metadata are not exposed to MCP. PTY resize, file range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
 
 ## Maintaining the boundary
 
