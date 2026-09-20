@@ -1,5 +1,5 @@
 //! Isolated PTY adapter. Wraps `codex-utils-pty` and exposes only
-//! CodeSpace-owned types. Not an MCP tool. Resize stays off this API.
+//! CodeSpace-owned types. Not an MCP tool.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -34,6 +34,13 @@ impl PtySession {
         self.handle.has_exited()
     }
 
+    /// Change the PTY size in character cells. Codex types stay inside.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
+        self.handle
+            .resize(codex_utils_pty::TerminalSize { rows, cols })
+            .map_err(|err| err.to_string())
+    }
+
     /// Kill the child (Unix process group) without exposing Codex signals.
     pub fn kill(&self) {
         self.handle.request_terminate();
@@ -46,8 +53,7 @@ pub const DEFAULT_ROWS: u16 = 24;
 pub const DEFAULT_COLS: u16 = 80;
 
 /// Spawn `program` + `args` on a PTY at [`DEFAULT_ROWS`]×[`DEFAULT_COLS`].
-/// Resize is not exposed on this API. `env` is the full environment after the
-/// caller applied runner-local defaults.
+/// `env` is the full environment after the caller applied runner-local defaults.
 pub async fn spawn(
     program: &str,
     args: &[String],
@@ -82,6 +88,7 @@ pub async fn spawn(
 mod tests {
     use super::*;
     use std::time::Duration;
+    use tokio::sync::mpsc;
 
     #[test]
     fn crate_is_isolated_adapter() {
@@ -131,5 +138,60 @@ mod tests {
             .expect("exit wait")
             .expect("exit recv");
         assert_eq!(code, 0, "stdin should be a TTY");
+    }
+
+    async fn collect_until(output: &mut mpsc::Receiver<Vec<u8>>, needle: &str) -> String {
+        let mut text = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            let chunk = tokio::time::timeout(Duration::from_millis(500), output.recv())
+                .await
+                .ok()
+                .flatten();
+            let Some(chunk) = chunk else {
+                continue;
+            };
+            text.push_str(&String::from_utf8_lossy(&chunk));
+            if text.replace("\r\n", "\n").contains(needle) {
+                return text;
+            }
+        }
+        panic!("timed out waiting for {needle:?}, got {text:?}");
+    }
+
+    #[tokio::test]
+    async fn resize_changes_stty_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = HashMap::from([
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("HOME".into(), dir.path().display().to_string()),
+            ("LANG".into(), "C".into()),
+            ("TERM".into(), "xterm".into()),
+        ]);
+        let script =
+            "stty -echo; printf 'start:%s\\n' \"$(stty size)\"; IFS= read _line; printf 'after:%s\\n' \"$(stty size)\"";
+        let mut session = spawn("/bin/sh", &["-c".into(), script.into()], dir.path(), &env)
+            .await
+            .expect("spawn stty");
+        let mut output = session.take_stdout().expect("stdout");
+        let writer = session.writer();
+        let start = collect_until(&mut output, "start:24 80").await;
+        assert!(
+            start.replace("\r\n", "\n").contains("start:24 80"),
+            "initial size, got {start:?}"
+        );
+        session.resize(40, 120).expect("resize");
+        writer.send(b"go\n".to_vec()).await.expect("write");
+        let rest = collect_until(&mut output, "after:40 120").await;
+        let combined = format!("{start}{rest}").replace("\r\n", "\n");
+        assert!(
+            combined.contains("after:40 120"),
+            "resized size, got {combined:?}"
+        );
+        let code = tokio::time::timeout(Duration::from_secs(5), session.take_exit().unwrap())
+            .await
+            .expect("exit timeout")
+            .expect("exit receiver");
+        assert_eq!(code, 0);
     }
 }

@@ -71,7 +71,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-명령은 인자 배열입니다. 셸을 명시적으로 실행하지 않는 한 셸 따옴표, 파이프, `&&`는 해석되지 않습니다. 작업 디렉터리는 작업 공간 루트이며 환경변수와 제한 시간은 운영자 설정을 따릅니다. 터미널이 필요한 프로그램은 `"tty": true`로 가상 터미널(PTY)을 할당합니다. 크기는 24×80으로 고정됩니다. `tty_size`는 `exec_command` 인자가 아니며, 크기 변경 도구는 없습니다.
+명령은 인자 배열입니다. 셸을 명시적으로 실행하지 않는 한 셸 따옴표, 파이프, `&&`는 해석되지 않습니다. 작업 디렉터리는 작업 공간 루트이며 환경변수와 제한 시간은 운영자 설정을 따릅니다. 터미널이 필요한 프로그램은 `"tty": true`로 가상 터미널(PTY)을 할당합니다. spawn 크기는 24×80입니다. `tty_size`는 `exec_command` 인자가 아닙니다. 실행 중인 PTY 크기는 `process_resize`로 바꿉니다.
 
 응답에는 서버가 발급한 `process_id`와 `dispatch_status`가 있습니다. `confirmed`는 실행 요청이 확인되었다는 뜻이며 **명령의 성공을 뜻하지 않습니다**. ID를 저장한 뒤 출력을 `read_process`로 조회하고, 종료는 `process_status`로 판정하세요. 출력 조회 시 매번 반환된 커서를 다음 조회에 사용합니다.
 
@@ -96,7 +96,16 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-
+```json
+{
+  "name": "process_resize",
+  "arguments": {
+    "process_id": "PROCESS_ID_FROM_EXEC",
+    "rows": 40,
+    "cols": 120
+  }
+}
+```
 
 다음은 위 명령의 결과를 해석하는 예시입니다. ID는 설명용이며 실제 응답의 값을 사용해야 합니다. `coordination`이 없는 호출의 도구 결과 본문만 표시했습니다.
 
@@ -141,6 +150,8 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 
 실행 중인 명령은 작업 공간을 점유합니다. 패치를 적용하거나 다른 명령을 시작하려면 기존 명령이 끝날 때까지 기다리거나 종료하세요. 읽기와 검색은 계속 가능합니다. 개발 서버를 오래 실행하는 작업 흐름이라면 수정 전에 서버를 멈추는 절차가 필요합니다.
 
+`workspace_info.execution.process.capabilities.lifetime`은 소유자가 MCP 세션이 아니라 러너 인스턴스임을 알립니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지하므로, 저장한 `process_id`로 다시 연결하면 됩니다. UDS worker 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 소유 서브트리가 종료되고 핸들이 사라집니다. 재시작은 `process_id`를 복구하지 않습니다. spawn 응답을 받기 전에 `process_id`를 잃으면 `process_status`로 찾지 말고 명령을 중복 시작하지 마세요.
+
 ## 보류된 변경 확인
 
 기본 작업 공간에서는 허용된 패치와 명령이 바로 실행됩니다. 운영자가 `approvals`를 `confirm`으로 두면 해당 도구는 디스크에 쓰거나 프로세스를 만들지 않고 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 워크플로 일시정지이며 권한 부여나 격리 경계가 아니고, `read-only`를 쓰기·실행으로 올리는 방법도 아닙니다. `approved: true`나 `network: true` 같은 추가 인자도 권한을 주지 않습니다. 같은 MCP 호출자가 홀드를 grant할 수 있습니다.
@@ -178,6 +189,8 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 | `OPERATION_KEY_CONFLICT` | 다른 인자에 사용된 키이므로 이전 요청 확인 |
 | 패치 `unknown` 또는 `failed_partial` | 해당 파일을 확인하고 불확실성을 보고한 뒤 새 작업 여부 판단 |
 | 실행 `dispatch_status: unknown` | 프로세스가 존재할 수 있음. 연결 가능하면 해당 핸들을 조회·종료하고 무조건 재실행하지 않기 |
+| spawn 응답 유실 / `process_id` 없음 | 핸들을 만들어 내거나 검색하지 않기. 중복 시작하지 않기. 프로세스가 작업 공간을 점유 중일 수 있음 |
+| spawn 이후 클라이언트·HTTP 세션 끊김 | 프로세스는 계속 실행됨. 재연결 후 저장한 `process_id` 사용 |
 | `WORKSPACE_BUSY` | 점유 중인 작업을 기다리거나 프로세스 취소. 빠른 반복 재시도 피하기 |
 | `TIMEOUT` | 실행이 중단된 것으로 처리하고 일부 변경이 남았는지 확인 |
 | 서버·worker 연결 손실 | 재연결 후 기능과 파일 상태 확인. 기존 프로세스 핸들은 복구되지 않음 |

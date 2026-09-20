@@ -41,6 +41,8 @@
 | `OPERATION_KEY_CONFLICT` | 같은 패치 키를 다른 인자에 사용함 |
 | `OPERATION_NOT_FOUND` | 조회 ID·키가 없거나 조회 식별자를 정확히 하나 지정하지 않음 |
 | `PROCESS_NOT_FOUND` | 프로세스 핸들이 없거나 만료됨. 입력 시 stdin이 이미 닫힌 경우도 포함 |
+| `PROCESS_NOT_TTY` | 파이프(`tty: false`) 프로세스에 `process_resize`를 호출함 |
+| `PROCESS_NOT_RUNNING` | 핸들은 있으나 실행 중이 아닌 프로세스에 `process_resize`를 호출함 |
 | `OUTPUT_LIMIT` | 도우미 출력 상한 초과. 프로세스 출력 조회는 오래된 바이트를 버리는 방식 |
 | `TIMEOUT` | 관리 명령 또는 도우미의 제한 시간 초과 |
 | `WORK_NOT_FOUND` | 논리적 작업을 찾을 수 없음 |

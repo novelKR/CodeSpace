@@ -71,7 +71,7 @@ A preview returns `status: "checked"` without writing. To apply, send the same p
 }
 ```
 
-The command is an argument array. Shell quoting, pipes, and `&&` are not interpreted unless you explicitly launch a shell. The working directory is the workspace root; environment and timeout are operator-controlled. Add `"tty": true` to allocate a pseudo-terminal (PTY) when a program requires a terminal. The size is fixed at 24×80. `tty_size` is not an `exec_command` argument, and there is no resize tool.
+The command is an argument array. Shell quoting, pipes, and `&&` are not interpreted unless you explicitly launch a shell. The working directory is the workspace root; environment and timeout are operator-controlled. Add `"tty": true` to allocate a pseudo-terminal (PTY) when a program requires a terminal. Spawn size is 24×80. `tty_size` is not an `exec_command` argument. Change the size of a running PTY with `process_resize`.
 
 The response contains a server-issued `process_id` and `dispatch_status`. `confirmed` means dispatch was acknowledged, **not that the command succeeded**. Save the ID. Poll output with `read_process` using the returned cursor, and judge exit with `process_status`.
 
@@ -96,7 +96,16 @@ Each result has `chunk`, `cursor`, `eof`, `output_lost`, and `retained_from`. Ou
 }
 ```
 
-
+```json
+{
+  "name": "process_resize",
+  "arguments": {
+    "process_id": "PROCESS_ID_FROM_EXEC",
+    "rows": 40,
+    "cols": 120
+  }
+}
+```
 
 These example result bodies illustrate the command above. IDs are placeholders: use the values from your own responses. The examples omit the MCP envelope and show a call without coordination context.
 
@@ -141,6 +150,8 @@ Interactive input and cancellation use the same handle:
 
 A live command occupies the workspace. Wait for it to end or terminate it before applying a patch or starting another command. Reads and searches remain available. Long-lived development servers therefore require a workflow that stops them before edits.
 
+`workspace_info.execution.process.capabilities.lifetime` advertises the owner: the runner instance, not the MCP session. Streamable HTTP or MCP client disconnect keeps the process running; reconnect with the saved `process_id`. Losing the UDS worker connection or shutting down the gateway (including stdio EOF) terminates the owned subtree and drops handles. Restart does not restore `process_id`. If the spawn response is lost before you receive `process_id`, do not search with `process_status` and do not start a duplicate command.
+
 ## Confirm a held mutation
 
 Default workspaces run allowed patches and commands immediately. If the operator set `approvals` to `confirm`, those tools return `APPROVAL_REQUIRED` and an `approval_id` instead of writing or spawning. This is a workflow pause, not a privilege grant, isolation boundary, or a way to raise `read-only` to write or exec. Extra arguments such as `approved: true` or `network: true` do not grant rights. The same MCP caller can grant the hold.
@@ -178,6 +189,8 @@ Default workspaces run allowed patches and commands immediately. If the operator
 | `OPERATION_KEY_CONFLICT` | The key belongs to different arguments; inspect the earlier request |
 | Patch `unknown` or `failed_partial` | Inspect affected files and report uncertainty before deciding on a new operation |
 | Exec `dispatch_status: unknown` | A process may exist. Inspect or terminate the returned handle if reachable; do not blindly start another |
+| Lost spawn response / no `process_id` | Do not invent or search for a handle. Do not start a duplicate; the process may still occupy the workspace |
+| Client/HTTP session lost after spawn | Process keeps running. Reconnect and use the saved `process_id` |
 | `WORKSPACE_BUSY` | Wait for the owning task or cancel the process; avoid a tight retry loop |
 | `TIMEOUT` | Treat execution as interrupted; inspect partial effects |
 | Server/worker lost | Reconnect and inspect capabilities/files; old process handles are not recoverable |

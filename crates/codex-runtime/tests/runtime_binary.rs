@@ -3,10 +3,14 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
+use codespace_domain::{ProcessId, Profile, WorkspaceId};
+use codespace_policy::Workspace;
 use codespace_runner::{
-    read_frame, write_frame, RunnerOp, RunnerOpResult, WireEnvelope, WIRE_PROTOCOL,
+    read_frame, write_frame, Runner, RunnerExecRequest, RunnerOp, RunnerOpResult, UdsRunner,
+    WireEnvelope, WIRE_PROTOCOL,
 };
 use tokio::net::UnixStream;
 
@@ -134,8 +138,70 @@ async fn hello_on_live_socket() {
     match parsed.result {
         Some(RunnerOpResult::Hello { protocol }) => {
             assert_eq!(protocol, WIRE_PROTOCOL);
-            assert_eq!(protocol, 4);
+            assert_eq!(protocol, 5);
         }
         other => panic!("unexpected hello {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn worker_socket_drop_terminates_owned_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = runner_socket(dir.path());
+    let mut worker = spawn_worker(&socket).await;
+    let stream = wait_connect(&socket).await;
+    let runner = UdsRunner::from_stream(stream, Arc::new(|_| {}));
+    runner.handshake().await.expect("hello");
+
+    let ws_dir = tempfile::tempdir().unwrap();
+    let beat = ws_dir.path().join("heartbeat");
+    let ws = Workspace::new(
+        WorkspaceId("demo".into()),
+        ws_dir.path().to_path_buf(),
+        Profile::WorkspaceWrite,
+    );
+    let req = RunnerExecRequest::for_host(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!(
+                "while :; do date +%s > '{}'; sleep 0.1; done",
+                beat.display()
+            ),
+        ],
+        ProcessId("proc-uds-disconnect".into()),
+        Profile::WorkspaceWrite,
+    );
+    runner.exec(&ws, req).await.expect("exec heartbeat");
+
+    let mut last = String::new();
+    for _ in 0..50 {
+        if let Ok(raw) = std::fs::read_to_string(&beat) {
+            if !raw.trim().is_empty() {
+                last = raw;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        !last.is_empty(),
+        "child should write a heartbeat before disconnect"
+    );
+
+    runner.close().await;
+    drop(runner);
+    let _ = tokio::time::timeout(Duration::from_secs(5), worker.wait())
+        .await
+        .expect("worker should exit after socket close")
+        .expect("wait worker");
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let after = std::fs::read_to_string(&beat).unwrap_or_default();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let later = std::fs::read_to_string(&beat).unwrap_or_default();
+    assert_eq!(
+        after, later,
+        "owned child must stop updating heartbeat after worker disconnect (after={after:?} later={later:?})"
+    );
 }

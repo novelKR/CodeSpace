@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use crate::{
     runner_local_exec_env, RunnerCwd, RunnerExecRequest, RunnerExecResult, RunnerProcessStatus,
-    RunnerReadProcess, RunnerReadResult, RunnerWriteStdin,
+    RunnerReadProcess, RunnerReadResult, RunnerResizeResult, RunnerWriteStdin,
 };
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -592,6 +592,53 @@ impl InProcessRunner {
             output_retained_from: buf.dropped,
             eof: buf.eof,
         })
+    }
+
+    pub fn host_resize(
+        &self,
+        process_id: &ProcessId,
+        rows: u16,
+        cols: u16,
+    ) -> Result<RunnerResizeResult, ErrorBody> {
+        if rows == 0 || cols == 0 {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidCommand,
+                "rows and cols must be at least 1",
+            ));
+        }
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        let slot = map
+            .get(&process_id.0)
+            .ok_or_else(|| missing(&process_id.0))?;
+        let snap = slot.lifecycle.lock().expect("lifecycle").snapshot;
+        if snap.state != ProcessState::Running {
+            return Err(ErrorBody::new(
+                ErrorCode::ProcessNotRunning,
+                "process is not running",
+            ));
+        }
+        match &slot.io {
+            SessionIo::Pipe { .. } => Err(ErrorBody::new(
+                ErrorCode::ProcessNotTty,
+                "process is not attached to a PTY",
+            )),
+            SessionIo::Pty { session, .. } => {
+                if session.has_exited() {
+                    return Err(ErrorBody::new(
+                        ErrorCode::ProcessNotRunning,
+                        "process is not running",
+                    ));
+                }
+                session.resize(rows, cols).map_err(|err| {
+                    ErrorBody::new(
+                        ErrorCode::InvalidCommand,
+                        format!("PTY resize failed: {err}"),
+                    )
+                })?;
+                Ok(RunnerResizeResult { rows, cols })
+            }
+        }
     }
 
     pub fn kill_host(&self, process_id: &ProcessId) -> Result<(), ErrorBody> {
@@ -1280,6 +1327,122 @@ mod tests {
         assert!(
             chunk.contains("hello"),
             "PTY write_stdin/read_process roundtrip, got {chunk:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pty_resize_updates_stty_size() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-pty-resize".into());
+        let mut req = RunnerExecRequest::for_host(
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "stty -echo; printf 'start:%s\\n' \"$(stty size)\"; IFS= read _line; printf 'after:%s\\n' \"$(stty size)\"".into(),
+            ],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = true;
+        runner.exec(&ws, req).await.unwrap();
+        let mut chunk = String::new();
+        for _ in 0..50 {
+            let result = runner
+                .read_process(RunnerReadProcess {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                })
+                .await
+                .unwrap();
+            chunk = result.chunk.replace("\r\n", "\n");
+            if chunk.contains("start:24 80") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        assert!(
+            chunk.contains("start:24 80"),
+            "initial PTY size, got {chunk:?}"
+        );
+        let resized = runner.resize(&process_id, 40, 120).await.expect("resize");
+        assert_eq!(resized.rows, 40);
+        assert_eq!(resized.cols, 120);
+        runner
+            .write_stdin(RunnerWriteStdin {
+                process_id: process_id.clone(),
+                data: "go\n".into(),
+            })
+            .await
+            .unwrap();
+        chunk = wait_chunk(&runner, &process_id).await.replace("\r\n", "\n");
+        assert!(
+            chunk.contains("after:40 120"),
+            "resized PTY size, got {chunk:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pipe_resize_is_process_not_tty() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-pipe-resize".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/sleep".into(), "30".into()],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        let err = runner.resize(&process_id, 40, 120).await.unwrap_err();
+        assert_eq!(
+            err.as_execution().map(|body| body.code),
+            Some(ErrorCode::ProcessNotTty)
+        );
+        runner.kill_host(&process_id).unwrap();
+        let _ = wait_exited(&runner, &process_id).await;
+    }
+
+    #[tokio::test]
+    async fn resize_unknown_and_exited_handles() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let missing = runner
+            .resize(&ProcessId("proc-missing-resize".into()), 24, 80)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            missing.as_execution().map(|body| body.code),
+            Some(ErrorCode::ProcessNotFound)
+        );
+        let zero = runner
+            .resize(&ProcessId("proc-missing-resize".into()), 0, 80)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            zero.as_execution().map(|body| body.code),
+            Some(ErrorCode::InvalidCommand)
+        );
+        let process_id = ProcessId("proc-exited-resize".into());
+        let mut req = RunnerExecRequest::for_host(
+            vec!["/bin/echo".into(), "done".into()],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = true;
+        runner.exec(&ws, req).await.unwrap();
+        let _ = wait_exited(&runner, &process_id).await;
+        let err = runner.resize(&process_id, 40, 120).await.unwrap_err();
+        assert_eq!(
+            err.as_execution().map(|body| body.code),
+            Some(ErrorCode::ProcessNotRunning)
         );
     }
 

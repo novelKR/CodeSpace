@@ -112,7 +112,7 @@ async fn uds_runner_read_and_exec_over_length_prefix() {
 }
 
 #[tokio::test]
-async fn uds_process_status_echo_and_protocol_4_hello() {
+async fn uds_process_status_echo_and_protocol_5_hello() {
     let (client, server) = UnixStream::pair().expect("unix pair");
     let (worker, events) = host_worker();
     tokio::spawn(async move {
@@ -121,7 +121,7 @@ async fn uds_process_status_echo_and_protocol_4_hello() {
             .expect("serve runner");
     });
     let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
-    runner.handshake().await.expect("hello protocol 4");
+    runner.handshake().await.expect("hello protocol 5");
     let dir = tempdir().unwrap();
     let ws = workspace(dir.path());
     let process_id = ProcessId("proc-uds-status".into());
@@ -373,6 +373,79 @@ async fn uds_tty_exec_sees_a_tty() {
     assert!(
         chunk.contains("ISATTY"),
         "UDS worker should spawn a PTY when tty is true, got {chunk:?}"
+    );
+}
+
+#[tokio::test]
+async fn uds_pty_resize_updates_stty_size() {
+    let (client, server) = UnixStream::pair().expect("unix pair");
+    let (worker, events) = host_worker();
+    tokio::spawn(async move {
+        serve_runner_connection(server, worker, events)
+            .await
+            .expect("serve runner");
+    });
+    let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+    let dir = tempdir().unwrap();
+    let ws = workspace(dir.path());
+    let process_id = ProcessId("proc-uds-resize".into());
+    let mut req = RunnerExecRequest::for_host(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "stty -echo; printf 'start:%s\\n' \"$(stty size)\"; IFS= read _line; printf 'after:%s\\n' \"$(stty size)\"".into(),
+        ],
+        process_id.clone(),
+        Profile::WorkspaceWrite,
+    );
+    req.tty = true;
+    runner.exec(&ws, req).await.unwrap();
+    let mut chunk = String::new();
+    for _ in 0..50 {
+        let result = runner
+            .read_process(codespace_runner::RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        chunk = result.chunk.replace("\r\n", "\n");
+        if chunk.contains("start:24 80") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
+    assert!(
+        chunk.contains("start:24 80"),
+        "UDS initial PTY size, got {chunk:?}"
+    );
+    let resized = runner.resize(&process_id, 40, 120).await.unwrap();
+    assert_eq!(resized.rows, 40);
+    assert_eq!(resized.cols, 120);
+    runner
+        .write_stdin(codespace_runner::RunnerWriteStdin {
+            process_id: process_id.clone(),
+            data: "go\n".into(),
+        })
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        let result = runner
+            .read_process(codespace_runner::RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        chunk = result.chunk.replace("\r\n", "\n");
+        if chunk.contains("after:40 120") || result.eof {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
+    assert!(
+        chunk.contains("after:40 120"),
+        "UDS resized PTY size, got {chunk:?}"
     );
 }
 

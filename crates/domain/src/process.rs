@@ -116,6 +116,22 @@ pub struct TerminateProcessParams {
     pub process_id: ProcessId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessResizeParams {
+    pub process_id: ProcessId,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessResizeResult {
+    pub ok: bool,
+    pub rows: u16,
+    pub cols: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<CoordinationHint>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +317,25 @@ mod tests {
         assert!(dumped.contains("process_id"), "{dumped}");
         assert!(!dumped.contains("tty_size"), "{dumped}");
         assert!(!dumped.contains("signal"), "{dumped}");
+    }
+
+    #[test]
+    fn process_resize_params_require_rows_and_cols() {
+        let schema = serde_json::to_value(schemars::schema_for!(ProcessResizeParams)).unwrap();
+        let dumped = schema.to_string();
+        assert!(dumped.contains("process_id"), "{dumped}");
+        assert!(dumped.contains("rows"), "{dumped}");
+        assert!(dumped.contains("cols"), "{dumped}");
+        assert!(!dumped.contains("tty_size"), "{dumped}");
+        let json = serde_json::to_value(ProcessResizeResult {
+            ok: true,
+            rows: 40,
+            cols: 120,
+            coordination: None,
+        })
+        .unwrap();
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["rows"], 40);
+        assert_eq!(json["cols"], 120);
     }
 }

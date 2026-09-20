@@ -19,7 +19,7 @@ CodeSpace는 외부 코딩 에이전트가 작업 공간의 파일을 읽고 수
 | --- | --- |
 | 실행 환경과 파일 확인 | `workspace_info`, `find`, `read` |
 | 패치 적용과 기록된 상태 조회 | `apply_patch`, `operation_status` |
-| 프로세스 실행과 제어 | `exec_command`, `read_process`, `process_status`, `write_stdin`, `terminate_process` |
+| 프로세스 실행과 제어 | `exec_command`, `read_process`, `process_status`, `process_resize`, `write_stdin`, `terminate_process` |
 | 작업과 사용자 추가 지시 관리 | `work_open`, `steer_status`, `steer_claim_next`, `steer_complete`, `work_finish` |
 
 두 전송 방식에서 같은 도구를 사용할 수 있습니다. HTTP `/inbox` API는 사용자용 클라이언트가 지시 초안을 관리하는 JSON API입니다. 브라우저에서 사용하는 받은 편지함 화면은 제공하지 않습니다.
@@ -37,8 +37,9 @@ CodeSpace는 외부 코딩 에이전트가 작업 공간의 파일을 읽고 수
 
 - 프로세스 종료는 `process_status`로 판정하세요. `read_process`의 EOF는 성공이 아닙니다.
 - 프로세스 출력의 보관 크기가 제한되어 있습니다. `output_lost`가 참이면 보관 창이 전체 로그가 아닙니다.
+- 실행 중인 PTY 크기는 `process_resize`로 바꿉니다. spawn 크기는 24×80이며 `tty_size`는 `exec_command` 인자가 아닙니다.
 - 명령이 실행 중이면 같은 작업 공간에서 다른 명령이나 패치를 실행할 수 없습니다. 개발 서버를 켜 둔 채 같은 작업 공간을 수정하는 흐름에는 제약이 있습니다.
-- 서버를 재시작하면 프로세스 핸들이 사라집니다. 패치 작업 기록은 데이터베이스 경로를 설정한 경우에만 유지됩니다.
+- 서버를 재시작하면 프로세스 핸들이 사라집니다. HTTP/MCP 클라이언트 끊김은 프로세스를 죽이지 않습니다. UDS worker 손실과 게이트웨이 종료는 죽입니다. 패치 작업 기록은 데이터베이스 경로를 설정한 경우에만 유지됩니다.
 - 컨테이너 실행과 완전한 OAuth 서버는 구현되어 있지 않습니다. 실제 ChatGPT 계정 연결도 아직 검증되지 않았습니다.
 
 <a id="라이선스"></a>

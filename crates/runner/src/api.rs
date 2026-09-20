@@ -136,6 +136,12 @@ pub struct RunnerProcessStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunnerResizeResult {
+    pub rows: u16,
+    pub cols: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerApplyPatchRequest {
     pub patch: String,
     pub expected_versions: BTreeMap<String, String>,

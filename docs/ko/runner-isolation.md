@@ -13,7 +13,9 @@
 
 `in-process`는 `codespace-mcp` 안에서 프로세스를 관리합니다. `uds`(Unix domain socket, Unix 도메인 소켓)는 같은 호스트의 `codespace-codex-runtime` 안에서 같은 관리 코드를 실행합니다. worker는 시작 시 Codex의 프로세스 보호 설정을 적용하고 전용 Unix 소켓을 엽니다. worker 자체를 보호하는 것과 실행할 명령에 샌드박스를 적용하는 것은 별개입니다.
 
-게이트웨이는 임시 디렉터리 또는 `CODESPACE_RUNNER_DIR` 아래에 권한 0700의 고유 디렉터리를 만듭니다. 내부 통신은 u32 길이 접두부, 버전 4 핸드셰이크, 요청 ID, 프로세스 종료 이벤트를 사용하는 CodeSpace JSON입니다. Codex App Server RPC가 아닙니다. 같은 연결에서의 요청 재처리는 재접속 복구를 뜻하지 않습니다. 게이트웨이와 worker 연결이 끊기면 관리 중인 worker와 자식 프로세스가 종료되고 핸들이 사라집니다.
+게이트웨이는 임시 디렉터리 또는 `CODESPACE_RUNNER_DIR` 아래에 권한 0700의 고유 디렉터리를 만듭니다. 내부 통신은 u32 길이 접두부, 버전 5 핸드셰이크, 요청 ID, 프로세스 종료 이벤트를 사용하는 CodeSpace JSON입니다. Codex App Server RPC가 아닙니다. 같은 연결에서의 요청 재처리는 재접속 복구를 뜻하지 않습니다.
+
+관리 프로세스의 수명은 MCP 연결이 아니라 러너 인스턴스가 소유합니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지합니다. 게이트웨이와 worker의 UDS 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 관리 중인 worker와 자식 프로세스가 종료되고 핸들이 사라집니다. 재시작은 `process_id`를 복구하지 않습니다.
 
 <a id="macos-docker-없음"></a>
 <a id="macos-docker-없음"></a>

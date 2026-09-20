@@ -79,7 +79,11 @@ async fn info_read_patch_exec_flow() {
     assert_eq!(info_body["execution"]["files"]["patch"]["available"], true);
     assert_eq!(
         info_body["execution"]["process"]["capabilities"]["tty"]["resize_supported"],
-        false
+        true
+    );
+    assert_eq!(
+        info_body["execution"]["process"]["capabilities"]["lifetime"]["owner"],
+        "runner"
     );
     if codespace_runner::linux_sandbox_available() {
         assert_eq!(
