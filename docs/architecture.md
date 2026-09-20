@@ -58,7 +58,7 @@ MCP request completion does not end a managed process. Clients continue with its
 
 The core does not import Codex types directly. Adapters may depend on a broader Codex execution graph; this does not make the gateway a Codex agent. Operator configuration selects environments, while MCP clients select only registered workspaces. Container execution, remote runners, and a resource scheduler are not implemented.
 
-Confirmation-hold tools (`approval_create`, `approval_resolve`, `operation_resume`) are implemented. They pause a mutation the profile already allows until the host confirms it. They do not raise `read-only` to write/exec, honor `ClientClaims.approved`, or change the permission profile. Resume re-checks policy. v1 does not separate host and model callers: any client that can call `approval_resolve` can grant a hold.
+Confirmation-hold tools (`approval_create`, `approval_resolve`, `operation_resume`) are implemented. They pause a mutation the profile already allows until the hold is granted. This is not a security boundary: they do not raise `read-only` to write/exec, honor `ClientClaims.approved`, or change the permission profile. The same MCP caller can grant. Resume re-checks policy. v1 does not separate host and model callers.
 
 Keep a patch transaction as one Runner call when adding transports. Keep permission decisions in the gateway rather than importing Codex user/session permissions as authority. [Execution contracts](execution-substrate.md) describe current invariants; [Codex reuse](codex-reuse.md) lists connected adapters.
 

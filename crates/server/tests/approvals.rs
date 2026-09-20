@@ -1,6 +1,6 @@
 use codespace_domain::{
-    TOOL_APPLY_PATCH, TOOL_APPROVAL_CREATE, TOOL_APPROVAL_RESOLVE, TOOL_EXEC_COMMAND,
-    TOOL_OPERATION_RESUME, TOOL_OPERATION_STATUS, TOOL_WORKSPACE_INFO,
+    ApprovalId, ApprovalState, TOOL_APPLY_PATCH, TOOL_APPROVAL_CREATE, TOOL_APPROVAL_RESOLVE,
+    TOOL_EXEC_COMMAND, TOOL_OPERATION_RESUME, TOOL_OPERATION_STATUS, TOOL_WORKSPACE_INFO,
 };
 use rmcp::{
     model::CallToolRequestParams,
@@ -421,5 +421,513 @@ async fn explicit_create_works_when_approvals_are_off() {
         "hello\n"
     );
 
+    client.cancel().await.expect("cancel");
+}
+
+fn open_store(db: &std::path::Path) -> codespace_store::Store {
+    codespace_store::Store::open(db).expect("open store")
+}
+
+fn inspect_approval(db: &std::path::Path, id: &str) -> (ApprovalState, String, Option<String>) {
+    open_store(db)
+        .inspect_approval(&ApprovalId(id.to_string()))
+        .expect("inspect")
+}
+
+fn force_approval_state(db: &std::path::Path, id: &str, state: ApprovalState, clear_result: bool) {
+    open_store(db)
+        .force_approval_state(&ApprovalId(id.to_string()), state, clear_result)
+        .expect("force state")
+}
+
+async fn grant(client: &rmcp::service::RunningService<rmcp::RoleClient, ()>, approval_id: &str) {
+    client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPROVAL_RESOLVE).with_arguments(object!({
+                "approval_id": approval_id,
+                "decision": "grant"
+            })),
+        )
+        .await
+        .expect("grant");
+}
+
+#[tokio::test]
+async fn same_apply_retry_reuses_active_hold() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+
+    let first = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH,
+                "operation_key": "retry-hold"
+            })),
+        )
+        .await;
+    let approval_id = error_body(&first)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let retry = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH,
+                "operation_key": "retry-hold"
+            })),
+        )
+        .await;
+    let retry_body = error_body(&retry);
+    assert_eq!(retry_body["code"], "APPROVAL_REQUIRED");
+    assert_eq!(retry_body["approval_id"], approval_id);
+    assert!(!ws.join("created.txt").exists());
+
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn same_exec_retry_does_not_double_spawn() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+
+    let held = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sh", "-c", "printf x >> held.txt"]
+            })),
+        )
+        .await;
+    let approval_id = error_body(&held)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let retry = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sh", "-c", "printf x >> held.txt"]
+            })),
+        )
+        .await;
+    assert_eq!(error_body(&retry)["approval_id"], approval_id);
+
+    grant(&client, &approval_id).await;
+    client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        )
+        .await
+        .expect("resume");
+    for _ in 0..50 {
+        if ws.join("held.txt").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(std::fs::read_to_string(ws.join("held.txt")).unwrap(), "x");
+
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn concurrent_resume_runs_the_patch_once() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+
+    let held = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH,
+                "operation_key": "concurrent"
+            })),
+        )
+        .await;
+    let approval_id = error_body(&held)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &approval_id).await;
+
+    let (first, second) = tokio::join!(
+        client.call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id.clone() })),
+        ),
+        client.call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        ),
+    );
+    let mut operation_ids = Vec::new();
+    for result in [&first, &second] {
+        let applied = result.as_ref().ok().and_then(|ok| {
+            payload(ok)
+                .get("apply_patch")
+                .and_then(|patch| patch.get("operation_id"))
+                .and_then(|id| id.as_str())
+                .map(str::to_string)
+        });
+        if let Some(operation_id) = applied {
+            operation_ids.push(operation_id);
+            continue;
+        }
+        let body = error_body(result);
+        assert!(
+            matches!(
+                body["code"].as_str(),
+                Some("APPROVAL_CONFLICT" | "APPROVAL_AMBIGUOUS" | "WORKSPACE_BUSY")
+            ),
+            "{body}"
+        );
+    }
+    operation_ids.sort();
+    operation_ids.dedup();
+    assert_eq!(operation_ids.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("created.txt")).unwrap(),
+        "hello\n"
+    );
+
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn restart_resuming_patch_without_ledger_runs_once() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+    let held = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH,
+                "operation_key": "crash-before-begin"
+            })),
+        )
+        .await;
+    let approval_id = error_body(&held)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &approval_id).await;
+    client.cancel().await.expect("cancel");
+    force_approval_state(&db, &approval_id, ApprovalState::Resuming, true);
+    assert!(!ws.join("created.txt").exists());
+
+    let client = spawn_client(&cfg, &db).await;
+    let resumed = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        )
+        .await
+        .expect("resume after restart");
+    assert_eq!(payload(&resumed)["apply_patch"]["status"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("created.txt")).unwrap(),
+        "hello\n"
+    );
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn restart_resuming_patch_recovers_from_ledger() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+    let held = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH,
+                "operation_key": "recover-ledger"
+            })),
+        )
+        .await;
+    let approval_id = error_body(&held)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &approval_id).await;
+    let resumed = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        )
+        .await
+        .expect("first resume");
+    let operation_id = payload(&resumed)["apply_patch"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client.cancel().await.expect("cancel");
+    force_approval_state(&db, &approval_id, ApprovalState::Resuming, true);
+
+    let client = spawn_client(&cfg, &db).await;
+    let recovered = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        )
+        .await
+        .expect("recover");
+    assert_eq!(
+        payload(&recovered)["apply_patch"]["operation_id"],
+        operation_id
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("created.txt")).unwrap(),
+        "hello\n"
+    );
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn restart_resuming_exec_is_ambiguous_without_spawn() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+    let held = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sh", "-c", "printf x > held.txt"]
+            })),
+        )
+        .await;
+    let approval_id = error_body(&held)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &approval_id).await;
+    client.cancel().await.expect("cancel");
+    force_approval_state(&db, &approval_id, ApprovalState::Resuming, true);
+
+    let client = spawn_client(&cfg, &db).await;
+    let resumed = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        )
+        .await;
+    assert_eq!(error_body(&resumed)["code"], "APPROVAL_AMBIGUOUS");
+    assert!(!ws.join("held.txt").exists());
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn restart_preserves_pending_granted_and_consumed() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+
+    let pending = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH,
+                "operation_key": "pending-row"
+            })),
+        )
+        .await;
+    let pending_id = error_body(&pending)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let granted = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": "*** Begin Patch\n*** Add File: granted.txt\n+g\n*** End Patch\n",
+                "operation_key": "granted-row"
+            })),
+        )
+        .await;
+    let granted_id = error_body(&granted)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &granted_id).await;
+
+    let consumed = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": "*** Begin Patch\n*** Add File: consumed.txt\n+c\n*** End Patch\n",
+                "operation_key": "consumed-row"
+            })),
+        )
+        .await;
+    let consumed_id = error_body(&consumed)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &consumed_id).await;
+    client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": consumed_id })),
+        )
+        .await
+        .expect("consume");
+    client.cancel().await.expect("cancel");
+
+    let (pending_state, _, _) = inspect_approval(&db, &pending_id);
+    let (granted_state, _, _) = inspect_approval(&db, &granted_id);
+    let (consumed_state, consumed_params, consumed_result) = inspect_approval(&db, &consumed_id);
+    assert_eq!(pending_state, ApprovalState::Pending);
+    assert_eq!(granted_state, ApprovalState::Granted);
+    assert_eq!(consumed_state, ApprovalState::Consumed);
+    assert!(consumed_params.contains("\"scrubbed\":true"));
+    assert!(consumed_result.is_some());
+
+    let client = spawn_client(&cfg, &db).await;
+    let pending_retry = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH,
+                "operation_key": "pending-row"
+            })),
+        )
+        .await;
+    assert_eq!(error_body(&pending_retry)["approval_id"], pending_id);
+
+    let resumed_granted = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": granted_id })),
+        )
+        .await
+        .expect("resume granted");
+    assert_eq!(
+        payload(&resumed_granted)["apply_patch"]["status"],
+        "applied"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("granted.txt")).unwrap(),
+        "g\n"
+    );
+
+    let replayed = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": consumed_id })),
+        )
+        .await
+        .expect("replay consumed");
+    assert_eq!(payload(&replayed)["apply_patch"]["status"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("consumed.txt")).unwrap(),
+        "c\n"
+    );
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn terminal_rows_scrub_params_json() {
+    let (root, cfg, _ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+
+    let denied = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH
+            })),
+        )
+        .await;
+    let denied_id = error_body(&denied)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPROVAL_RESOLVE).with_arguments(object!({
+                "approval_id": denied_id,
+                "decision": "deny"
+            })),
+        )
+        .await
+        .expect("deny");
+
+    let consumed = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": "*** Begin Patch\n*** Add File: other.txt\n+x\n*** End Patch\n"
+            })),
+        )
+        .await;
+    let consumed_id = error_body(&consumed)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &consumed_id).await;
+    client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": consumed_id })),
+        )
+        .await
+        .expect("resume");
+    client.cancel().await.expect("cancel");
+
+    let (_, denied_params, _) = inspect_approval(&db, &denied_id);
+    let (_, consumed_params, _) = inspect_approval(&db, &consumed_id);
+    assert!(
+        denied_params.contains("\"scrubbed\":true"),
+        "{denied_params}"
+    );
+    assert!(!denied_params.contains("Begin Patch"), "{denied_params}");
+    assert!(
+        consumed_params.contains("\"scrubbed\":true"),
+        "{consumed_params}"
+    );
+    assert!(
+        !consumed_params.contains("Begin Patch"),
+        "{consumed_params}"
+    );
+}
+
+#[tokio::test]
+async fn same_mcp_client_can_grant_without_host_isolation() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+    let held = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(object!({
+                "workspace_id": "demo",
+                "patch": ADD_PATCH
+            })),
+        )
+        .await;
+    let approval_id = error_body(&held)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &approval_id).await;
+    client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        )
+        .await
+        .expect("resume");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("created.txt")).unwrap(),
+        "hello\n"
+    );
     client.cancel().await.expect("cancel");
 }

@@ -50,9 +50,10 @@
 | `INTENT_NOT_EDITABLE` | 지시 상태가 편집을 허용하지 않음 |
 | `INTENT_REVISION_CONFLICT` | 지시 수정 버전이 달라짐 |
 | `QUEUE_NOT_EMPTY` | 예약된 코드. 현재 work_finish는 closed:false를 반환함 |
-| `APPROVAL_REQUIRED` | 정책은 허용했으나 실행 전 호스트 확인이 필요함. `approval_id` 포함 |
+| `APPROVAL_REQUIRED` | 정책은 허용했으나 실행 전 확인이 필요함. `approval_id` 포함. 권한 부여가 아님 |
 | `APPROVAL_NOT_FOUND` | 알 수 없는 확인 홀드 ID |
-| `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 이미 결정·소비됨 |
+| `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 이미 결정되었거나, 재개가 이미 진행 중임 |
+| `APPROVAL_AMBIGUOUS` | 재개가 중단되어 단말 결과가 디스크에 없음. `approval_id` 포함. 패치는 `operation_id`도 있을 수 있음 |
 
 ## 실행 요청과 완료의 구분
 

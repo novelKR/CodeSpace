@@ -14,7 +14,7 @@ pub enum ApprovalsMode {
     /// Mutations run immediately after policy allows them.
     #[default]
     Off,
-    /// Policy-allowed `apply_patch` / `exec_command` wait for host confirmation.
+    /// Policy-allowed `apply_patch` / `exec_command` wait on a confirmation hold.
     Confirm,
 }
 
@@ -54,6 +54,8 @@ impl ApprovalTargetTool {
 pub enum ApprovalState {
     Pending,
     Granted,
+    /// Resume has been claimed. Execution may be in flight or interrupted.
+    Resuming,
     Denied,
     Consumed,
 }
@@ -63,6 +65,7 @@ impl ApprovalState {
         match self {
             Self::Pending => "pending",
             Self::Granted => "granted",
+            Self::Resuming => "resuming",
             Self::Denied => "denied",
             Self::Consumed => "consumed",
         }
@@ -72,6 +75,7 @@ impl ApprovalState {
         match value {
             "pending" => Ok(Self::Pending),
             "granted" => Ok(Self::Granted),
+            "resuming" => Ok(Self::Resuming),
             "denied" => Ok(Self::Denied),
             "consumed" => Ok(Self::Consumed),
             other => Err(format!("unknown approval state `{other}`")),
@@ -138,6 +142,11 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ApprovalsMode::Confirm).unwrap(),
             "confirm"
+        );
+        assert_eq!(ApprovalState::Resuming.as_str(), "resuming");
+        assert_eq!(
+            ApprovalState::parse("resuming").unwrap(),
+            ApprovalState::Resuming
         );
     }
 }

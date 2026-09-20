@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use codespace_domain::{
     workspace_info, ApplyPatchParams, ApplyPatchResult, ApprovalCreateParams, ApprovalCreateResult,
-    ApprovalResolveParams, ApprovalResolveResult, ApprovalState, ApprovalTargetTool,
+    ApprovalId, ApprovalResolveParams, ApprovalResolveResult, ApprovalState, ApprovalTargetTool,
     ClientEnvironmentKind, CoordinationHint, EffectivePermissionInfo, EnvironmentExecutionInfo,
     ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ExecDispatchStatus, FindParams,
     FindResult, NetworkPolicyState, OperationResumeParams, OperationResumeResult,
@@ -21,7 +21,7 @@ use codespace_runner::{
     linux_sandbox_available, Runner, RunnerApplyPatchRequest, RunnerError, RunnerExecRequest,
     RunnerReadProcess, RunnerWriteStdin, RuntimeBackend,
 };
-use codespace_store::{Begin, ResumeClaim, Store};
+use codespace_store::{Begin, ResumeClaim, Store, StoredOperation};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -82,7 +82,8 @@ the mutation with a new operation_key.
 
 When a workspace is configured with approvals=confirm, allowed apply_patch \
 and exec_command calls return APPROVAL_REQUIRED instead of executing. That \
-hold is not a privilege grant. Resolve it with approval_resolve, then \
+hold is a workflow pause, not a privilege grant or isolation boundary. The \
+same MCP caller can grant it with approval_resolve. Then call \
 operation_resume; resume re-checks policy.
 
 If exec_command reports dispatch_status=unknown, the spawn may have occurred. \
@@ -200,7 +201,7 @@ impl CodeSpace {
             .map_err(err_json)?;
         allow(ws, Action::Write, &ClientClaims::default()).map_err(err_json)?;
         ws.require_file_write().map_err(err_json)?;
-        if let Err(err) = self.maybe_hold(ws, ApprovalTargetTool::ApplyPatch, &params) {
+        if let Err(err) = self.maybe_hold_patch(ws, &params) {
             return Err(err_json(err));
         }
         self.apply_patch_inner(params)
@@ -240,7 +241,7 @@ impl CodeSpace {
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(invalid_argv()));
         }
-        if let Err(err) = self.maybe_hold(ws, ApprovalTargetTool::ExecCommand, &params) {
+        if let Err(err) = self.maybe_hold_exec(ws, &params) {
             return Err(err_json(err));
         }
         self.exec_command_inner(params)
@@ -388,7 +389,7 @@ impl CodeSpace {
 
     #[tool(
         name = "approval_create",
-        description = "Create a pending confirmation hold for an already-allowed apply_patch or exec_command. Policy denial returns UNAUTHORIZED and creates no row. This does not grant write/exec rights and does not change the profile."
+        description = "Create a pending confirmation hold for an already-allowed apply_patch or exec_command. Policy denial returns UNAUTHORIZED and creates no row. This does not grant write/exec rights and does not change the profile. The same MCP caller can later grant the hold."
     )]
     async fn approval_create(
         &self,
@@ -401,7 +402,7 @@ impl CodeSpace {
 
     #[tool(
         name = "approval_resolve",
-        description = "Grant or deny a pending confirmation hold. grant does not change the permission profile. deny is terminal. Resume a granted hold with operation_resume."
+        description = "Grant or deny a pending confirmation hold. grant does not change the permission profile and is not an isolation boundary; the same MCP caller can grant. deny is terminal. Resume a granted hold with operation_resume."
     )]
     async fn approval_resolve(
         &self,
@@ -415,7 +416,7 @@ impl CodeSpace {
 
     #[tool(
         name = "operation_resume",
-        description = "Consume a granted confirmation hold once. Re-checks allow() then runs the stored apply_patch or exec_command. Repeating the same approval_id returns the stored result or APPROVAL_CONFLICT. This is not a privilege escalation."
+        description = "Run a granted confirmation hold once after re-checking allow(). Repeating the same approval_id returns the stored terminal result, recovers a recorded patch from the operations ledger, or returns APPROVAL_AMBIGUOUS. This is not a privilege escalation."
     )]
     async fn operation_resume(
         &self,
@@ -517,23 +518,34 @@ impl CodeSpace {
         result
     }
 
-    fn maybe_hold(
-        &self,
-        ws: &Workspace,
-        tool: ApprovalTargetTool,
-        snapshot: &impl Serialize,
-    ) -> Result<(), ErrorBody> {
+    fn maybe_hold_patch(&self, ws: &Workspace, params: &ApplyPatchParams) -> Result<(), ErrorBody> {
         if !ws.approvals.holds_mutations() {
             return Ok(());
         }
-        let json = serde_json::to_value(snapshot)
+        let snapshot = serde_json::to_value(params)
             .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
-        let created = self.store.create_approval(&ws.id.0, tool, json)?;
-        Err(ErrorBody::new(
-            ErrorCode::ApprovalRequired,
-            "host confirmation is required before this allowed mutation can run",
-        )
-        .with_approval_id(created.approval_id.0))
+        let created = self.store.create_approval(
+            &ws.id.0,
+            ApprovalTargetTool::ApplyPatch,
+            &Store::fingerprint(params),
+            snapshot,
+        )?;
+        Err(approval_required(&created.approval_id))
+    }
+
+    fn maybe_hold_exec(&self, ws: &Workspace, params: &ExecCommandParams) -> Result<(), ErrorBody> {
+        if !ws.approvals.holds_mutations() {
+            return Ok(());
+        }
+        let snapshot = serde_json::to_value(params)
+            .map_err(|err| ErrorBody::new(ErrorCode::InvalidCommand, err.to_string()))?;
+        let created = self.store.create_approval(
+            &ws.id.0,
+            ApprovalTargetTool::ExecCommand,
+            &Store::exec_fingerprint(params),
+            snapshot,
+        )?;
+        Err(approval_required(&created.approval_id))
     }
 
     fn approval_create_inner(
@@ -552,6 +564,7 @@ impl CodeSpace {
                 let created = self.store.create_approval(
                     &ws.id.0,
                     ApprovalTargetTool::ApplyPatch,
+                    &Store::fingerprint(&args),
                     snapshot,
                 )?;
                 Ok(ApprovalCreateResult {
@@ -573,6 +586,7 @@ impl CodeSpace {
                 let created = self.store.create_approval(
                     &ws.id.0,
                     ApprovalTargetTool::ExecCommand,
+                    &Store::exec_fingerprint(&args),
                     snapshot,
                 )?;
                 Ok(ApprovalCreateResult {
@@ -590,16 +604,110 @@ impl CodeSpace {
         match self.store.claim_resume(&params.approval_id)? {
             ResumeClaim::ReplaySuccess(result) => Ok(result),
             ResumeClaim::ReplayError(err) => Err(err),
-            ResumeClaim::Execute(record) => {
-                let outcome = self.execute_approved(record).await;
-                let persist = match &outcome {
-                    Ok(success) => Ok(success),
-                    Err(err) => Err(err),
-                };
-                let _ = self.store.finish_resume(&params.approval_id, persist);
-                outcome
+            ResumeClaim::Execute(record, _guard) => {
+                let outcome = self.execute_approved(record.clone()).await;
+                self.commit_resume(&record.approval_id, outcome)
+            }
+            ResumeClaim::Reconcile(record, _guard) => self.reconcile_resume(record).await,
+        }
+    }
+
+    fn commit_resume(
+        &self,
+        approval_id: &ApprovalId,
+        outcome: Result<OperationResumeResult, ErrorBody>,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        match &outcome {
+            Ok(success) => match self.store.finish_resume(approval_id, Ok(success)) {
+                Ok(()) => Ok(success.clone()),
+                Err(mut err) => {
+                    if err.approval_id.is_none() {
+                        err = err.with_approval_id(approval_id.0.as_str());
+                    }
+                    if err.operation_id.is_none() {
+                        if let Some(op) = success.apply_patch.as_ref() {
+                            err = err.with_operation_id(op.operation_id.0.clone());
+                        }
+                    }
+                    if err.code != ErrorCode::ApprovalAmbiguous {
+                        err.code = ErrorCode::ApprovalAmbiguous;
+                        err.message =
+                            "mutation may have completed; resume result was not persisted".into();
+                    }
+                    Err(err)
+                }
+            },
+            Err(err) => match self.store.finish_resume(approval_id, Err(err)) {
+                Ok(()) => outcome,
+                Err(_) => outcome,
+            },
+        }
+    }
+
+    async fn reconcile_resume(
+        &self,
+        record: codespace_store::ApprovalRecord,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        match record.tool {
+            ApprovalTargetTool::ApplyPatch => {
+                if let Some(stored) = self.lookup_patch_ledger(&record)? {
+                    let result = OperationResumeResult {
+                        approval_id: record.approval_id.clone(),
+                        state: ApprovalState::Consumed,
+                        apply_patch: Some(self.with_hint(
+                            stored.result,
+                            &record.workspace_id,
+                            None,
+                        )),
+                        exec_command: None,
+                    };
+                    return self.commit_resume(&record.approval_id, Ok(result));
+                }
+                if params_scrubbed(&record.params_json) {
+                    let err = ErrorBody::new(
+                        ErrorCode::ApprovalAmbiguous,
+                        "resume was interrupted and the snapshot is no longer available",
+                    )
+                    .with_approval_id(record.approval_id.0.as_str());
+                    return self.commit_resume(&record.approval_id, Err(err));
+                }
+                let outcome = self.execute_approved(record.clone()).await;
+                self.commit_resume(&record.approval_id, outcome)
+            }
+            ApprovalTargetTool::ExecCommand => {
+                let err = ErrorBody::new(
+                    ErrorCode::ApprovalAmbiguous,
+                    "exec resume is ambiguous after interruption; the process was not restarted",
+                )
+                .with_approval_id(record.approval_id.0.as_str());
+                self.commit_resume(&record.approval_id, Err(err))
             }
         }
+    }
+
+    fn lookup_patch_ledger(
+        &self,
+        record: &codespace_store::ApprovalRecord,
+    ) -> Result<Option<StoredOperation>, ErrorBody> {
+        if let Ok(params) = serde_json::from_str::<ApplyPatchParams>(&record.params_json) {
+            if let Some(key) = params.operation_key.as_ref() {
+                match self.store.status_lookup(None, Some(key)) {
+                    Ok(status) => return Ok(Some(self.store.get(&status.operation_id)?)),
+                    Err(err) if err.code == ErrorCode::OperationNotFound => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            return self.store.find_operation_by_fingerprint(
+                &record.workspace_id,
+                &Store::fingerprint(&params),
+                record.resolved_at,
+            );
+        }
+        self.store.find_operation_by_fingerprint(
+            &record.workspace_id,
+            &record.fingerprint,
+            record.resolved_at,
+        )
     }
 
     async fn execute_approved(
@@ -672,6 +780,21 @@ fn invalid_argv() -> ErrorBody {
         ErrorCode::InvalidCommand,
         "command must be a non-empty argv (no shell)",
     )
+}
+
+fn approval_required(id: &ApprovalId) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::ApprovalRequired,
+        "confirmation is required before this allowed mutation can run",
+    )
+    .with_approval_id(id.0.as_str())
+}
+
+fn params_scrubbed(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("scrubbed").and_then(|flag| flag.as_bool()))
+        .unwrap_or(false)
 }
 
 fn runner_err_json(err: RunnerError) -> String {
@@ -907,6 +1030,8 @@ mod tests {
         assert!(text.contains("approvals=confirm"), "{text}");
         assert!(text.contains("APPROVAL_REQUIRED"), "{text}");
         assert!(text.contains("not a privilege grant"), "{text}");
+        assert!(text.contains("same MCP caller can grant"), "{text}");
+        assert!(text.contains("isolation boundary"), "{text}");
     }
 
     #[test]

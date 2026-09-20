@@ -36,6 +36,7 @@ pub enum ErrorCode {
     ApprovalRequired,
     ApprovalNotFound,
     ApprovalConflict,
+    ApprovalAmbiguous,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -125,6 +126,8 @@ mod tests {
         assert_eq!(json, "\"APPROVAL_NOT_FOUND\"");
         let json = serde_json::to_string(&ErrorCode::ApprovalConflict).unwrap();
         assert_eq!(json, "\"APPROVAL_CONFLICT\"");
+        let json = serde_json::to_string(&ErrorCode::ApprovalAmbiguous).unwrap();
+        assert_eq!(json, "\"APPROVAL_AMBIGUOUS\"");
     }
 
     #[test]

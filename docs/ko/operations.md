@@ -60,7 +60,7 @@ CodeSpace 저장소의 `workspaces.json`으로 저장합니다. `read-only`는 �
 
 `network` 기본값은 `restricted`입니다. `enabled`를 사용하려면 Linux 도우미가 필요하며, 지원되는 HTTP 통신은 관리 프록시를 거칩니다. 호스트 네트워크에 무제한 접근하는 설정이 아닙니다. 도우미를 사용할 수 없으면 `enabled` 실행은 실패합니다. `restricted`이고 도우미가 없으면 호스트 실행은 가능하지만 네트워크 제한은 OS 수준에서 강제되지 않습니다. 실제 환경의 적합성은 응답의 정책 집행 상태를 확인해 판단하세요.
 
-`approvals` 기본값은 `off`이며, 정책이 허용한 패치와 명령을 바로 실행합니다. `confirm`이면 `begin()`이나 프로세스 시작 전에 해당 도구를 홀드하고 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. `network`와 같은 운영자 JSON이며 MCP 도구 인자가 아니고 프로필을 올리지 않습니다. 확인 행은 패치 원장과 다른 `approvals` 테이블에 저장되며 `CODESPACE_OPERATIONS_DB`를 같이 씁니다. 확인과 재개는 [Agent Loop 연동](agent-integration.md)을 참고하세요.
+`approvals` 기본값은 `off`이며, 정책이 허용한 패치와 명령을 바로 실행합니다. `confirm`이면 `begin()`이나 프로세스 시작 전에 해당 도구를 홀드하고 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 같은 패치나 exec를 다시 보내면 활성 홀드를 재사용합니다. `network`와 같은 운영자 JSON이며 MCP 도구 인자가 아니고 프로필을 올리지 않습니다. 확인 행은 패치 원장과 다른 `approvals` 테이블에 저장되며 `CODESPACE_OPERATIONS_DB`를 같이 씁니다. 홀드가 `pending`·`granted`·`resuming`인 동안 이 테이블은 V4A 패치나 exec argv를 보관합니다. `denied` 또는 `consumed` 뒤에는 본문을 digest 메타(도구, 작업 공간, fingerprint)로 바꿉니다. 패치 원장은 패치 본문이 아니라 해시를 보관합니다. 확인과 재개는 [Agent Loop 연동](agent-integration.md)을 참고하세요.
 
 <a id="게이트웨이-실행"></a>
 <a id="게이트웨이-실행"></a>
@@ -131,9 +131,9 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 | 프로세스 출력 | 마지막 256 KiB 보관. stdout/stderr를 합치며 MCP 결과에 유실 표시와 종료 코드가 없음 |
 | 종료된 핸들 | 기본 최대 15분, 최대 64개 보관. 영구 저장하지 않음 |
 
-로그와 데이터베이스는 관리 대상 작업 공간 밖에 두세요. stderr 로그의 보관·순환은 운영자가 관리합니다. Bearer 토큰을 로그나 커밋에 넣지 마세요. 데이터베이스를 삭제하면 패치 중복 실행 방지 기록도 사라집니다.
+로그와 데이터베이스는 토큰·게이트웨이 설정과 같이 관리 대상 작업 공간 밖에 두세요. stderr 로그의 보관·순환은 운영자가 관리합니다. Bearer 토큰을 로그나 커밋에 넣지 마세요. 데이터베이스를 삭제하면 패치 중복 실행 방지 기록과 확인 홀드 행도 사라집니다.
 
-패치 응답을 받지 못했다면 `operation_id` 또는 `operation_key` 중 하나만 지정해 `operation_status`를 조회합니다. 재시작 후 미완료 기록은 `unknown`이 되므로 파일을 확인한 뒤 다음 행동을 결정하세요. 프로세스는 `process_id`로 관리하며 `operation_status`로 복구할 수 없습니다. [재시도와 복구 규칙](agent-integration.md)을 참고하세요.
+패치 응답을 받지 못했다면 `operation_id` 또는 `operation_key` 중 하나만 지정해 `operation_status`를 조회합니다. 재시작 후 미완료 기록은 `unknown`이 되므로 파일을 확인한 뒤 다음 행동을 결정하세요. 프로세스는 `process_id`로 관리하며 `operation_status`로 복구할 수 없습니다. 프로세스가 죽을 때 `resuming`이던 확인 홀드는 패치 원장에서 복구하거나, 저장된 단말 결과를 재현하거나, `APPROVAL_AMBIGUOUS`를 반환할 수 있습니다. exec는 다시 spawn하지 않습니다. [재시도와 복구 규칙](agent-integration.md)을 참고하세요.
 
 <a id="linux-격리-픽스처"></a>
 <a id="linux-격리-픽스처"></a>

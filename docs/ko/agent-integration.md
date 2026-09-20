@@ -132,7 +132,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 
 ## 보류된 변경 확인
 
-기본 작업 공간에서는 허용된 패치와 명령이 바로 실행됩니다. 운영자가 `approvals`를 `confirm`으로 두면 해당 도구는 디스크에 쓰거나 프로세스를 만들지 않고 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 호스트 확인 홀드이며 `read-only`를 쓰기·실행으로 올리는 방법이 아닙니다. `approved: true`나 `network: true` 같은 추가 인자도 권한을 주지 않습니다.
+기본 작업 공간에서는 허용된 패치와 명령이 바로 실행됩니다. 운영자가 `approvals`를 `confirm`으로 두면 해당 도구는 디스크에 쓰거나 프로세스를 만들지 않고 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 워크플로 일시정지이며 권한 부여나 격리 경계가 아니고, `read-only`를 쓰기·실행으로 올리는 방법도 아닙니다. `approved: true`나 `network: true` 같은 추가 인자도 권한을 주지 않습니다. 같은 MCP 호출자가 홀드를 grant할 수 있습니다.
 
 ```json
 {
@@ -153,14 +153,15 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-`approval_resolve`는 권한 프로필을 바꾸지 않습니다. `operation_resume`은 정책을 다시 검사한 뒤 원래 패치·실행 경로를 한 번 돌립니다. 성공한 패치 재개는 `operation_status`로 조회할 수 있습니다. 거절은 단말입니다. 같은 홀드를 다시 재개하면 저장한 결과 또는 `APPROVAL_CONFLICT`가 반환됩니다. `approvals`가 `off`여도 세 도구는 목록에 있으며, 그때는 명시적 `approval_create`만 홀드를 만듭니다. v1은 호스트와 모델을 구분하지 않으므로 `approval_resolve`를 호출할 수 있는 클라이언트는 홀드를 승인할 수 있습니다.
+`approval_resolve`는 권한 프로필을 바꾸지 않습니다. `operation_resume`은 정책을 다시 검사한 뒤 원래 패치·실행 경로를 한 번 돌립니다. `consumed`는 단말 결과가 저장된 뒤에만 기록됩니다. 같은 홀드를 다시 재개하면 저장한 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`가 반환됩니다. 중단된 exec 재개는 다시 spawn하지 않습니다. 거절은 단말입니다. `approvals`가 `off`여도 세 도구는 목록에 있으며, 그때는 명시적 `approval_create`만 홀드를 만듭니다. v1은 호스트와 모델을 구분하지 않으므로 같은 MCP 호출자가 grant할 수 있습니다.
 
 ## 재시도와 복구
 
 | 상황 | 에이전트가 해야 할 일 |
 | --- | --- |
 | `APPROVAL_REQUIRED` | 정책은 허용했으나 실행 전 확인이 필요함. `approval_resolve` 후 `operation_resume`. 추가 권한 부여로 보지 않기 |
-| `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 거절되었거나 이미 소비됨 |
+| `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 거절되었거나, 재개가 이미 진행 중임 |
+| `APPROVAL_AMBIGUOUS` | 재개가 중단되어 단말 결과를 모름. exec는 다시 spawn하지 않기. 패치는 `operation_status`로 복구될 수 있음 |
 | 패치 응답을 받지 못함 | 원래 키 또는 알고 있는 작업 ID로 `operation_status` 조회 |
 | `VERSION_CONFLICT` | 현재 파일을 읽고 새 패치 작성. 이전 패치를 강제로 적용하지 않기 |
 | `OPERATION_KEY_CONFLICT` | 다른 인자에 사용된 키이므로 이전 요청 확인 |

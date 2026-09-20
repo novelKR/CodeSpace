@@ -132,7 +132,7 @@ A live command occupies the workspace. Wait for it to end or terminate it before
 
 ## Confirm a held mutation
 
-Default workspaces run allowed patches and commands immediately. If the operator set `approvals` to `confirm`, those tools return `APPROVAL_REQUIRED` and an `approval_id` instead of writing or spawning. This is a host confirmation hold, not a way to raise `read-only` to write or exec. Extra arguments such as `approved: true` or `network: true` do not grant rights.
+Default workspaces run allowed patches and commands immediately. If the operator set `approvals` to `confirm`, those tools return `APPROVAL_REQUIRED` and an `approval_id` instead of writing or spawning. This is a workflow pause, not a privilege grant, isolation boundary, or a way to raise `read-only` to write or exec. Extra arguments such as `approved: true` or `network: true` do not grant rights. The same MCP caller can grant the hold.
 
 ```json
 {
@@ -153,14 +153,15 @@ Default workspaces run allowed patches and commands immediately. If the operator
 }
 ```
 
-`approval_resolve` does not change the permission profile. `operation_resume` re-checks policy, then runs the original apply or exec path once. A successful patch resume can be looked up with `operation_status`. Deny is terminal. Repeating resume returns the stored result or `APPROVAL_CONFLICT`. The same three tools exist when approvals are `off`; only an explicit `approval_create` opens a hold in that mode. v1 does not distinguish host from model: a client that can call `approval_resolve` can grant the hold.
+`approval_resolve` does not change the permission profile. `operation_resume` re-checks policy, then runs the original apply or exec path once. `consumed` is stored only with a terminal result. Repeating resume returns that stored result, recovers a recorded patch from the operations ledger, or returns `APPROVAL_AMBIGUOUS`. An interrupted exec resume is not respawned. Deny is terminal. The same three tools exist when approvals are `off`; only an explicit `approval_create` opens a hold in that mode. v1 does not distinguish host from model: the same MCP caller can grant.
 
 ## Retry and recover deliberately
 
 | Situation | Agent action |
 | --- | --- |
-| `APPROVAL_REQUIRED` | Policy allowed the mutation; confirm with `approval_resolve` then `operation_resume`. Do not treat this as a grant of extra rights |
-| `APPROVAL_CONFLICT` | The hold is still pending, was denied, or was already consumed |
+| `APPROVAL_REQUIRED` | Policy allowed the mutation; grant with `approval_resolve` then `operation_resume`. Do not treat this as a grant of extra rights |
+| `APPROVAL_CONFLICT` | The hold is still pending, was denied, or a resume is already in progress |
+| `APPROVAL_AMBIGUOUS` | Resume was interrupted and the terminal result is not known; do not respawn exec. A patch may still be recoverable with `operation_status` |
 | Patch response lost | Query `operation_status` using the original key, or the operation ID if known |
 | `VERSION_CONFLICT` | Read current content and produce a new patch; do not force the old one |
 | `OPERATION_KEY_CONFLICT` | The key belongs to different arguments; inspect the earlier request |

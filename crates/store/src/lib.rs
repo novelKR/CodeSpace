@@ -5,12 +5,14 @@ mod approvals;
 mod coord;
 mod resource;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
 use codespace_domain::{
-    ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, OperationEvent, OperationEventName,
-    OperationId, OperationKey, OperationKind, OperationStatusResult, PatchStatus, WorkspaceId,
+    ApplyPatchParams, ApplyPatchResult, ErrorBody, ErrorCode, ExecCommandParams, OperationEvent,
+    OperationEventName, OperationId, OperationKey, OperationKind, OperationStatusResult,
+    PatchStatus, WorkspaceId,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -40,6 +42,8 @@ pub enum Begin {
 pub struct Store {
     conn: Mutex<Connection>,
     locks: Mutex<resource::ResourceSerializer>,
+    resume_inflight: Mutex<HashSet<String>>,
+    fail_next_finish: Mutex<bool>,
 }
 
 pub struct WriteGuard<'a> {
@@ -118,6 +122,7 @@ impl Store {
                 approval_id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 tool TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
                 params_json TEXT NOT NULL,
                 state TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
@@ -127,22 +132,30 @@ impl Store {
         )
         .map_err(|e| e.to_string())?;
         migrate_operations(&conn)?;
+        migrate_approvals(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             locks: Mutex::new(resource::ResourceSerializer::default()),
+            resume_inflight: Mutex::new(HashSet::new()),
+            fail_next_finish: Mutex::new(false),
         })
     }
 
     pub fn fingerprint(params: &ApplyPatchParams) -> String {
-        let value = serde_json::json!({
+        hash_canonical(&serde_json::json!({
             "workspace_id": params.workspace_id.0,
             "patch": params.patch,
             "expected_versions": params.expected_versions,
             "check_only": params.check_only,
-        });
-        let mut hasher = Sha256::new();
-        hasher.update(value.to_string().as_bytes());
-        format!("sha256:{}", hex::encode(hasher.finalize()))
+        }))
+    }
+
+    pub fn exec_fingerprint(params: &ExecCommandParams) -> String {
+        hash_canonical(&serde_json::json!({
+            "workspace_id": params.workspace_id.0,
+            "command": params.command,
+            "tty": params.tty,
+        }))
     }
 
     pub fn try_acquire_write<'a>(
@@ -332,6 +345,26 @@ impl Store {
             )),
         }
     }
+
+    pub fn find_operation_by_fingerprint(
+        &self,
+        workspace_id: &str,
+        fingerprint: &str,
+        created_not_before: Option<i64>,
+    ) -> Result<Option<StoredOperation>, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let sql = format!(
+            "{OPERATION_SELECT} WHERE workspace_id = ?1 AND fingerprint = ?2 AND (?3 IS NULL OR created_at >= ?3) ORDER BY created_at DESC LIMIT 1"
+        );
+        conn.query_row(
+            &sql,
+            params![workspace_id, fingerprint, created_not_before],
+            map_operation_row,
+        )
+        .optional()
+        .map_err(sql_err)
+        .map(|row| row.map(|row| row.into_stored(false)))
+    }
 }
 
 fn to_status(stored: StoredOperation) -> OperationStatusResult {
@@ -422,7 +455,7 @@ fn load_by_id(conn: &Connection, id: &str) -> Result<Option<Row>, ErrorBody> {
 }
 
 fn migrate_operations(conn: &Connection) -> Result<(), String> {
-    let columns = operation_columns(conn)?;
+    let columns = table_columns(conn, "operations")?;
     if !columns.iter().any(|name| name == "finished_at") {
         conn.execute("ALTER TABLE operations ADD COLUMN finished_at INTEGER", [])
             .map_err(|err| err.to_string())?;
@@ -434,9 +467,27 @@ fn migrate_operations(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn operation_columns(conn: &Connection) -> Result<Vec<String>, String> {
+fn migrate_approvals(conn: &Connection) -> Result<(), String> {
+    let columns = table_columns(conn, "approvals")?;
+    if !columns.iter().any(|name| name == "fingerprint") {
+        conn.execute(
+            "ALTER TABLE approvals ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_fp
+         ON approvals(workspace_id, fingerprint)
+         WHERE state IN ('pending','granted','resuming') AND length(fingerprint) > 0;",
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
     let mut stmt = conn
-        .prepare("PRAGMA table_info(operations)")
+        .prepare(&format!("PRAGMA table_info({table})"))
         .map_err(|err| err.to_string())?;
     let columns = stmt
         .query_map([], |row| row.get::<_, String>(1))
@@ -444,6 +495,12 @@ fn operation_columns(conn: &Connection) -> Result<Vec<String>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| err.to_string())?;
     Ok(columns)
+}
+
+fn hash_canonical(value: &serde_json::Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.to_string().as_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 fn status_str(status: PatchStatus) -> &'static str {

@@ -218,7 +218,8 @@ impl IntoResponse for InboxError {
             | ErrorCode::WorkClosed
             | ErrorCode::QueueNotEmpty
             | ErrorCode::ApprovalConflict
-            | ErrorCode::ApprovalRequired => StatusCode::CONFLICT,
+            | ErrorCode::ApprovalRequired
+            | ErrorCode::ApprovalAmbiguous => StatusCode::CONFLICT,
             ErrorCode::Unauthorized => StatusCode::FORBIDDEN,
             _ => StatusCode::BAD_REQUEST,
         };
