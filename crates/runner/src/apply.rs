@@ -10,6 +10,7 @@ use crate::PathSandbox;
 impl InProcessRunner {
     pub async fn read_file(&self, ws: &Workspace, path: &str) -> Result<ReadResult, ErrorBody> {
         ws.require_file_read()?;
+        self.touch_watch(ws);
         PathSandbox::new(ws.clone()).read_file(path).await
     }
 
@@ -19,11 +20,13 @@ impl InProcessRunner {
         glob: Option<&str>,
     ) -> Result<FindResult, ErrorBody> {
         ws.require_file_read()?;
+        self.touch_watch(ws);
         PathSandbox::new(ws.clone()).find(glob).await
     }
 
     pub async fn file_version(&self, ws: &Workspace, path: &str) -> Result<String, ErrorBody> {
         ws.require_file_read()?;
+        self.touch_watch(ws);
         PathSandbox::new(ws.clone()).version(path).await
     }
 
@@ -33,6 +36,7 @@ impl InProcessRunner {
         req: RunnerApplyPatchRequest,
     ) -> Result<RunnerApplyPatchResult, ErrorBody> {
         ws.require_file_write()?;
+        self.touch_watch(ws);
         let sandbox = PathSandbox::new(ws.clone());
         for (path, expected) in &req.expected_versions {
             let actual = sandbox.version(path).await?;

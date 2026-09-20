@@ -261,6 +261,7 @@
         "execution-and-observation",
         "execution-contracts",
         "execution-substrate",
+        "filesystem-observation",
         "four-axes-target-domain",
         "fs-watch-and-search",
         "fs-watch와-검색",
@@ -298,11 +299,12 @@
         "실행과-결과-관측",
         "아직-제공하지-않는-기능",
         "정책과-실행-구현",
+        "파일-시스템-관측",
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "0cd55e60c0ea0e71c3d44fedaa0bd2e07c6aea3cf150bb9c716a990137414510",
-      "translation_sha256": "4373d96a0b266706e98fb3728140169838d22edcd0938c018f93c7b792d6566a"
+      "source_sha256": "a598f304b1969690934cd30b45f57fcef183f6d0ae52a65c02781567c32f7a2a",
+      "translation_sha256": "b5795a80feb5c25b4caf9fc63be0998b46dee407ec4ba34b13fff9c785cad6d8"
     },
     {
       "id": "protocol-compatibility",

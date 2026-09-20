@@ -62,6 +62,7 @@ pub struct InProcessRunner {
     inner: Arc<Mutex<HashMap<String, Slot>>>,
     on_release: ShellRelease,
     retention: RetentionPolicy,
+    pub(crate) watches: crate::watch::WatchSet,
 }
 
 struct Slot {
@@ -110,6 +111,7 @@ impl InProcessRunner {
             inner: Arc::new(Mutex::new(HashMap::new())),
             on_release,
             retention,
+            watches: crate::watch::WatchSet::default(),
         }
     }
 

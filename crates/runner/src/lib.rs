@@ -11,7 +11,7 @@
 
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use codespace_domain::{ErrorBody, ErrorCode, FindResult, ProcessId, ReadResult};
 use codespace_policy::{resolve_path, Workspace};
@@ -72,6 +72,99 @@ impl PathSandbox {
     pub fn root(&self) -> &Path {
         &self.workspace.root
     }
+
+    /// Map a filesystem-notify path to a workspace-relative POSIX path.
+    /// Symlink leaves/ancestors, special files, and paths outside the
+    /// registered root are dropped so observation cannot bypass
+    /// `resolve`.
+    pub(crate) fn watch_relative(root: &Path, event_path: &Path) -> Option<String> {
+        let root_canon = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let abs = if event_path.is_absolute() {
+            event_path.to_path_buf()
+        } else {
+            root_canon.join(event_path)
+        };
+        let comparable = comparable_watch_path(&abs);
+        reject_symlink_ancestors(&root_canon, &comparable).ok()?;
+        if let Ok(meta) = fs::symlink_metadata(&comparable) {
+            if meta.file_type().is_symlink() {
+                return None;
+            }
+            if meta.file_type().is_fifo()
+                || meta.file_type().is_socket()
+                || meta.file_type().is_block_device()
+                || meta.file_type().is_char_device()
+            {
+                return None;
+            }
+        }
+        let rel = comparable
+            .strip_prefix(&root_canon)
+            .ok()
+            .or_else(|| comparable.strip_prefix(root).ok())?;
+        if rel.as_os_str().is_empty() {
+            return None;
+        }
+        if rel.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        }) {
+            return None;
+        }
+        let text = rel.to_str()?.replace('\\', "/");
+        if text.starts_with('/') || text.split('/').any(|part| part == "..") {
+            return None;
+        }
+        Some(text)
+    }
+}
+
+/// Canonicalize the longest existing non-symlink prefix so `/var` vs
+/// `/private/var` still maps under the watched root, without following
+/// a user-controlled leaf symlink out of the workspace.
+fn comparable_watch_path(path: &Path) -> PathBuf {
+    let mut suffix = Vec::new();
+    let mut cur = path.to_path_buf();
+    loop {
+        let is_symlink = fs::symlink_metadata(&cur)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_symlink {
+            match cur.file_name() {
+                Some(name) => {
+                    suffix.push(name.to_os_string());
+                    match cur.parent() {
+                        Some(parent) if parent != cur.as_path() => {
+                            cur = parent.to_path_buf();
+                            continue;
+                        }
+                        _ => break,
+                    }
+                }
+                None => break,
+            }
+        }
+        if let Ok(canon) = fs::canonicalize(&cur) {
+            let mut out = canon;
+            for part in suffix.into_iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        match cur.file_name() {
+            Some(name) => {
+                suffix.push(name.to_os_string());
+                match cur.parent() {
+                    Some(parent) if parent != cur.as_path() => cur = parent.to_path_buf(),
+                    _ => break,
+                }
+            }
+            None => break,
+        }
+    }
+    path.to_path_buf()
 }
 
 fn reject_symlink_ancestors(root: &Path, dest: &Path) -> Result<(), ErrorBody> {
@@ -109,6 +202,7 @@ mod process;
 mod rollback;
 mod socket;
 mod uds;
+mod watch;
 mod wire;
 
 pub use api::{
@@ -135,6 +229,7 @@ pub use socket::{
     runner_socket_path, RUNNER_SOCKET_NAME,
 };
 pub use uds::{DisconnectHook, UdsRunner, RUNNER_CALL_DEADLINE};
+pub use watch::{FsWatchEvent, FsWatchKind};
 pub use wire::{
     host_worker, read_frame, serve_runner_connection, write_frame, RunnerEvent, RunnerOp,
     RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,
