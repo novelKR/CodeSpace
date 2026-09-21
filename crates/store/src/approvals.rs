@@ -756,12 +756,9 @@ mod tests {
 
     #[test]
     fn queued_scheduler_errors_do_not_consume_approval() {
-        for (index, code) in [
-            ErrorCode::WorkspaceBusy,
-            ErrorCode::ResourceQueueFull,
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, code) in [ErrorCode::WorkspaceBusy, ErrorCode::ResourceQueueFull]
+            .into_iter()
+            .enumerate()
         {
             let store = Store::memory().unwrap();
             let created = store
@@ -797,7 +794,7 @@ mod tests {
                     assert_eq!(record.state, ApprovalState::Queued);
                 }
                 other => panic!("expected retryable execute, got {other:?}"),
-            }
+            };
         }
     }
 
