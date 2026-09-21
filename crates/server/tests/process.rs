@@ -715,6 +715,11 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         .iter()
         .find(|tool| tool.name.as_ref() == TOOL_READ)
         .expect("read");
+    let read_desc = read_tool.description.as_deref().unwrap_or("");
+    assert!(
+        read_desc.contains("next_offset") && read_desc.contains("content_lossy"),
+        "read description must mention next_offset and content_lossy: {read_desc}"
+    );
     let read_in = serde_json::to_value(&read_tool.input_schema)
         .unwrap()
         .to_string();
@@ -726,19 +731,39 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         .unwrap()
         .to_string();
     assert!(
-        read_out.contains("byte_count") && read_out.contains("truncated"),
-        "read result schema must include byte_count and truncated: {read_out}"
+        read_out.contains("byte_count")
+            && read_out.contains("truncated")
+            && read_out.contains("content_lossy")
+            && read_out.contains("next_offset"),
+        "read result schema must include byte_count, truncated, content_lossy, next_offset: {read_out}"
     );
     let find_tool = tools
         .iter()
         .find(|tool| tool.name.as_ref() == TOOL_FIND)
         .expect("find");
+    let find_desc = find_tool.description.as_deref().unwrap_or("");
+    assert!(
+        find_desc.contains("next_offset")
+            && find_desc.contains("incomplete")
+            && find_desc.contains("listing_version"),
+        "find description must mention next_offset, incomplete, listing_version: {find_desc}"
+    );
     let find_in = serde_json::to_value(&find_tool.input_schema)
         .unwrap()
         .to_string();
     assert!(
         find_in.contains("offset") && find_in.contains("limit"),
         "find input schema must include offset and limit: {find_in}"
+    );
+    let find_out = serde_json::to_value(find_tool.output_schema.as_ref())
+        .unwrap()
+        .to_string();
+    assert!(
+        find_out.contains("incomplete")
+            && find_out.contains("listing_version")
+            && find_out.contains("next_offset")
+            && find_out.contains("truncated"),
+        "find result schema must include incomplete, listing_version, next_offset, truncated: {find_out}"
     );
 
     let exec = tools

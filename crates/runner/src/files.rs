@@ -54,6 +54,7 @@ impl PathSandbox {
         }
         let bytes = codespace_fs::read(&path).await.map_err(fs_error_body)?;
         let (slice, truncated) = byte_window(&bytes, offset, limit);
+        let content_lossy = std::str::from_utf8(slice).is_err();
         Ok(ReadResult {
             path: normalize_rel(relative),
             content: String::from_utf8_lossy(slice).into_owned(),
@@ -61,6 +62,8 @@ impl PathSandbox {
             truncated,
             offset,
             byte_count: slice.len() as u64,
+            content_lossy,
+            next_offset: truncated.then_some(offset + slice.len() as u64),
             coordination: None,
         })
     }
@@ -102,11 +105,14 @@ impl PathSandbox {
             paths.push(rel);
         }
         paths.sort();
-        let (page, truncated) = path_window(&paths, offset, limit, walked.truncated);
+        let page = path_window(&paths, offset, limit, walked.truncated);
         Ok(FindResult {
-            paths: page,
-            truncated,
+            paths: page.paths,
+            truncated: page.truncated,
             offset,
+            incomplete: page.incomplete,
+            listing_version: listing_version(&paths, page.incomplete),
+            next_offset: page.next_offset,
             coordination: None,
         })
     }
@@ -133,21 +139,49 @@ fn byte_window(bytes: &[u8], offset: u64, limit: usize) -> (&[u8], bool) {
     (&bytes[start..end], (end as u64) < len)
 }
 
-fn path_window(
-    paths: &[String],
-    offset: u64,
-    limit: usize,
-    walk_truncated: bool,
-) -> (Vec<String>, bool) {
+struct PathPage {
+    paths: Vec<String>,
+    truncated: bool,
+    incomplete: bool,
+    next_offset: Option<u64>,
+}
+
+fn listing_version(paths: &[String], incomplete: bool) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(if incomplete {
+        b"incomplete\0".as_slice()
+    } else {
+        b"complete\0".as_slice()
+    });
+    for path in paths {
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+    }
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn path_window(paths: &[String], offset: u64, limit: usize, walk_truncated: bool) -> PathPage {
+    let incomplete = walk_truncated;
     let len = paths.len() as u64;
     if offset >= len {
-        return (Vec::new(), walk_truncated);
+        return PathPage {
+            paths: Vec::new(),
+            truncated: false,
+            incomplete,
+            next_offset: None,
+        };
     }
     let start = offset as usize;
     let remaining = paths.len() - start;
-    let truncated = walk_truncated || remaining > limit;
+    let truncated = remaining > limit;
     let end = start.saturating_add(limit).min(paths.len());
-    (paths[start..end].to_vec(), truncated)
+    let page = paths[start..end].to_vec();
+    PathPage {
+        next_offset: truncated.then_some(offset + page.len() as u64),
+        paths: page,
+        truncated,
+        incomplete,
+    }
 }
 
 pub(crate) fn fs_error_body(err: FsError) -> ErrorBody {
@@ -210,6 +244,8 @@ mod tests {
         assert_eq!(first.path, "a.txt");
         assert_eq!(first.offset, 0);
         assert_eq!(first.byte_count, 5);
+        assert!(!first.content_lossy);
+        assert!(first.next_offset.is_none());
         assert_eq!(s.version("missing").await.unwrap(), VERSION_ABSENT);
     }
 
@@ -223,15 +259,19 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.offset, 0);
         assert_eq!(result.byte_count, 3);
+        assert!(!result.content_lossy);
+        assert_eq!(result.next_offset, Some(3));
         assert_eq!(result.version, PathSandbox::version_of(b"abcdef"));
         let rest = s
-            .read_file_window("big.txt", Some(result.offset + result.byte_count), Some(3))
+            .read_file_window("big.txt", result.next_offset, Some(3))
             .await
             .unwrap();
         assert_eq!(rest.content, "def");
         assert!(!rest.truncated);
         assert_eq!(rest.offset, 3);
         assert_eq!(rest.byte_count, 3);
+        assert!(!rest.content_lossy);
+        assert!(rest.next_offset.is_none());
         assert_eq!(rest.version, result.version);
     }
 
@@ -250,12 +290,21 @@ mod tests {
         assert_eq!(rs.paths, vec!["a.rs".to_string()]);
         let limited = s.find_window(None, None, Some(1)).await.unwrap();
         assert!(limited.truncated);
+        assert!(!limited.incomplete);
         assert_eq!(limited.paths.len(), 1);
         assert_eq!(limited.offset, 0);
-        let page = s.find_window(None, Some(1), Some(1)).await.unwrap();
+        assert_eq!(limited.next_offset, Some(1));
+        assert!(limited.listing_version.starts_with("sha256:"));
+        let page = s
+            .find_window(None, limited.next_offset, Some(1))
+            .await
+            .unwrap();
         assert!(!page.truncated);
+        assert!(!page.incomplete);
         assert_eq!(page.offset, 1);
         assert_eq!(page.paths.len(), 1);
+        assert!(page.next_offset.is_none());
+        assert_eq!(page.listing_version, limited.listing_version);
         assert_ne!(page.paths, limited.paths);
     }
 
@@ -365,6 +414,8 @@ mod tests {
         assert!(!result.truncated);
         assert_eq!(result.offset, 10);
         assert_eq!(result.byte_count, 0);
+        assert!(!result.content_lossy);
+        assert!(result.next_offset.is_none());
         assert_eq!(result.version, PathSandbox::version_of(b"hi"));
     }
 
@@ -406,15 +457,71 @@ mod tests {
         let s = sandbox(dir.path());
         let first = s.read_file_window("bin", None, Some(2)).await.unwrap();
         assert!(first.truncated);
+        assert!(first.content_lossy);
         assert_eq!(first.byte_count, 2);
+        assert_eq!(first.next_offset, Some(2));
         assert_ne!(first.content.len() as u64, first.byte_count);
         let rest = s
-            .read_file_window("bin", Some(first.offset + first.byte_count), Some(2))
+            .read_file_window("bin", first.next_offset, Some(2))
             .await
             .unwrap();
         assert_eq!(rest.content, "b");
         assert!(!rest.truncated);
+        assert!(!rest.content_lossy);
         assert_eq!(rest.byte_count, 1);
+        assert!(rest.next_offset.is_none());
         assert_eq!(rest.version, first.version);
+    }
+
+    #[tokio::test]
+    async fn read_window_split_utf8() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("hangul.txt"), "가").unwrap();
+        let s = sandbox(dir.path());
+        let first = s
+            .read_file_window("hangul.txt", None, Some(1))
+            .await
+            .unwrap();
+        assert!(first.content_lossy);
+        assert_eq!(first.byte_count, 1);
+        assert_eq!(first.next_offset, Some(1));
+        assert_eq!(first.version, PathSandbox::version_of("가".as_bytes()));
+    }
+
+    #[test]
+    fn find_walk_truncated_cannot_return_retry_loop() {
+        let paths = vec!["a".into(), "b".into()];
+        let page = path_window(&paths, 2, 10, true);
+        assert!(page.paths.is_empty());
+        assert!(!page.truncated);
+        assert!(page.incomplete);
+        assert!(page.next_offset.is_none());
+    }
+
+    #[test]
+    fn listing_version_includes_completeness() {
+        let paths = vec!["a.rs".into()];
+        assert_ne!(
+            listing_version(&paths, false),
+            listing_version(&paths, true)
+        );
+        assert!(listing_version(&paths, false).starts_with("sha256:"));
+    }
+
+    #[tokio::test]
+    async fn find_listing_version_changes_between_pages() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "a").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "b").unwrap();
+        let s = sandbox(dir.path());
+        let first = s.find_window(None, None, Some(1)).await.unwrap();
+        assert_eq!(first.paths, vec!["a.rs".to_string()]);
+        assert_eq!(first.next_offset, Some(1));
+        std::fs::write(dir.path().join("0.rs"), "z").unwrap();
+        let second = s
+            .find_window(None, first.next_offset, Some(1))
+            .await
+            .unwrap();
+        assert_ne!(second.listing_version, first.listing_version);
     }
 }

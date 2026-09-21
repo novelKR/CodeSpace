@@ -100,8 +100,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "e442068f587480507ea9f855abe476821135d3d63fd6b74ec17398ebfb02a609",
-      "translation_sha256": "1e9296c7990e65d0620e6f983d9fb6a6dd543e69aaef3f39b0a73ea775f2adee"
+      "source_sha256": "45bf2a02b2080ae47d33d0c5ce3d9a5881ee7aec765d85a206573f3d9cb9c8a1",
+      "translation_sha256": "f189f125e0def02665ff01ddc45abd5fef372d44cfddd7bf5345a19c8ec9cbfd"
     },
     {
       "id": "operations",
@@ -303,8 +303,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "f80f1281487af44fff16c9ab1b74697d2b9d87cd8a70664e690144705fb91053",
-      "translation_sha256": "782fbc1147facc68810e3f212f217f2a9e3b89a205ab87389dafdf4225770640"
+      "source_sha256": "c577ea9c3ac8b682a40b440a152383eb6e930e7436a740c76f7f4d6f961de832",
+      "translation_sha256": "8e6bb3c55e8a1656f1cd5c05a4ef2715a6ea2d4b9dbac01134e82e857ced33de"
     },
     {
       "id": "protocol-compatibility",

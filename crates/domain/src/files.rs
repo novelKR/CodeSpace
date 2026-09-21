@@ -38,6 +38,12 @@ pub struct ReadResult {
     pub offset: u64,
     /// File bytes included in this window. Not `content.len()` after UTF-8 lossy.
     pub byte_count: u64,
+    /// True when this window is not valid UTF-8 and `content` used replacement decoding.
+    #[serde(default)]
+    pub content_lossy: bool,
+    /// Present only when more observed file bytes remain after this window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordination: Option<CoordinationHint>,
 }
@@ -64,6 +70,15 @@ pub struct FindResult {
     /// Start of this window in the sorted path list. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub offset: u64,
+    /// Walk hit an internal bound; the matching set is not known to be complete.
+    #[serde(default)]
+    pub incomplete: bool,
+    /// Identity of this observation's sorted matching set, not the returned page.
+    #[serde(default)]
+    pub listing_version: String,
+    /// Present only when more observed matching paths remain after this page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordination: Option<CoordinationHint>,
 }
@@ -93,10 +108,54 @@ mod tests {
             truncated: false,
             offset: 0,
             byte_count: 2,
+            content_lossy: false,
+            next_offset: None,
             coordination: None,
         };
         let json = serde_json::to_value(&result).unwrap();
         assert!(json.get("offset").is_none());
+        assert!(json.get("next_offset").is_none());
         assert_eq!(json["byte_count"], 2);
+        assert_eq!(json["content_lossy"], false);
+    }
+
+    #[test]
+    fn omitted_result_fields_default_on_deserialize() {
+        let read: ReadResult = serde_json::from_value(json!({
+            "path": "a.txt",
+            "content": "hi",
+            "version": "sha256:x",
+            "truncated": false,
+            "byte_count": 2
+        }))
+        .unwrap();
+        assert!(!read.content_lossy);
+        assert!(read.next_offset.is_none());
+        let find: FindResult = serde_json::from_value(json!({
+            "paths": ["a.txt"],
+            "truncated": false
+        }))
+        .unwrap();
+        assert!(!find.incomplete);
+        assert!(find.listing_version.is_empty());
+        assert!(find.next_offset.is_none());
+    }
+
+    #[test]
+    fn zero_offset_is_omitted_from_find_json() {
+        let result = FindResult {
+            paths: vec!["a.txt".into()],
+            truncated: false,
+            offset: 0,
+            incomplete: false,
+            listing_version: "sha256:x".into(),
+            next_offset: None,
+            coordination: None,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("offset").is_none());
+        assert!(json.get("next_offset").is_none());
+        assert_eq!(json["incomplete"], false);
+        assert_eq!(json["listing_version"], "sha256:x");
     }
 }

@@ -58,10 +58,16 @@ selectors, not credentials.
 
 read and find accept optional offset and limit. Omitted arguments return \
 the first window: 1 MiB for read, 10000 sorted paths for find. Per-call \
-caps are the same. truncated means more remains; continue read at offset \
-plus byte_count, and find at offset plus the returned path count. version \
-hashes the whole file, not the window. A limit of 0 or above the cap \
-returns OUTPUT_LIMIT.
+caps are the same. truncated means more observed content remains after \
+this window. Continue only when next_offset is present. Do not compute \
+the next window from content.len() or retry an empty page at the same \
+offset. Byte windows may split UTF-8 sequences; content_lossy=true means \
+content contains replacement decoding and must not be used for exact \
+reconstruction. find.incomplete=true means the walk was capped so the \
+matching set is not known to be complete. listing_version identifies \
+this observation's sorted path set; if it changes between pages, restart \
+from offset 0. version hashes the whole file, not the window. A limit of \
+0 or above the cap returns OUTPUT_LIMIT.
 
 exec_command accepts argv; there is no implicit shell. It runs in the \
 workspace cwd and returns a server-minted process_id. Ending an MCP request \
@@ -177,7 +183,7 @@ impl CodeSpace {
 
     #[tool(
         name = "read",
-        description = "Read a relative workspace file and return content plus a sha256 version of the whole file. Optional offset and limit select a byte window (default 0 and 1 MiB, max 1 MiB per call). truncated means more bytes remain after this window. Continue at offset plus byte_count. Rejects symlinks, special files, and path escape."
+        description = "Read a relative workspace file and return content plus a sha256 version of the whole file. Optional offset and limit select a byte window (default 0 and 1 MiB, max 1 MiB per call). truncated means more bytes remain after this window; continue only at next_offset. Byte windows may split UTF-8 sequences. content_lossy=true means content contains replacement decoding and must not be used for exact reconstruction. Rejects symlinks, special files, and path escape."
     )]
     async fn read(
         &self,
@@ -199,7 +205,7 @@ impl CodeSpace {
 
     #[tool(
         name = "find",
-        description = "List relative file paths in a workspace. Does not follow symlinks. Optional offset and limit page the sorted path list (default 0 and 10000, max 10000 per call). truncated means more paths remain or the walk was capped. Continue at offset plus the returned path count."
+        description = "List relative file paths in a workspace. Does not follow symlinks. Optional offset and limit page the sorted path list (default 0 and 10000, max 10000 per call). truncated means more observed matching paths remain; continue only at next_offset. incomplete=true means the walk was capped so the matching set is not known to be complete. listing_version identifies this observation's sorted path set. Do not retry an empty page at the same offset."
     )]
     async fn find(
         &self,
@@ -1062,7 +1068,10 @@ mod tests {
 
     fn assert_instructions_cover_execution_contract(text: &str) {
         assert!(text.contains("optional offset and limit"), "{text}");
-        assert!(text.contains("byte_count"), "{text}");
+        assert!(text.contains("next_offset"), "{text}");
+        assert!(text.contains("content_lossy"), "{text}");
+        assert!(text.contains("incomplete"), "{text}");
+        assert!(text.contains("listing_version"), "{text}");
         assert!(text.contains("OUTPUT_LIMIT"), "{text}");
         assert!(
             text.contains("Ending an MCP request does not terminate the process"),
