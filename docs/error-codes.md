@@ -40,7 +40,7 @@ Errors use uppercase identifiers and a message. An `operation_id` may be present
 | `PROCESS_NOT_FOUND` | Process handle missing, expired, or stdin already closed on write |
 | `PROCESS_NOT_TTY` | `process_resize` on a pipe-backed (`tty: false`) process |
 | `PROCESS_NOT_RUNNING` | `process_resize` on a handle that exists but is not running |
-| `OUTPUT_LIMIT` | Helper output exceeded its bound; process reads instead discard old bytes |
+| `OUTPUT_LIMIT` | Helper output exceeded its bound; also `read`/`find` when `limit` is 0 or above the advertised cap. Process reads instead discard old bytes |
 | `TIMEOUT` | A managed command or helper exceeded its time limit |
 | `WORK_NOT_FOUND` | Unknown logical work |
 | `WORK_CLOSED` | Operation requires an open work |

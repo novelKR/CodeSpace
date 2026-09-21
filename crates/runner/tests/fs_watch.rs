@@ -159,7 +159,10 @@ async fn coalesced_writes_still_read_current_bytes() {
         std::fs::write(dir.path().join("keep.txt"), i.to_string()).unwrap();
     }
     let _ = drain_for(&mut rx, Duration::from_millis(400)).await;
-    let read = runner.read(&ws, "keep.txt").await.expect("read");
+    let read = runner
+        .read(&ws, "keep.txt", None, None)
+        .await
+        .expect("read");
     assert_eq!(read.content, "20");
 }
 
@@ -299,7 +302,10 @@ async fn symlink_replacement_invalidates_the_name() {
     .await
     .expect("destination name invalidated");
 
-    let err = runner.read(&ws, "keep.txt").await.expect_err("symlink");
+    let err = runner
+        .read(&ws, "keep.txt", None, None)
+        .await
+        .expect_err("symlink");
     match err {
         codespace_runner::RunnerError::Execution(body) => {
             assert_eq!(body.code, ErrorCode::SymlinkRejected);
@@ -362,7 +368,10 @@ async fn special_file_name_is_still_invalidated() {
     .await
     .expect("special-file name invalidated");
 
-    let err = runner.read(&ws, "pipe.fifo").await.expect_err("special");
+    let err = runner
+        .read(&ws, "pipe.fifo", None, None)
+        .await
+        .expect_err("special");
     match err {
         codespace_runner::RunnerError::Execution(body) => {
             assert_eq!(body.code, ErrorCode::SpecialFileRejected);

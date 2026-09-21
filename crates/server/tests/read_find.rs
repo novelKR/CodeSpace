@@ -54,6 +54,8 @@ async fn read_and_find_use_versions_and_relative_paths() {
     assert_eq!(body["content"], "hi");
     assert_eq!(body["path"], "hello.txt");
     assert_eq!(body["truncated"], false);
+    assert_eq!(body["byte_count"], 2);
+    assert!(body.get("offset").is_none());
     let version = body["version"].as_str().unwrap().to_string();
     assert!(version.starts_with("sha256:"));
 
@@ -170,6 +172,130 @@ async fn read_and_find_use_versions_and_relative_paths() {
         .await;
     let gone_text = format!("{gone:?}");
     assert!(gone_text.contains("FILE_OPERATION_FAILED"), "{gone_text}");
+
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
+async fn read_and_find_paginate_windows() {
+    let root = tempfile::tempdir().unwrap();
+    let ws = root.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    std::fs::write(ws.join("big.txt"), "abcdef").unwrap();
+    std::fs::write(ws.join("a.rs"), "a").unwrap();
+    std::fs::write(ws.join("b.rs"), "b").unwrap();
+    let cfg = root.path().join("workspaces.json");
+    std::fs::write(
+        &cfg,
+        serde_json::json!({
+            "workspaces": {
+                "demo": { "root": ws, "profile": "read-only" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_codespace-mcp");
+    let client = ()
+        .serve(
+            TokioChildProcess::new(Command::new(bin).configure(|cmd| {
+                cmd.env("CODESPACE_CONFIG", &cfg);
+            }))
+            .expect("spawn"),
+        )
+        .await
+        .expect("init");
+
+    let info = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_WORKSPACE_INFO)
+                .with_arguments(object!({ "workspace_id": "demo" })),
+        )
+        .await
+        .expect("workspace_info");
+    let caps =
+        &info.structured_content.clone().expect("structured")["execution"]["files"]["capabilities"];
+    assert_eq!(caps["read_range"], true);
+    assert_eq!(caps["find_pagination"], true);
+    assert_eq!(caps["read_max_bytes"], 1048576);
+    assert_eq!(caps["find_max_paths"], 10000);
+
+    let first = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ).with_arguments(object!({
+                "workspace_id": "demo",
+                "path": "big.txt",
+                "limit": 3
+            })),
+        )
+        .await
+        .expect("read window");
+    let body = first.structured_content.clone().expect("structured");
+    assert_eq!(body["content"], "abc");
+    assert_eq!(body["truncated"], true);
+    assert_eq!(body["byte_count"], 3);
+    assert!(body.get("offset").is_none());
+    let version = body["version"].clone();
+
+    let rest = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ).with_arguments(object!({
+                "workspace_id": "demo",
+                "path": "big.txt",
+                "offset": 3,
+                "limit": 3
+            })),
+        )
+        .await
+        .expect("read rest");
+    let rest_body = rest.structured_content.clone().expect("structured");
+    assert_eq!(rest_body["content"], "def");
+    assert_eq!(rest_body["truncated"], false);
+    assert_eq!(rest_body["offset"], 3);
+    assert_eq!(rest_body["byte_count"], 3);
+    assert_eq!(rest_body["version"], version);
+
+    let page = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_FIND).with_arguments(object!({
+                "workspace_id": "demo",
+                "limit": 1
+            })),
+        )
+        .await
+        .expect("find page");
+    let page_body = page.structured_content.clone().expect("structured");
+    assert_eq!(page_body["truncated"], true);
+    assert_eq!(page_body["paths"].as_array().unwrap().len(), 1);
+    assert!(page_body.get("offset").is_none());
+
+    let next = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_FIND).with_arguments(object!({
+                "workspace_id": "demo",
+                "offset": 1,
+                "limit": 2
+            })),
+        )
+        .await
+        .expect("find rest");
+    let next_body = next.structured_content.clone().expect("structured");
+    assert_eq!(next_body["offset"], 1);
+    assert_eq!(next_body["truncated"], false);
+    assert_eq!(next_body["paths"].as_array().unwrap().len(), 2);
+
+    let bad = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_READ).with_arguments(object!({
+                "workspace_id": "demo",
+                "path": "big.txt",
+                "limit": 0
+            })),
+        )
+        .await;
+    let bad_text = format!("{bad:?}");
+    assert!(bad_text.contains("OUTPUT_LIMIT"), "{bad_text}");
 
     client.cancel().await.expect("cancel");
 }

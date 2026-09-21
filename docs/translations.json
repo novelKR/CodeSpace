@@ -100,8 +100,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "066783790544a79361a1367f2a567901df4d48468d44817da77456db3cd5a171",
-      "translation_sha256": "c9b0f682c684f4503b8197bc5b75fe97ce38a5f2efbe6a3865960bdde79f158a"
+      "source_sha256": "e442068f587480507ea9f855abe476821135d3d63fd6b74ec17398ebfb02a609",
+      "translation_sha256": "1e9296c7990e65d0620e6f983d9fb6a6dd543e69aaef3f39b0a73ea775f2adee"
     },
     {
       "id": "operations",
@@ -303,8 +303,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "ceefd1314c3bbf318630d6aee519e180d7b044d6bbbf6b995b1d79267430871e",
-      "translation_sha256": "8a6dff78d6cc08d6b425b4097592b78a71a4c116900578fc57557648b8c4d443"
+      "source_sha256": "f80f1281487af44fff16c9ab1b74697d2b9d87cd8a70664e690144705fb91053",
+      "translation_sha256": "782fbc1147facc68810e3f212f217f2a9e3b89a205ab87389dafdf4225770640"
     },
     {
       "id": "protocol-compatibility",
@@ -445,8 +445,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "065e07e43a16452e27a3c269fbf735e76ac1797eba850efbb29a2cb2656f18df",
-      "translation_sha256": "6795cc0eb1a25dc7a60f998ffc218e5745756ced88806bb76bd9d7be7893e03f"
+      "source_sha256": "a9a1ab3276b7d88eabc5cda340bdc56b09d24140bf341e1763f0f05d7967709e",
+      "translation_sha256": "e88efd529b27bb635ff4eba69ef08bb84bae807678582d55b12cfc466086ee97"
     },
     {
       "id": "error-codes",
@@ -474,8 +474,8 @@
         "전송-실패",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "9b765468d3045a3705f376a108aee22bf9d36efc8b094a7b3fa2047ca1596cae",
-      "translation_sha256": "75aed3982430e609f0dcea9f92a66cce9ededd7ed112a481819e8fce73da3197"
+      "source_sha256": "a366946fea6e73966595001b72221ae5b9cfe84ddfd77cabba928c4283168fce",
+      "translation_sha256": "6b97e91bfd708101aedde02ed0ac6f965a09a1136062faa6f5fa3d107d4f26bf"
     },
     {
       "id": "codex-reuse",
@@ -554,8 +554,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "f30c4a2bb1de3094733bb042db156db14a4e8eec3a651abdfcc92e3823296d66",
-      "translation_sha256": "5f389f7fc23213ea87fc508d1dfdf2b23d6d704130752c0263f0288e2c0911cd"
+      "source_sha256": "9de92581d56525ae1ba0f028cce8c7fd7237747a98c593d4268bd1f4829ad471",
+      "translation_sha256": "b295940bb3eff4a8120639a8aee5dab0b738f4364601430dba93fb144e1df14a"
     },
     {
       "id": "upstream-lock",

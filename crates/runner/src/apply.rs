@@ -8,20 +8,32 @@ use crate::process::InProcessRunner;
 use crate::PathSandbox;
 
 impl InProcessRunner {
-    pub async fn read_file(&self, ws: &Workspace, path: &str) -> Result<ReadResult, ErrorBody> {
+    pub async fn read_file(
+        &self,
+        ws: &Workspace,
+        path: &str,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<ReadResult, ErrorBody> {
         ws.require_file_read()?;
         self.touch_watch(ws);
-        PathSandbox::new(ws.clone()).read_file(path).await
+        PathSandbox::new(ws.clone())
+            .read_file_window(path, offset, limit)
+            .await
     }
 
     pub async fn find_files(
         &self,
         ws: &Workspace,
         glob: Option<&str>,
+        offset: Option<u64>,
+        limit: Option<u32>,
     ) -> Result<FindResult, ErrorBody> {
         ws.require_file_read()?;
         self.touch_watch(ws);
-        PathSandbox::new(ws.clone()).find(glob).await
+        PathSandbox::new(ws.clone())
+            .find_window(glob, offset, limit)
+            .await
     }
 
     pub async fn file_version(&self, ws: &Workspace, path: &str) -> Result<String, ErrorBody> {

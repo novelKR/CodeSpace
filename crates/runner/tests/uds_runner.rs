@@ -57,7 +57,7 @@ async fn uds_runner_read_and_exec_over_length_prefix() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
     let ws = workspace(dir.path());
-    let read = runner.read(&ws, "a.txt").await.unwrap();
+    let read = runner.read(&ws, "a.txt", None, None).await.unwrap();
     assert_eq!(read.content, "hi");
 
     let process_id = ProcessId("proc-uds".into());
@@ -112,7 +112,7 @@ async fn uds_runner_read_and_exec_over_length_prefix() {
 }
 
 #[tokio::test]
-async fn uds_process_status_echo_and_protocol_5_hello() {
+async fn uds_process_status_echo_and_protocol_6_hello() {
     let (client, server) = UnixStream::pair().expect("unix pair");
     let (worker, events) = host_worker();
     tokio::spawn(async move {
@@ -121,7 +121,7 @@ async fn uds_process_status_echo_and_protocol_5_hello() {
             .expect("serve runner");
     });
     let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
-    runner.handshake().await.expect("hello protocol 5");
+    runner.handshake().await.expect("hello protocol 6");
     let dir = tempdir().unwrap();
     let ws = workspace(dir.path());
     let process_id = ProcessId("proc-uds-status".into());
@@ -478,23 +478,38 @@ async fn uds_read_filesystem_errors_keep_product_codes() {
     let ws = workspace(dir.path());
 
     assert_eq!(
-        execution_code(&runner.read(&ws, "missing.txt").await.unwrap_err()),
+        execution_code(
+            &runner
+                .read(&ws, "missing.txt", None, None)
+                .await
+                .unwrap_err()
+        ),
         ErrorCode::FileNotFound
     );
     assert_eq!(
-        execution_code(&runner.read(&ws, "foo/bar.txt").await.unwrap_err()),
+        execution_code(
+            &runner
+                .read(&ws, "foo/bar.txt", None, None)
+                .await
+                .unwrap_err()
+        ),
         ErrorCode::PathNotDirectory
     );
     assert_eq!(
-        execution_code(&runner.read(&ws, "../outside").await.unwrap_err()),
+        execution_code(
+            &runner
+                .read(&ws, "../outside", None, None)
+                .await
+                .unwrap_err()
+        ),
         ErrorCode::PathEscape
     );
     assert_eq!(
-        execution_code(&runner.read(&ws, "link").await.unwrap_err()),
+        execution_code(&runner.read(&ws, "link", None, None).await.unwrap_err()),
         ErrorCode::SymlinkRejected
     );
     assert_eq!(
-        execution_code(&runner.read(&ws, "pipe.fifo").await.unwrap_err()),
+        execution_code(&runner.read(&ws, "pipe.fifo", None, None).await.unwrap_err()),
         ErrorCode::SpecialFileRejected
     );
 }
@@ -513,7 +528,7 @@ async fn uds_find_on_deleted_root_is_file_operation_failed() {
     let ws = workspace(dir.path());
     drop(dir);
     assert_eq!(
-        execution_code(&runner.find(&ws, None).await.unwrap_err()),
+        execution_code(&runner.find(&ws, None, None, None).await.unwrap_err()),
         ErrorCode::FileOperationFailed
     );
 }

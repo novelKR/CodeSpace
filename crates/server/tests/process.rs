@@ -711,6 +711,36 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         "process_resize result schema must include ok, rows, cols: {resize_out_dumped}"
     );
 
+    let read_tool = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == TOOL_READ)
+        .expect("read");
+    let read_in = serde_json::to_value(&read_tool.input_schema)
+        .unwrap()
+        .to_string();
+    assert!(
+        read_in.contains("offset") && read_in.contains("limit"),
+        "read input schema must include offset and limit: {read_in}"
+    );
+    let read_out = serde_json::to_value(read_tool.output_schema.as_ref())
+        .unwrap()
+        .to_string();
+    assert!(
+        read_out.contains("byte_count") && read_out.contains("truncated"),
+        "read result schema must include byte_count and truncated: {read_out}"
+    );
+    let find_tool = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == TOOL_FIND)
+        .expect("find");
+    let find_in = serde_json::to_value(&find_tool.input_schema)
+        .unwrap()
+        .to_string();
+    assert!(
+        find_in.contains("offset") && find_in.contains("limit"),
+        "find input schema must include offset and limit: {find_in}"
+    );
+
     let exec = tools
         .iter()
         .find(|tool| tool.name.as_ref() == TOOL_EXEC_COMMAND)
@@ -786,6 +816,10 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     assert_eq!(exec["files"]["read"]["available"], true);
     assert_eq!(exec["files"]["find"]["available"], true);
     assert_eq!(exec["files"]["patch"]["available"], true);
+    assert_eq!(exec["files"]["capabilities"]["read_range"], true);
+    assert_eq!(exec["files"]["capabilities"]["find_pagination"], true);
+    assert_eq!(exec["files"]["capabilities"]["read_max_bytes"], 1048576);
+    assert_eq!(exec["files"]["capabilities"]["find_max_paths"], 10000);
     assert_eq!(exec["process"]["available"], true);
     assert_eq!(exec["process"]["capabilities"]["tty"]["supported"], true);
     assert_eq!(

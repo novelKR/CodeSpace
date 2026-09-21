@@ -23,12 +23,15 @@ pub use error::{
 };
 pub use execution::{
     ClientEnvironmentKind, CommandSandboxState, EffectivePermissionInfo, EnvironmentExecutionInfo,
-    FileExecutionInfo, FileOperationInfo, IsolationInfo, NetworkEnforcementState, NetworkInfo,
-    NetworkPolicyState, ProcessCapabilityInfo, ProcessDisconnectAction, ProcessExecutionInfo,
-    ProcessLifetimeInfo, ProcessLifetimeOwner, ProcessRestartRecovery, PtyCapabilityInfo,
-    WorkspaceExecutionInfo, WorkspaceSerializationInfo, PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
+    FileCapabilityInfo, FileExecutionInfo, FileOperationInfo, IsolationInfo,
+    NetworkEnforcementState, NetworkInfo, NetworkPolicyState, ProcessCapabilityInfo,
+    ProcessDisconnectAction, ProcessExecutionInfo, ProcessLifetimeInfo, ProcessLifetimeOwner,
+    ProcessRestartRecovery, PtyCapabilityInfo, WorkspaceExecutionInfo, WorkspaceSerializationInfo,
+    PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
 };
-pub use files::{FindParams, FindResult, ReadParams, ReadResult};
+pub use files::{
+    FindParams, FindResult, ReadParams, ReadResult, DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT,
+};
 pub use ids::{ApprovalId, IntentId, OperationId, OperationKey, ProcessId, WorkId, WorkspaceId};
 pub use info::{workspace_info, WorkspaceInfo, WorkspaceInfoParams};
 pub use intent::{DeliveryPolicy, IntentKind, IntentState, UserIntent};

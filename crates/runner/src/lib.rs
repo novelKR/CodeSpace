@@ -118,7 +118,8 @@ pub use api::{
     RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
     RunnerResizeResult, RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
 };
-pub use files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT, VERSION_ABSENT};
+pub use codespace_domain::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT};
+pub use files::VERSION_ABSENT;
 pub use patch_helper::ensure_helper_for_tests;
 pub use process::{
     InProcessRunner, RetentionPolicy, ShellRelease, DEFAULT_COMPLETED_TTL, DEFAULT_MAX_COMPLETED,
@@ -149,11 +150,15 @@ pub trait Runner: Send + Sync {
         &self,
         ws: &Workspace,
         path: &str,
+        offset: Option<u64>,
+        limit: Option<u32>,
     ) -> impl std::future::Future<Output = Result<ReadResult, RunnerError>> + Send;
     fn find(
         &self,
         ws: &Workspace,
         glob: Option<&str>,
+        offset: Option<u64>,
+        limit: Option<u32>,
     ) -> impl std::future::Future<Output = Result<FindResult, RunnerError>> + Send;
     fn version(
         &self,
@@ -203,12 +208,28 @@ pub trait Runner: Send + Sync {
 }
 
 impl Runner for InProcessRunner {
-    async fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, RunnerError> {
-        self.read_file(ws, path).await.map_err(RunnerError::from)
+    async fn read(
+        &self,
+        ws: &Workspace,
+        path: &str,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<ReadResult, RunnerError> {
+        self.read_file(ws, path, offset, limit)
+            .await
+            .map_err(RunnerError::from)
     }
 
-    async fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, RunnerError> {
-        self.find_files(ws, glob).await.map_err(RunnerError::from)
+    async fn find(
+        &self,
+        ws: &Workspace,
+        glob: Option<&str>,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<FindResult, RunnerError> {
+        self.find_files(ws, glob, offset, limit)
+            .await
+            .map_err(RunnerError::from)
     }
 
     async fn version(&self, ws: &Workspace, path: &str) -> Result<String, RunnerError> {
@@ -286,17 +307,29 @@ impl RuntimeBackend {
 }
 
 impl Runner for RuntimeBackend {
-    async fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, RunnerError> {
+    async fn read(
+        &self,
+        ws: &Workspace,
+        path: &str,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<ReadResult, RunnerError> {
         match self {
-            Self::InProcess(runner) => runner.read(ws, path).await,
-            Self::Uds(runner) => runner.read(ws, path).await,
+            Self::InProcess(runner) => runner.read(ws, path, offset, limit).await,
+            Self::Uds(runner) => runner.read(ws, path, offset, limit).await,
         }
     }
 
-    async fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, RunnerError> {
+    async fn find(
+        &self,
+        ws: &Workspace,
+        glob: Option<&str>,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<FindResult, RunnerError> {
         match self {
-            Self::InProcess(runner) => runner.find(ws, glob).await,
-            Self::Uds(runner) => runner.find(ws, glob).await,
+            Self::InProcess(runner) => runner.find(ws, glob, offset, limit).await,
+            Self::Uds(runner) => runner.find(ws, glob, offset, limit).await,
         }
     }
 

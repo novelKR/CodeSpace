@@ -35,7 +35,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-응답의 `version`을 보관합니다. 경로는 등록된 루트 기준 상대 경로입니다. `find`는 파일 내용이 아닌 경로 glob으로 검색합니다. `read`는 최대 1 MiB, `find`는 제한된 개수의 경로를 반환합니다. `truncated`가 참이면 전체 결과를 받지 못한 것이며, 공개 API에는 범위 읽기나 페이지 지정 인자가 없습니다.
+응답의 `version`을 보관합니다. 이 값은 반환된 창이 아니라 **전체 파일**의 sha256입니다. 경로는 등록된 루트 기준 상대 경로입니다. `find`는 파일 내용이 아닌 경로 glob으로 검색합니다. `read`와 `find`는 선택적 `offset`·`limit`을 받습니다. 생략하면 첫 창입니다. `read`는 1 MiB, `find`는 정렬된 경로 10000개이며, 그 값이 호출당 상한이기도 합니다. `limit`가 0이거나 상한을 넘으면 `OUTPUT_LIMIT`입니다. `truncated`가 참이면 이 창 뒤에 더 있습니다. `read`의 다음 창은 `offset + byte_count`입니다(`content.len()`이 아님). `find`는 `offset`에 반환된 경로 개수를 더합니다. 광고된 상한은 `execution.files.capabilities`입니다.
 
 아래 `VERSION_FROM_READ`를 실제 `read` 응답의 버전으로 바꾸세요. V4A는 `*** Begin Patch`, `*** Update File` 같은 표식을 사용하는 Codex 텍스트 패치 형식입니다. 아래 예시는 JSON의 줄바꿈 이스케이프를 사용하는 완전한 패치입니다.
 
