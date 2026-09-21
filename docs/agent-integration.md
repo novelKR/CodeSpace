@@ -35,7 +35,7 @@ Use a disposable project for this example. Create `hello.txt` with `hi` followed
 }
 ```
 
-Keep the returned `version`. Paths are relative to the registered root. `find` accepts a path glob, not a content search query. `read` returns at most 1 MiB and `find` returns a bounded list; their `truncated` flag means you did not receive the whole result. There is no public range-read or pagination argument.
+Keep the returned `version`; it hashes the whole file, not the returned window. Paths are relative to the registered root. `find` accepts a path glob, not a content search query. `read` and `find` accept optional `offset` and `limit`. Omitted arguments return the first window: 1 MiB for `read`, 10000 sorted paths for `find`. Those values are also the per-call caps; `OUTPUT_LIMIT` is returned for `limit` 0 or above the cap. `truncated` means more observed content remains after this window; continue only at `next_offset`. Do not compute the next window from `content.len()` or retry an empty page at the same offset. Byte windows may split UTF-8 sequences; `content_lossy=true` means `content` contains replacement decoding and must not be used for exact reconstruction. `find.incomplete=true` means the walk was capped so the matching set is not known to be complete. `listing_version` identifies this observation's sorted path set; if it changes between pages, restart from offset 0. Advertised caps are in `execution.files.capabilities`.
 
 Replace `VERSION_FROM_READ` below with the exact version returned by `read`. V4A is Codex’s text patch format, using markers such as `*** Begin Patch` and `*** Update File`. This is a complete V4A patch, with JSON newline escapes:
 

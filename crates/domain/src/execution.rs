@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::approval::ApprovalsMode;
 use crate::error::ErrorCode;
+use crate::files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT};
 
 /// Advertised PTY size. Must match the isolated PTY adapter default.
 pub const PTY_INITIAL_ROWS: u16 = 24;
@@ -112,6 +113,16 @@ pub struct FileOperationInfo {
     pub available: bool,
 }
 
+/// Advertised file-window contract. Always present; availability is
+/// still `files.read.available` / `files.find.available`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileCapabilityInfo {
+    pub read_range: bool,
+    pub find_pagination: bool,
+    pub read_max_bytes: u32,
+    pub find_max_paths: u32,
+}
+
 /// Effective file-tool eligibility. Nested so later capability fields
 /// can be additive without renaming `available`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -119,6 +130,7 @@ pub struct FileExecutionInfo {
     pub read: FileOperationInfo,
     pub find: FileOperationInfo,
     pub patch: FileOperationInfo,
+    pub capabilities: FileCapabilityInfo,
 }
 
 /// Static eligibility of a managed process in this workspace.
@@ -211,6 +223,12 @@ impl WorkspaceExecutionInfo {
             },
             patch: FileOperationInfo {
                 available: permissions.write && environment.file_write_supported,
+            },
+            capabilities: FileCapabilityInfo {
+                read_range: true,
+                find_pagination: true,
+                read_max_bytes: DEFAULT_READ_LIMIT,
+                find_max_paths: DEFAULT_FIND_LIMIT,
             },
         };
         let process_available = permissions.exec && environment.exec_supported;
@@ -318,10 +336,24 @@ mod tests {
         assert_eq!(exec.files.read.available, read);
         assert_eq!(exec.files.find.available, find);
         assert_eq!(exec.files.patch.available, patch);
+        assert!(exec.files.capabilities.read_range);
+        assert!(exec.files.capabilities.find_pagination);
+        assert_eq!(exec.files.capabilities.read_max_bytes, DEFAULT_READ_LIMIT);
+        assert_eq!(exec.files.capabilities.find_max_paths, DEFAULT_FIND_LIMIT);
         let json = serde_json::to_value(exec).unwrap();
         assert_eq!(json["files"]["read"]["available"], read);
         assert_eq!(json["files"]["find"]["available"], find);
         assert_eq!(json["files"]["patch"]["available"], patch);
+        assert_eq!(json["files"]["capabilities"]["read_range"], true);
+        assert_eq!(json["files"]["capabilities"]["find_pagination"], true);
+        assert_eq!(
+            json["files"]["capabilities"]["read_max_bytes"].as_u64(),
+            Some(u64::from(DEFAULT_READ_LIMIT))
+        );
+        assert_eq!(
+            json["files"]["capabilities"]["find_max_paths"].as_u64(),
+            Some(u64::from(DEFAULT_FIND_LIMIT))
+        );
     }
 
     #[test]

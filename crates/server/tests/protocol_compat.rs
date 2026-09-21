@@ -318,6 +318,11 @@ async fn http_forced_2025_11_25_process_resize_caps() {
     assert_eq!(lifetime["runner_disconnect"], "terminate");
     assert_eq!(lifetime["gateway_shutdown"], "terminate");
     assert_eq!(lifetime["restart_recovery"], "none");
+    let files = &body["execution"]["files"]["capabilities"];
+    assert_eq!(files["read_range"], true);
+    assert_eq!(files["find_pagination"], true);
+    assert_eq!(files["read_max_bytes"], 1048576);
+    assert_eq!(files["find_max_paths"], 10000);
     client.cancel().await.expect("cancel http");
 }
 

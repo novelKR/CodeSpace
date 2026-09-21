@@ -56,6 +56,19 @@ CodeSpace is an execution-only MCP and never calls a model.
 Use workspace-relative paths for file tools. workspace_id and work_id are \
 selectors, not credentials.
 
+read and find accept optional offset and limit. Omitted arguments return \
+the first window: 1 MiB for read, 10000 sorted paths for find. Per-call \
+caps are the same. truncated means more observed content remains after \
+this window. Continue only when next_offset is present. Do not compute \
+the next window from content.len() or retry an empty page at the same \
+offset. Byte windows may split UTF-8 sequences; content_lossy=true means \
+content contains replacement decoding and must not be used for exact \
+reconstruction. find.incomplete=true means the walk was capped so the \
+matching set is not known to be complete. listing_version identifies \
+this observation's sorted path set; if it changes between pages, restart \
+from offset 0. version hashes the whole file, not the window. A limit of \
+0 or above the cap returns OUTPUT_LIMIT.
+
 exec_command accepts argv; there is no implicit shell. It runs in the \
 workspace cwd and returns a server-minted process_id. Ending an MCP request \
 does not terminate the process.
@@ -170,7 +183,7 @@ impl CodeSpace {
 
     #[tool(
         name = "read",
-        description = "Read a relative workspace file and return content plus a sha256 version. Rejects symlinks, special files, and path escape."
+        description = "Read a relative workspace file and return content plus a sha256 version of the whole file. Optional offset and limit select a byte window (default 0 and 1 MiB, max 1 MiB per call). truncated means more bytes remain after this window; continue only at next_offset. Byte windows may split UTF-8 sequences. content_lossy=true means content contains replacement decoding and must not be used for exact reconstruction. Rejects symlinks, special files, and path escape."
     )]
     async fn read(
         &self,
@@ -181,7 +194,7 @@ impl CodeSpace {
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
         self.runner
-            .read(ws, &params.path)
+            .read(ws, &params.path, params.offset, params.limit)
             .await
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
@@ -192,7 +205,7 @@ impl CodeSpace {
 
     #[tool(
         name = "find",
-        description = "List relative file paths in a workspace. Does not follow symlinks."
+        description = "List relative file paths in a workspace. Does not follow symlinks. Optional offset and limit page the sorted path list (default 0 and 10000, max 10000 per call). truncated means more observed matching paths remain; continue only at next_offset. incomplete=true means the walk was capped so the matching set is not known to be complete. listing_version identifies this observation's sorted path set. Do not retry an empty page at the same offset."
     )]
     async fn find(
         &self,
@@ -203,7 +216,7 @@ impl CodeSpace {
             .get(&params.workspace_id.0)
             .map_err(err_json)?;
         self.runner
-            .find(ws, params.glob.as_deref())
+            .find(ws, params.glob.as_deref(), params.offset, params.limit)
             .await
             .map(|mut result| {
                 result.coordination = self.hint(&params.workspace_id.0, params.work_id.as_ref());
@@ -1054,7 +1067,12 @@ mod tests {
     }
 
     fn assert_instructions_cover_execution_contract(text: &str) {
-        assert!(text.contains("never calls a model"), "{text}");
+        assert!(text.contains("optional offset and limit"), "{text}");
+        assert!(text.contains("next_offset"), "{text}");
+        assert!(text.contains("content_lossy"), "{text}");
+        assert!(text.contains("incomplete"), "{text}");
+        assert!(text.contains("listing_version"), "{text}");
+        assert!(text.contains("OUTPUT_LIMIT"), "{text}");
         assert!(
             text.contains("Ending an MCP request does not terminate the process"),
             "{text}"
@@ -1152,6 +1170,8 @@ mod tests {
         assert!(
             exec.files.read.available && exec.files.find.available && exec.files.patch.available
         );
+        assert!(exec.files.capabilities.read_range);
+        assert!(exec.files.capabilities.find_pagination);
         assert!(exec.process.available);
         let tty = &exec
             .process
@@ -1178,6 +1198,22 @@ mod tests {
         assert_eq!(
             json["execution"]["process"]["capabilities"]["lifetime"]["restart_recovery"],
             "none"
+        );
+        assert_eq!(
+            json["execution"]["files"]["capabilities"]["read_range"],
+            true
+        );
+        assert_eq!(
+            json["execution"]["files"]["capabilities"]["find_pagination"],
+            true
+        );
+        assert_eq!(
+            json["execution"]["files"]["capabilities"]["read_max_bytes"],
+            1048576
+        );
+        assert_eq!(
+            json["execution"]["files"]["capabilities"]["find_max_paths"],
+            10000
         );
         assert!(json.get("environment_id").is_none());
         assert!(!json.to_string().contains("\"environment_id\""));

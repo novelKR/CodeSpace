@@ -19,7 +19,7 @@ use crate::{
     RunnerResizeResult, RunnerWriteStdin, ShellRelease,
 };
 
-pub const WIRE_PROTOCOL: u32 = 5;
+pub const WIRE_PROTOCOL: u32 = 6;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
 
@@ -114,10 +114,18 @@ pub enum RunnerOp {
     Read {
         workspace: Workspace,
         path: String,
+        #[serde(default)]
+        offset: Option<u64>,
+        #[serde(default)]
+        limit: Option<u32>,
     },
     Find {
         workspace: Workspace,
         glob: Option<String>,
+        #[serde(default)]
+        offset: Option<u64>,
+        #[serde(default)]
+        limit: Option<u32>,
     },
     Version {
         workspace: Workspace,
@@ -323,12 +331,22 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
 
 async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResult, ErrorBody> {
     let result = match op {
-        RunnerOp::Read { workspace, path } => runner
-            .read(&workspace, &path)
+        RunnerOp::Read {
+            workspace,
+            path,
+            offset,
+            limit,
+        } => runner
+            .read(&workspace, &path, offset, limit)
             .await
             .map(RunnerOpResult::Read),
-        RunnerOp::Find { workspace, glob } => runner
-            .find(&workspace, glob.as_deref())
+        RunnerOp::Find {
+            workspace,
+            glob,
+            offset,
+            limit,
+        } => runner
+            .find(&workspace, glob.as_deref(), offset, limit)
             .await
             .map(RunnerOpResult::Find),
         RunnerOp::Version { workspace, path } => runner
@@ -393,8 +411,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_protocol_is_v5() {
-        assert_eq!(WIRE_PROTOCOL, 5);
+    fn wire_protocol_is_v6() {
+        assert_eq!(WIRE_PROTOCOL, 6);
     }
 
     #[tokio::test]
@@ -450,6 +468,8 @@ mod tests {
                 RunnerOp::Read {
                     workspace: ws.clone(),
                     path: "a.txt".into(),
+                    offset: None,
+                    limit: None,
                 },
             ),
         )

@@ -56,7 +56,7 @@ The Runner may start a recursive filesystem watcher for a workspace on the first
 
 `expected_versions` and `VERSION_CONFLICT` remain the authoritative apply guard. Missing, coalesced, or restarted watch events must never make `apply_patch` succeed when the on-disk hash no longer matches. Overflow, receive failure (including a lagged subscriber), or an unclassifiable event yields `ResyncRequired` on the same epoch (treat any consumer cache as fully untrusted). Restarting the watcher increments `epoch` and also emits `ResyncRequired` only after a replacement watcher is running. This substrate does not classify self-generated versus external writes, keep a lossless event ledger, or send watch events over UDS.
 
-`find` stays a bounded glob walk. It is not a watch API.
+`find` stays a bounded glob walk. It is not a watch API. `read` and `find` accept optional `offset` and `limit`; omitted arguments return the first window. Per-call caps remain 1 MiB and 10000 paths. `truncated` means more observed bytes or paths remain after this window; continue only at `next_offset`. `content_lossy` marks replacement UTF-8 decoding. `incomplete` marks a capped walk, not another page. `listing_version` identifies the observed sorted matching set for this call, not the page. `version` hashes the whole file. Watch events remain invalidation hints and are not listing identity.
 
 <a id="hooks-and-skills"></a>
 <a id="roadmap-implementation-later"></a>
@@ -69,7 +69,7 @@ When the operator sets workspace `approvals` to `confirm`, a policy-allowed `app
 
 ## What remains unimplemented
 
-File range/pagination arguments, durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
+Durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
 
 ## Maintaining the boundary
 

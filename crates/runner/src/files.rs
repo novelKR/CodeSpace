@@ -1,12 +1,12 @@
-use codespace_domain::{ErrorBody, ErrorCode, FindResult, ReadResult};
+use codespace_domain::{
+    ErrorBody, ErrorCode, FindResult, ReadResult, DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT,
+};
 use codespace_fs::{self, FsError};
 use sha2::{Digest, Sha256};
 
 use crate::PathSandbox;
 
 pub const VERSION_ABSENT: &str = "absent";
-pub const DEFAULT_READ_LIMIT: usize = 1024 * 1024;
-pub const DEFAULT_FIND_LIMIT: usize = 10_000;
 
 impl PathSandbox {
     pub fn version_of(bytes: &[u8]) -> String {
@@ -27,14 +27,17 @@ impl PathSandbox {
     }
 
     pub async fn read_file(&self, relative: &str) -> Result<ReadResult, ErrorBody> {
-        self.read_file_limited(relative, DEFAULT_READ_LIMIT).await
+        self.read_file_window(relative, None, None).await
     }
 
-    pub async fn read_file_limited(
+    pub async fn read_file_window(
         &self,
         relative: &str,
-        limit: usize,
+        offset: Option<u64>,
+        limit: Option<u32>,
     ) -> Result<ReadResult, ErrorBody> {
+        let limit = resolve_limit(limit, DEFAULT_READ_LIMIT, "read")?;
+        let offset = offset.unwrap_or(0);
         let path = self.resolve(relative)?;
         let meta = codespace_fs::metadata(&path).await.map_err(fs_error_body)?;
         if meta.is_symlink {
@@ -50,32 +53,33 @@ impl PathSandbox {
             ));
         }
         let bytes = codespace_fs::read(&path).await.map_err(fs_error_body)?;
-        let truncated = bytes.len() > limit;
-        if truncated && limit == 0 {
-            return Err(ErrorBody::new(
-                ErrorCode::OutputLimit,
-                "read output limit is zero",
-            ));
-        }
-        let slice = if truncated { &bytes[..limit] } else { &bytes };
+        let (slice, truncated) = byte_window(&bytes, offset, limit);
+        let content_lossy = std::str::from_utf8(slice).is_err();
         Ok(ReadResult {
             path: normalize_rel(relative),
             content: String::from_utf8_lossy(slice).into_owned(),
             version: Self::version_of(&bytes),
             truncated,
+            offset,
+            byte_count: slice.len() as u64,
+            content_lossy,
+            next_offset: truncated.then_some(offset + slice.len() as u64),
             coordination: None,
         })
     }
 
     pub async fn find(&self, glob: Option<&str>) -> Result<FindResult, ErrorBody> {
-        self.find_limited(glob, DEFAULT_FIND_LIMIT).await
+        self.find_window(glob, None, None).await
     }
 
-    pub async fn find_limited(
+    pub async fn find_window(
         &self,
         glob: Option<&str>,
-        limit: usize,
+        offset: Option<u64>,
+        limit: Option<u32>,
     ) -> Result<FindResult, ErrorBody> {
+        let limit = resolve_limit(limit, DEFAULT_FIND_LIMIT, "find")?;
+        let offset = offset.unwrap_or(0);
         // Operator-registered `workspace.root` is the trust anchor. If the
         // registration path is itself a symlink, canonicalize resolves that
         // root only. Descendants under it are never followed.
@@ -101,15 +105,82 @@ impl PathSandbox {
             paths.push(rel);
         }
         paths.sort();
-        let truncated = walked.truncated || paths.len() > limit;
-        if paths.len() > limit {
-            paths.truncate(limit);
-        }
+        let page = path_window(&paths, offset, limit, walked.truncated);
         Ok(FindResult {
-            paths,
-            truncated,
+            paths: page.paths,
+            truncated: page.truncated,
+            offset,
+            incomplete: page.incomplete,
+            listing_version: listing_version(&paths, page.incomplete),
+            next_offset: page.next_offset,
             coordination: None,
         })
+    }
+}
+
+fn resolve_limit(requested: Option<u32>, max: u32, what: &str) -> Result<usize, ErrorBody> {
+    let limit = requested.unwrap_or(max);
+    if limit == 0 || limit > max {
+        return Err(ErrorBody::new(
+            ErrorCode::OutputLimit,
+            format!("{what} limit must be between 1 and {max}"),
+        ));
+    }
+    Ok(limit as usize)
+}
+
+fn byte_window(bytes: &[u8], offset: u64, limit: usize) -> (&[u8], bool) {
+    let len = bytes.len() as u64;
+    if offset >= len {
+        return (&[], false);
+    }
+    let start = offset as usize;
+    let end = start.saturating_add(limit).min(bytes.len());
+    (&bytes[start..end], (end as u64) < len)
+}
+
+struct PathPage {
+    paths: Vec<String>,
+    truncated: bool,
+    incomplete: bool,
+    next_offset: Option<u64>,
+}
+
+fn listing_version(paths: &[String], incomplete: bool) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(if incomplete {
+        b"incomplete\0".as_slice()
+    } else {
+        b"complete\0".as_slice()
+    });
+    for path in paths {
+        hasher.update(path.as_bytes());
+        hasher.update(b"\0");
+    }
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn path_window(paths: &[String], offset: u64, limit: usize, walk_truncated: bool) -> PathPage {
+    let incomplete = walk_truncated;
+    let len = paths.len() as u64;
+    if offset >= len {
+        return PathPage {
+            paths: Vec::new(),
+            truncated: false,
+            incomplete,
+            next_offset: None,
+        };
+    }
+    let start = offset as usize;
+    let remaining = paths.len() - start;
+    let truncated = remaining > limit;
+    let end = start.saturating_add(limit).min(paths.len());
+    let page = paths[start..end].to_vec();
+    PathPage {
+        next_offset: truncated.then_some(offset + page.len() as u64),
+        paths: page,
+        truncated,
+        incomplete,
     }
 }
 
@@ -171,6 +242,10 @@ mod tests {
         assert!(first.version.starts_with("sha256:"));
         assert!(!first.truncated);
         assert_eq!(first.path, "a.txt");
+        assert_eq!(first.offset, 0);
+        assert_eq!(first.byte_count, 5);
+        assert!(!first.content_lossy);
+        assert!(first.next_offset.is_none());
         assert_eq!(s.version("missing").await.unwrap(), VERSION_ABSENT);
     }
 
@@ -179,10 +254,25 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("big.txt"), "abcdef").unwrap();
         let s = sandbox(dir.path());
-        let result = s.read_file_limited("big.txt", 3).await.unwrap();
+        let result = s.read_file_window("big.txt", None, Some(3)).await.unwrap();
         assert_eq!(result.content, "abc");
         assert!(result.truncated);
+        assert_eq!(result.offset, 0);
+        assert_eq!(result.byte_count, 3);
+        assert!(!result.content_lossy);
+        assert_eq!(result.next_offset, Some(3));
         assert_eq!(result.version, PathSandbox::version_of(b"abcdef"));
+        let rest = s
+            .read_file_window("big.txt", result.next_offset, Some(3))
+            .await
+            .unwrap();
+        assert_eq!(rest.content, "def");
+        assert!(!rest.truncated);
+        assert_eq!(rest.offset, 3);
+        assert_eq!(rest.byte_count, 3);
+        assert!(!rest.content_lossy);
+        assert!(rest.next_offset.is_none());
+        assert_eq!(rest.version, result.version);
     }
 
     #[tokio::test]
@@ -198,9 +288,24 @@ mod tests {
         assert!(all.paths.iter().all(|p| !p.starts_with('/')));
         let rs = s.find(Some("*.rs")).await.unwrap();
         assert_eq!(rs.paths, vec!["a.rs".to_string()]);
-        let limited = s.find_limited(None, 1).await.unwrap();
+        let limited = s.find_window(None, None, Some(1)).await.unwrap();
         assert!(limited.truncated);
+        assert!(!limited.incomplete);
         assert_eq!(limited.paths.len(), 1);
+        assert_eq!(limited.offset, 0);
+        assert_eq!(limited.next_offset, Some(1));
+        assert!(limited.listing_version.starts_with("sha256:"));
+        let page = s
+            .find_window(None, limited.next_offset, Some(1))
+            .await
+            .unwrap();
+        assert!(!page.truncated);
+        assert!(!page.incomplete);
+        assert_eq!(page.offset, 1);
+        assert_eq!(page.paths.len(), 1);
+        assert!(page.next_offset.is_none());
+        assert_eq!(page.listing_version, limited.listing_version);
+        assert_ne!(page.paths, limited.paths);
     }
 
     #[tokio::test]
@@ -297,5 +402,126 @@ mod tests {
         drop(dir);
         let err = s.find(None).await.unwrap_err();
         assert_eq!(err.code, ErrorCode::FileOperationFailed);
+    }
+
+    #[tokio::test]
+    async fn read_window_past_eof_is_empty() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+        let s = sandbox(dir.path());
+        let result = s.read_file_window("a.txt", Some(10), None).await.unwrap();
+        assert_eq!(result.content, "");
+        assert!(!result.truncated);
+        assert_eq!(result.offset, 10);
+        assert_eq!(result.byte_count, 0);
+        assert!(!result.content_lossy);
+        assert!(result.next_offset.is_none());
+        assert_eq!(result.version, PathSandbox::version_of(b"hi"));
+    }
+
+    #[tokio::test]
+    async fn read_limit_zero_or_above_cap_is_output_limit() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+        let s = sandbox(dir.path());
+        let zero = s
+            .read_file_window("a.txt", None, Some(0))
+            .await
+            .unwrap_err();
+        assert_eq!(zero.code, ErrorCode::OutputLimit);
+        let over = s
+            .read_file_window("a.txt", None, Some(DEFAULT_READ_LIMIT + 1))
+            .await
+            .unwrap_err();
+        assert_eq!(over.code, ErrorCode::OutputLimit);
+    }
+
+    #[tokio::test]
+    async fn find_limit_zero_or_above_cap_is_output_limit() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let s = sandbox(dir.path());
+        let zero = s.find_window(None, None, Some(0)).await.unwrap_err();
+        assert_eq!(zero.code, ErrorCode::OutputLimit);
+        let over = s
+            .find_window(None, None, Some(DEFAULT_FIND_LIMIT + 1))
+            .await
+            .unwrap_err();
+        assert_eq!(over.code, ErrorCode::OutputLimit);
+    }
+
+    #[tokio::test]
+    async fn read_lossy_utf8_reports_file_byte_count() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("bin"), [0x61, 0xff, 0x62]).unwrap();
+        let s = sandbox(dir.path());
+        let first = s.read_file_window("bin", None, Some(2)).await.unwrap();
+        assert!(first.truncated);
+        assert!(first.content_lossy);
+        assert_eq!(first.byte_count, 2);
+        assert_eq!(first.next_offset, Some(2));
+        assert_ne!(first.content.len() as u64, first.byte_count);
+        let rest = s
+            .read_file_window("bin", first.next_offset, Some(2))
+            .await
+            .unwrap();
+        assert_eq!(rest.content, "b");
+        assert!(!rest.truncated);
+        assert!(!rest.content_lossy);
+        assert_eq!(rest.byte_count, 1);
+        assert!(rest.next_offset.is_none());
+        assert_eq!(rest.version, first.version);
+    }
+
+    #[tokio::test]
+    async fn read_window_split_utf8() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("hangul.txt"), "가").unwrap();
+        let s = sandbox(dir.path());
+        let first = s
+            .read_file_window("hangul.txt", None, Some(1))
+            .await
+            .unwrap();
+        assert!(first.content_lossy);
+        assert_eq!(first.byte_count, 1);
+        assert_eq!(first.next_offset, Some(1));
+        assert_eq!(first.version, PathSandbox::version_of("가".as_bytes()));
+    }
+
+    #[test]
+    fn find_walk_truncated_cannot_return_retry_loop() {
+        let paths = vec!["a".into(), "b".into()];
+        let page = path_window(&paths, 2, 10, true);
+        assert!(page.paths.is_empty());
+        assert!(!page.truncated);
+        assert!(page.incomplete);
+        assert!(page.next_offset.is_none());
+    }
+
+    #[test]
+    fn listing_version_includes_completeness() {
+        let paths = vec!["a.rs".into()];
+        assert_ne!(
+            listing_version(&paths, false),
+            listing_version(&paths, true)
+        );
+        assert!(listing_version(&paths, false).starts_with("sha256:"));
+    }
+
+    #[tokio::test]
+    async fn find_listing_version_changes_between_pages() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "a").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "b").unwrap();
+        let s = sandbox(dir.path());
+        let first = s.find_window(None, None, Some(1)).await.unwrap();
+        assert_eq!(first.paths, vec!["a.rs".to_string()]);
+        assert_eq!(first.next_offset, Some(1));
+        std::fs::write(dir.path().join("0.rs"), "z").unwrap();
+        let second = s
+            .find_window(None, first.next_offset, Some(1))
+            .await
+            .unwrap();
+        assert_ne!(second.listing_version, first.listing_version);
     }
 }

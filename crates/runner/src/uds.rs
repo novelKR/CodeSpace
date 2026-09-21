@@ -296,11 +296,19 @@ fn unexpected(result: RunnerOpResult) -> RunnerError {
 }
 
 impl Runner for UdsRunner {
-    async fn read(&self, ws: &Workspace, path: &str) -> Result<ReadResult, RunnerError> {
+    async fn read(
+        &self,
+        ws: &Workspace,
+        path: &str,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<ReadResult, RunnerError> {
         match self
             .call(RunnerOp::Read {
                 workspace: ws.clone(),
                 path: path.to_string(),
+                offset,
+                limit,
             })
             .await?
         {
@@ -309,11 +317,19 @@ impl Runner for UdsRunner {
         }
     }
 
-    async fn find(&self, ws: &Workspace, glob: Option<&str>) -> Result<FindResult, RunnerError> {
+    async fn find(
+        &self,
+        ws: &Workspace,
+        glob: Option<&str>,
+        offset: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<FindResult, RunnerError> {
         match self
             .call(RunnerOp::Find {
                 workspace: ws.clone(),
                 glob: glob.map(str::to_string),
+                offset,
+                limit,
             })
             .await?
         {
