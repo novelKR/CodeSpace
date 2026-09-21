@@ -256,6 +256,25 @@ impl Store {
         approval_id: &ApprovalId,
         result: Result<&OperationResumeResult, &ErrorBody>,
     ) -> Result<(), ErrorBody> {
+        let queued = {
+            let conn = self.conn.lock().expect("sqlite mutex");
+            load(&conn, &approval_id.0)?
+                .ok_or_else(|| not_found(approval_id))?
+                .state
+                == ApprovalState::Queued.as_str()
+        };
+        if queued
+            && matches!(
+                &result,
+                Err(err)
+                    if matches!(
+                        err.code,
+                        ErrorCode::WorkspaceBusy | ErrorCode::ResourceQueueFull
+                    )
+            )
+        {
+            return Ok(());
+        }
         if self.take_fail_next_finish() {
             return Err(ambiguous(
                 approval_id,
@@ -733,6 +752,53 @@ mod tests {
             }
             other => panic!("expected execute, got {other:?}"),
         };
+    }
+
+    #[test]
+    fn queued_scheduler_errors_do_not_consume_approval() {
+        for (index, code) in [
+            ErrorCode::WorkspaceBusy,
+            ErrorCode::ResourceQueueFull,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let store = Store::memory().unwrap();
+            let created = store
+                .create_approval(
+                    "demo",
+                    ApprovalTargetTool::ExecCommand,
+                    &format!("sha256:retryable-{index}"),
+                    json!({"workspace_id":"demo","command":["/bin/echo","ok"]}),
+                )
+                .unwrap();
+            store
+                .resolve_approval(&created.approval_id, ApprovalDecision::Grant)
+                .unwrap();
+
+            let guard = match store.claim_resume(&created.approval_id).unwrap() {
+                ResumeClaim::Execute(_, guard) => guard,
+                other => panic!("expected execute, got {other:?}"),
+            };
+            let err = ErrorBody::new(code, "transient scheduler conflict");
+            store
+                .finish_resume(&created.approval_id, Err(&err))
+                .unwrap();
+
+            let (state, params_json, result_json) =
+                store.inspect_approval(&created.approval_id).unwrap();
+            assert_eq!(state, ApprovalState::Queued);
+            assert!(!params_json.contains("\"scrubbed\":true"));
+            assert!(result_json.is_none());
+
+            drop(guard);
+            match store.claim_resume(&created.approval_id).unwrap() {
+                ResumeClaim::Execute(record, _guard) => {
+                    assert_eq!(record.state, ApprovalState::Queued);
+                }
+                other => panic!("expected retryable execute, got {other:?}"),
+            }
+        }
     }
 
     #[test]
