@@ -75,7 +75,8 @@ does not terminate the process.
 
 A live managed process holds the workspace mutation lease. read and find may \
 continue, but apply_patch or another exec_command may return WORKSPACE_BUSY \
-until the process exits or is terminated.
+until the process exits or is terminated. Overlapping request-owned patch \
+or exec work on the same workspace waits in FIFO order instead of failing.
 
 exec_command.tty is optional and defaults to false. tty=true attaches a \
 fixed 24x80 PTY. Use process_resize on a running PTY to change rows and \
@@ -227,7 +228,7 @@ impl CodeSpace {
 
     #[tool(
         name = "apply_patch",
-        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply. status=unknown means the mutation may have executed but its result could not be confirmed. Do not retry the same mutation under a new operation_key. operation_key provides replay/idempotency for the same logical mutation. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before begin() and does not write."
+        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply. status=unknown means the mutation may have executed but its result could not be confirmed. Do not retry the same mutation under a new operation_key. operation_key provides replay/idempotency for the same logical mutation. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before begin() and does not write. A live process still returns WORKSPACE_BUSY. Overlapping request-owned patch or exec work on the same workspace waits in FIFO order."
     )]
     async fn apply_patch(
         &self,
@@ -264,7 +265,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a 24x80 PTY; use process_resize to change the size of a running PTY. tty_size is not an exec_command argument. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, process_status, process_resize, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process, process_status, process_resize, or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a 24x80 PTY; use process_resize to change the size of a running PTY. tty_size is not an exec_command argument. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Overlapping request-owned patch or exec work on the same workspace waits in FIFO order. Use write_stdin, read_process, process_status, process_resize, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process, process_status, process_resize, or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
     )]
     async fn exec_command(
         &self,
@@ -523,7 +524,7 @@ impl CodeSpace {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
         ws.require_file_write()?;
-        let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
+        let _lease = self.store.acquire_write(&params.workspace_id.0).await?;
         let fingerprint = Store::fingerprint(&params);
         match self.store.begin(
             params.operation_key.as_ref(),
@@ -838,7 +839,8 @@ impl CodeSpace {
         }
         let process_id = ProcessId(format!("proc-{}", Uuid::new_v4()));
         self.store
-            .mark_shell_busy(&params.workspace_id.0, &process_id.0)?;
+            .acquire_shell_busy(&params.workspace_id.0, &process_id.0)
+            .await?;
         let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
         req.policy.network = ws.network;
         req.tty = params.tty;

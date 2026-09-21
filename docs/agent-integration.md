@@ -191,7 +191,7 @@ Default workspaces run allowed patches and commands immediately. If the operator
 | Exec `dispatch_status: unknown` | A process may exist. Inspect or terminate the returned handle if reachable; do not blindly start another |
 | Lost spawn response / no `process_id` | Do not invent or search for a handle. Do not start a duplicate; the process may still occupy the workspace |
 | Client/HTTP session lost after spawn | Process keeps running. Reconnect and use the saved `process_id` |
-| `WORKSPACE_BUSY` | Wait for the owning task or cancel the process; avoid a tight retry loop |
+| `WORKSPACE_BUSY` | Live process owns the workspace; wait or cancel it. Concurrent request-owned patch/exec is serialized by the server. Avoid a tight retry loop |
 | `TIMEOUT` | Treat execution as interrupted; inspect partial effects |
 | Server/worker lost | Reconnect and inspect capabilities/files; old process handles are not recoverable |
 

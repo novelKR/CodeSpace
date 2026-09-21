@@ -115,3 +115,65 @@ async fn apply_writes_and_check_only_does_not() {
 
     client.cancel().await.expect("cancel");
 }
+
+#[tokio::test]
+async fn concurrent_apply_patch_serializes_without_busy() {
+    let root = tempfile::tempdir().unwrap();
+    let ws = root.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let cfg = root.path().join("workspaces.json");
+    std::fs::write(
+        &cfg,
+        serde_json::json!({
+            "workspaces": {
+                "demo": { "root": ws, "profile": "workspace-write" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let db = root.path().join("ops.sqlite");
+    let bin = env!("CARGO_BIN_EXE_codespace-mcp");
+    let patch_bin = codespace_server::patch_helper::ensure_helper_for_tests();
+    let client = ()
+        .serve(
+            TokioChildProcess::new(Command::new(bin).configure(|cmd| {
+                cmd.env("CODESPACE_CONFIG", &cfg)
+                    .env("CODESPACE_OPERATIONS_DB", &db)
+                    .env("CODESPACE_PATCH_BIN", &patch_bin);
+            }))
+            .expect("spawn"),
+        )
+        .await
+        .expect("init");
+
+    let first = client.call_tool(CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(
+        object!({
+            "workspace_id": "demo",
+            "patch": "*** Begin Patch\n*** Add File: a.txt\n+one\n*** End Patch\n",
+            "operation_key": "sched-a"
+        }),
+    ));
+    let second = client.call_tool(CallToolRequestParams::new(TOOL_APPLY_PATCH).with_arguments(
+        object!({
+            "workspace_id": "demo",
+            "patch": "*** Begin Patch\n*** Add File: b.txt\n+two\n*** End Patch\n",
+            "operation_key": "sched-b"
+        }),
+    ));
+    let (first, second) = tokio::join!(first, second);
+    let first_body = payload(&first.expect("first patch"));
+    let second_body = payload(&second.expect("second patch"));
+    assert_eq!(first_body["status"], "applied");
+    assert_eq!(second_body["status"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("ws/a.txt")).unwrap(),
+        "one\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("ws/b.txt")).unwrap(),
+        "two\n"
+    );
+
+    client.cancel().await.expect("cancel");
+}

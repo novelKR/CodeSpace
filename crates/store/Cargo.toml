@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "SQLite operations plus in-memory resource serialization"
+description = "SQLite operations plus in-memory resource occupancy and FIFO scheduling"
 
 [dependencies]
 codespace-domain = { path = "../domain" }
@@ -15,6 +15,8 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }

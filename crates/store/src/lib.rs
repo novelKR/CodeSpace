@@ -1,4 +1,7 @@
-//! Single-instance SQLite operations, confirmation holds, and in-process workspace write locks.
+//! Single-instance SQLite operations, confirmation holds, and in-memory
+//! resource occupancy. Occupancy is not a SQLite schema. Request-owned
+//! conflicts wait on a per-resource FIFO; a live process still rejects
+//! immediately with `WORKSPACE_BUSY`.
 //! HTTP/JSON-RPC request ids are never stored as [`OperationId`] values.
 
 mod approvals;
@@ -19,6 +22,7 @@ use sha2::{Digest, Sha256};
 
 pub use approvals::{ApprovalRecord, ResumeClaim};
 pub use coord::CreateIntent;
+use resource::AcquireOutcome;
 pub use resource::{LockMode, Resource, ResourceGuard};
 
 #[derive(Debug, Clone)]
@@ -54,6 +58,44 @@ pub struct WriteGuard<'a> {
 impl Drop for WriteGuard<'_> {
     fn drop(&mut self) {
         self.store.release_write(&self.workspace_id);
+    }
+}
+
+struct WaitTicket<'a> {
+    store: &'a Store,
+    resource: Resource,
+    mode: LockMode,
+    id: u64,
+    rx: tokio::sync::oneshot::Receiver<Result<(), ErrorBody>>,
+    finished: bool,
+}
+
+impl WaitTicket<'_> {
+    async fn wait(mut self) -> Result<(), ErrorBody> {
+        let result = match (&mut self.rx).await {
+            Ok(value) => value,
+            Err(_) => Err(ErrorBody::new(
+                ErrorCode::WorkspaceBusy,
+                "resource waiter closed",
+            )),
+        };
+        self.finished = true;
+        result
+    }
+}
+
+impl Drop for WaitTicket<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut serializer = self.store.locks.lock().expect("lock mutex");
+        if serializer.cancel_waiter(&self.resource, self.id) {
+            return;
+        }
+        if matches!(self.rx.try_recv(), Ok(Ok(()))) {
+            serializer.unlock(&self.resource, self.mode);
+        }
     }
 }
 
@@ -172,6 +214,24 @@ impl Store {
         })
     }
 
+    pub async fn acquire_write<'a>(
+        &'a self,
+        workspace_id: &str,
+    ) -> Result<WriteGuard<'a>, ErrorBody> {
+        let resource = Resource::Workspace(workspace_id.to_string());
+        let outcome = self
+            .locks
+            .lock()
+            .expect("lock mutex")
+            .acquire_exclusive_write(workspace_id);
+        self.complete_acquire(resource, LockMode::Exclusive, outcome)
+            .await?;
+        Ok(WriteGuard {
+            store: self,
+            workspace_id: workspace_id.to_string(),
+        })
+    }
+
     fn release_write(&self, workspace_id: &str) {
         self.locks
             .lock()
@@ -184,6 +244,21 @@ impl Store {
             .lock()
             .expect("lock mutex")
             .mark_shell_busy(workspace_id, process_id)
+    }
+
+    pub async fn acquire_shell_busy(
+        &self,
+        workspace_id: &str,
+        process_id: &str,
+    ) -> Result<(), ErrorBody> {
+        let resource = Resource::Workspace(workspace_id.to_string());
+        let outcome = self
+            .locks
+            .lock()
+            .expect("lock mutex")
+            .acquire_shell_busy(workspace_id, process_id);
+        self.complete_acquire(resource, LockMode::Exclusive, outcome)
+            .await
     }
 
     pub fn clear_shell(&self, workspace_id: &str) {
@@ -219,11 +294,58 @@ impl Store {
         Ok(ResourceGuard::new(self, resource, mode))
     }
 
+    pub async fn lock(
+        &self,
+        resource: Resource,
+        mode: LockMode,
+    ) -> Result<ResourceGuard<'_>, ErrorBody> {
+        let outcome = self
+            .locks
+            .lock()
+            .expect("lock mutex")
+            .acquire_lock(resource.clone(), mode);
+        self.complete_acquire(resource.clone(), mode, outcome)
+            .await?;
+        Ok(ResourceGuard::new(self, resource, mode))
+    }
+
     fn release_resource(&self, resource: &Resource, mode: LockMode) {
         self.locks
             .lock()
             .expect("lock mutex")
             .unlock(resource, mode);
+    }
+
+    async fn complete_acquire(
+        &self,
+        resource: Resource,
+        mode: LockMode,
+        outcome: AcquireOutcome,
+    ) -> Result<(), ErrorBody> {
+        match outcome {
+            AcquireOutcome::Granted => Ok(()),
+            AcquireOutcome::Busy(err) => Err(err),
+            AcquireOutcome::Waiting { id, rx } => {
+                WaitTicket {
+                    store: self,
+                    resource,
+                    mode,
+                    id,
+                    rx,
+                    finished: false,
+                }
+                .wait()
+                .await
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiter_count(&self, resource: &Resource) -> usize {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .waiter_count(resource)
     }
 
     pub fn begin(

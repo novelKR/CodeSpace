@@ -41,12 +41,15 @@ Gateway fills workspace-root cwd, runner-local environment defaults, time/output
 
 `exec_command` returns dispatch identity (`process_id`, `dispatch_status`). `process_status` reports `running` or `exited` plus termination metadata. `process_resize` changes the size of a running PTY. `read_process` reports output including `output_lost` and `retained_from`. EOF is not success. After handle eviction the next lookup is `PROCESS_NOT_FOUND`, not a new state. Pipe-backed resize is `PROCESS_NOT_TTY`; an exited handle is `PROCESS_NOT_RUNNING`. On Linux sandbox, the wait status is that of the managed child (the helper argv); it is not documented as identical to the user argv.
 
-A workspace mutation lease prevents simultaneous patch/exec mutations. Read and find remain available while a command runs, so filesystem I/O must reject symlink races at open time rather than rely on a prior path check. Runner file operations use `codespace-fs`; patch execution uses the separate patch helper. `operation_status` exposes the recorded patch ledger (`kind` is `patch`); live commands stay on `process_id` and are not recovered through that lookup.
+A workspace mutation lease prevents simultaneous patch/exec mutations. Request-owned patch and exec work on the same workspace waits in an in-memory per-resource FIFO until the current request releases the lease. A live process still rejects overlapping patch or exec immediately with `WORKSPACE_BUSY`; that wait is not a durable or thread-keyed queue. Read and find remain available while a command runs, so filesystem I/O must reject symlink races at open time rather than rely on a prior path check. Runner file operations use `codespace-fs`; patch execution uses the separate patch helper. `operation_status` exposes the recorded patch ledger (`kind` is `patch`); live commands stay on `process_id` and are not recovered through that lookup.
 
 UDS transport and Linux sandbox preparation have distinct protocols and failure boundaries. A partially delivered UDS mutation may yield an uncertain result; never retry it as a new mutation merely because the connection failed. Process lifetime is owned by the runner instance: MCP/HTTP client disconnect keeps the process running, while UDS gateway↔worker loss or gateway shutdown terminates the owned subtree. There is no durable process recovery. The complete process and isolation rules belong in [runner isolation](runner-isolation.md).
 
 <a id="approval-and-mcp-revision"></a>
 <a id="scheduler-after-the-single-write-lock"></a>
+
+Occupancy uses an in-memory per-resource FIFO. Request-owned exclusive waiters run in order when the current request drops the lease. A process-owned workspace exclusive still returns `WORKSPACE_BUSY` immediately. `read` and `find` do not take a shared lease. The queue is not stored in SQLite and is not keyed by thread. Live MCP mutations still use the workspace exclusive, not path-level locks.
+
 <a id="fs-watch-and-search"></a>
 <a id="fswatch-and-search"></a>
 
@@ -69,7 +72,7 @@ When the operator sets workspace `approvals` to `confirm`, a policy-allowed `app
 
 ## What remains unimplemented
 
-Durable process recovery, container/remote dispatch, and a resource queue scheduler remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
+Durable process recovery and container/remote dispatch remain absent. MCP `fs/watch`, UDS watch events, and write-cause classification are not provided. Richer internal types and negotiated protocol flags do not imply those features are callable.
 
 ## Maintaining the boundary
 
