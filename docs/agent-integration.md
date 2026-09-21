@@ -175,7 +175,7 @@ Default workspaces run allowed patches and commands immediately. If the operator
 }
 ```
 
-`approval_resolve` does not change the permission profile. `operation_resume` re-checks policy, then runs the original apply or exec path once. `consumed` is stored only with a terminal result. Repeating resume returns that stored result, recovers a recorded patch from the operations ledger, or returns `APPROVAL_AMBIGUOUS`. An interrupted exec resume is not respawned. Deny is terminal. The same three tools exist when approvals are `off`; only an explicit `approval_create` opens a hold in that mode. v1 does not distinguish host from model: the same MCP caller can grant.
+`approval_resolve` does not change the permission profile. `operation_resume` claims `granted` into `queued`, re-checks policy, waits for the resource, then moves to `resuming` only when dispatch can start. Restart from `queued` reacquires. Restart from `resuming` returns a stored result, recovers a recorded patch, or returns `APPROVAL_AMBIGUOUS`. `consumed` is stored only with a terminal result. An interrupted exec resume is not respawned. Deny is terminal. The same three tools exist when approvals are `off`; only an explicit `approval_create` opens a hold in that mode. v1 does not distinguish host from model: the same MCP caller can grant.
 
 ## Retry and recover deliberately
 
@@ -191,7 +191,8 @@ Default workspaces run allowed patches and commands immediately. If the operator
 | Exec `dispatch_status: unknown` | A process may exist. Inspect or terminate the returned handle if reachable; do not blindly start another |
 | Lost spawn response / no `process_id` | Do not invent or search for a handle. Do not start a duplicate; the process may still occupy the workspace |
 | Client/HTTP session lost after spawn | Process keeps running. Reconnect and use the saved `process_id` |
-| `WORKSPACE_BUSY` | Wait for the owning task or cancel the process; avoid a tight retry loop |
+| `WORKSPACE_BUSY` | Live process owns the workspace, including waiters already queued behind that process. Wait or cancel the process. Avoid a tight retry loop |
+| `RESOURCE_QUEUE_FULL` | Too many request-owned waiters; back off and retry later. Distinct from `WORKSPACE_BUSY` |
 | `TIMEOUT` | Treat execution as interrupted; inspect partial effects |
 | Server/worker lost | Reconnect and inspect capabilities/files; old process handles are not recoverable |
 

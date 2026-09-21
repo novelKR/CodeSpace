@@ -74,8 +74,11 @@ workspace cwd and returns a server-minted process_id. Ending an MCP request \
 does not terminate the process.
 
 A live managed process holds the workspace mutation lease. read and find may \
-continue, but apply_patch or another exec_command may return WORKSPACE_BUSY \
-until the process exits or is terminated.
+continue, but apply_patch or another exec_command returns WORKSPACE_BUSY \
+until the process exits or is terminated. Request-owned patch or exec work \
+on the same workspace waits in FIFO order until acquire(); a live process \
+fails already-queued waiters with WORKSPACE_BUSY. Queue saturation returns \
+RESOURCE_QUEUE_FULL.
 
 exec_command.tty is optional and defaults to false. tty=true attaches a \
 fixed 24x80 PTY. Use process_resize on a running PTY to change rows and \
@@ -170,7 +173,7 @@ impl CodeSpace {
 
     #[tool(
         name = "workspace_info",
-        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. files.*.available and process.available reflect permission and backend support only. They do not include transient workspace occupancy; exec_command or apply_patch may still return WORKSPACE_BUSY. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
+        description = "Return CodeSpace identity and, when workspace_id is set, the effective execution contract. files.*.available and process.available reflect permission and backend support only. They do not include transient workspace occupancy; exec_command or apply_patch may still return WORKSPACE_BUSY or RESOURCE_QUEUE_FULL. serialization reports request_conflict wait-fifo, process_conflict reject, and max_waiters_per_resource. Tool existence is reported separately by tools_exposed. Does not call a model. Does not read files. workspace_id is a selector, not a credential."
     )]
     async fn workspace_info(
         &self,
@@ -227,7 +230,7 @@ impl CodeSpace {
 
     #[tool(
         name = "apply_patch",
-        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply. status=unknown means the mutation may have executed but its result could not be confirmed. Do not retry the same mutation under a new operation_key. operation_key provides replay/idempotency for the same logical mutation. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before begin() and does not write."
+        description = "Apply a Codex V4A patch. check_only verifies without writing and returns status checked. status applied means disk hashes match the helper claim. Never falls back to git apply. status=unknown means the mutation may have executed but its result could not be confirmed. Do not retry the same mutation under a new operation_key. operation_key provides replay/idempotency for the same logical mutation. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before begin() and does not write. A live process returns WORKSPACE_BUSY and fails waiters that were already queued. Overlapping request-owned patch or exec work on the same workspace waits in FIFO order starting at acquire(). Queue saturation returns RESOURCE_QUEUE_FULL."
     )]
     async fn apply_patch(
         &self,
@@ -242,7 +245,7 @@ impl CodeSpace {
         if let Err(err) = self.maybe_hold_patch(ws, &params) {
             return Err(err_json(err));
         }
-        self.apply_patch_inner(params)
+        self.apply_patch_inner(params, None)
             .await
             .map(Json)
             .map_err(err_json)
@@ -264,7 +267,7 @@ impl CodeSpace {
 
     #[tool(
         name = "exec_command",
-        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a 24x80 PTY; use process_resize to change the size of a running PTY. tty_size is not an exec_command argument. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch may return WORKSPACE_BUSY until it exits or is terminated. Use write_stdin, read_process, process_status, process_resize, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process, process_status, process_resize, or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
+        description = "Start a managed argv in the workspace cwd. There is no implicit shell. Returns a server-minted process_id and a dispatch_status. Request end does not terminate the process. Omitted or false tty uses pipes. tty=true attaches a 24x80 PTY; use process_resize to change the size of a running PTY. tty_size is not an exec_command argument. Use tty only for commands requiring terminal semantics or an interactive TUI. A live process holds the workspace mutation lease, so another exec_command or apply_patch returns WORKSPACE_BUSY until it exits or is terminated, including waiters that were already queued. Overlapping request-owned patch and exec work on the same workspace waits in FIFO order starting at acquire(). Queue saturation returns RESOURCE_QUEUE_FULL. Use write_stdin, read_process, process_status, process_resize, and terminate_process with the returned process_id. dispatch_status=unknown means the spawn may have occurred. Do not blindly start a duplicate process. The returned process_id identifies the uncertain attempt. Use read_process, process_status, process_resize, or terminate_process when the backend remains reachable; do not assume that unknown means the process did not start. PROCESS_SPAWN_FAILED means the backend confirmed that no managed process was started; it is distinct from dispatch_status=unknown. When the workspace approvals mode is confirm, a policy-allowed request returns APPROVAL_REQUIRED before spawn."
     )]
     async fn exec_command(
         &self,
@@ -282,7 +285,7 @@ impl CodeSpace {
         if let Err(err) = self.maybe_hold_exec(ws, &params) {
             return Err(err_json(err));
         }
-        self.exec_command_inner(params)
+        self.exec_command_inner(params, None)
             .await
             .map(Json)
             .map_err(err_json)
@@ -519,11 +522,15 @@ impl CodeSpace {
     async fn apply_patch_inner(
         &self,
         params: ApplyPatchParams,
+        resume: Option<&ApprovalId>,
     ) -> Result<ApplyPatchResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
         ws.require_file_write()?;
-        let _lease = self.store.try_acquire_write(&params.workspace_id.0)?;
+        let _lease = self.store.acquire_write(&params.workspace_id.0).await?;
+        if let Some(id) = resume {
+            self.store.mark_resuming(id)?;
+        }
         let fingerprint = Store::fingerprint(&params);
         match self.store.begin(
             params.operation_key.as_ref(),
@@ -804,7 +811,9 @@ impl CodeSpace {
             ApprovalTargetTool::ApplyPatch => {
                 let params: ApplyPatchParams = serde_json::from_str(&record.params_json)
                     .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
-                let result = self.apply_patch_inner(params).await?;
+                let result = self
+                    .apply_patch_inner(params, Some(&record.approval_id))
+                    .await?;
                 Ok(OperationResumeResult {
                     approval_id: record.approval_id,
                     state: ApprovalState::Consumed,
@@ -815,7 +824,9 @@ impl CodeSpace {
             ApprovalTargetTool::ExecCommand => {
                 let params: ExecCommandParams = serde_json::from_str(&record.params_json)
                     .map_err(|err| ErrorBody::new(ErrorCode::InvalidCommand, err.to_string()))?;
-                let result = self.exec_command_inner(params).await?;
+                let result = self
+                    .exec_command_inner(params, Some(&record.approval_id))
+                    .await?;
                 Ok(OperationResumeResult {
                     approval_id: record.approval_id,
                     state: ApprovalState::Consumed,
@@ -829,6 +840,7 @@ impl CodeSpace {
     async fn exec_command_inner(
         &self,
         params: ExecCommandParams,
+        resume: Option<&ApprovalId>,
     ) -> Result<ExecCommandResult, ErrorBody> {
         let ws = self.registry.get(&params.workspace_id.0)?;
         allow(ws, Action::Exec, &ClientClaims::default())?;
@@ -837,24 +849,36 @@ impl CodeSpace {
             return Err(invalid_argv());
         }
         let process_id = ProcessId(format!("proc-{}", Uuid::new_v4()));
-        self.store
-            .mark_shell_busy(&params.workspace_id.0, &process_id.0)?;
+        let mut reservation = self
+            .store
+            .acquire_shell_busy(&params.workspace_id.0, &process_id.0)
+            .await?;
+        if let Some(id) = resume {
+            self.store.mark_resuming(id)?;
+        }
+        reservation.arm_dispatch();
         let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
         req.policy.network = ws.network;
         req.tty = params.tty;
         match self.runner.exec(ws, req).await {
-            Ok(result) => Ok(ExecCommandResult {
-                process_id: result.process_id,
-                dispatch_status: ExecDispatchStatus::Confirmed,
-                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
-            }),
-            Err(RunnerError::TransportAmbiguous { .. }) => Ok(ExecCommandResult {
-                process_id,
-                dispatch_status: ExecDispatchStatus::Unknown,
-                coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
-            }),
+            Ok(result) => {
+                reservation.confirm();
+                Ok(ExecCommandResult {
+                    process_id: result.process_id,
+                    dispatch_status: ExecDispatchStatus::Confirmed,
+                    coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
+                })
+            }
+            Err(RunnerError::TransportAmbiguous { .. }) => {
+                reservation.confirm();
+                Ok(ExecCommandResult {
+                    process_id,
+                    dispatch_status: ExecDispatchStatus::Unknown,
+                    coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
+                })
+            }
             Err(err) => {
-                self.store.release_process(&process_id.0);
+                reservation.abort();
                 Err(err.into_error_body())
             }
         }
@@ -1087,6 +1111,7 @@ mod tests {
         assert!(text.contains("PROCESS_NOT_TTY"), "{text}");
         assert!(text.contains("PROCESS_NOT_RUNNING"), "{text}");
         assert!(text.contains("WORKSPACE_BUSY"), "{text}");
+        assert!(text.contains("RESOURCE_QUEUE_FULL"), "{text}");
         assert!(text.contains("command_sandbox is linux-sandbox"), "{text}");
         assert!(
             text.contains("host execution is not an OS command sandbox"),
@@ -1214,6 +1239,28 @@ mod tests {
         assert_eq!(
             json["execution"]["files"]["capabilities"]["find_max_paths"],
             10000
+        );
+        assert_eq!(json["execution"]["serialization"]["scope"], "workspace");
+        assert_eq!(
+            json["execution"]["serialization"]["request_conflict"],
+            "wait-fifo"
+        );
+        assert_eq!(
+            json["execution"]["serialization"]["process_conflict"],
+            "reject"
+        );
+        assert_eq!(json["execution"]["serialization"]["queue_durable"], false);
+        assert_eq!(
+            json["execution"]["serialization"]["max_waiters_per_resource"],
+            64
+        );
+        assert_eq!(
+            json["execution"]["serialization"]["conflict_error"],
+            "WORKSPACE_BUSY"
+        );
+        assert_eq!(
+            json["execution"]["serialization"]["queue_full_error"],
+            "RESOURCE_QUEUE_FULL"
         );
         assert!(json.get("environment_id").is_none());
         assert!(!json.to_string().contains("\"environment_id\""));
@@ -1361,14 +1408,17 @@ mod tests {
         let runner = RuntimeBackend::Uds(UdsRunner::from_stream(client, Arc::new(|_| {})));
         let cs = CodeSpace::with_store_and_runner(write_registry(ws_root), store.clone(), runner);
         let result = cs
-            .apply_patch_inner(ApplyPatchParams {
-                workspace_id: WorkspaceId("demo".into()),
-                patch: "*** Begin Patch\n*** Add File: lost.txt\n+x\n*** End Patch\n".into(),
-                expected_versions: BTreeMap::new(),
-                operation_key: Some(OperationKey("k-unknown".into())),
-                check_only: false,
-                work_id: None,
-            })
+            .apply_patch_inner(
+                ApplyPatchParams {
+                    workspace_id: WorkspaceId("demo".into()),
+                    patch: "*** Begin Patch\n*** Add File: lost.txt\n+x\n*** End Patch\n".into(),
+                    expected_versions: BTreeMap::new(),
+                    operation_key: Some(OperationKey("k-unknown".into())),
+                    check_only: false,
+                    work_id: None,
+                },
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(result.status, PatchStatus::Unknown);
@@ -1408,14 +1458,17 @@ mod tests {
         assert!(started.0.process_id.0.starts_with("proc-"));
         assert_eq!(started.0.dispatch_status, ExecDispatchStatus::Unknown);
         let busy = cs
-            .apply_patch_inner(ApplyPatchParams {
-                workspace_id: WorkspaceId("demo".into()),
-                patch: "*** Begin Patch\n*** Add File: later.txt\n+x\n*** End Patch\n".into(),
-                expected_versions: BTreeMap::new(),
-                operation_key: None,
-                check_only: false,
-                work_id: None,
-            })
+            .apply_patch_inner(
+                ApplyPatchParams {
+                    workspace_id: WorkspaceId("demo".into()),
+                    patch: "*** Begin Patch\n*** Add File: later.txt\n+x\n*** End Patch\n".into(),
+                    expected_versions: BTreeMap::new(),
+                    operation_key: None,
+                    check_only: false,
+                    work_id: None,
+                },
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(busy.code, ErrorCode::WorkspaceBusy);
@@ -1476,6 +1529,44 @@ mod tests {
             .unwrap();
         assert_eq!(started.0.dispatch_status, ExecDispatchStatus::Confirmed);
         assert!(started.0.process_id.0.starts_with("proc-"));
+    }
+
+    #[tokio::test]
+    async fn aborted_apply_waiter_releases_queue_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir(&ws_root).unwrap();
+        let store = Arc::new(Store::memory().unwrap());
+        let cs = CodeSpace::with_store(write_registry(ws_root), store.clone());
+        let lease = store.acquire_write("demo").await.unwrap();
+        let cs_wait = cs.clone();
+        let waiting = tokio::spawn(async move {
+            cs_wait
+                .apply_patch_inner(
+                    ApplyPatchParams {
+                        workspace_id: WorkspaceId("demo".into()),
+                        patch: "*** Begin Patch\n*** Add File: wait.txt\n+x\n*** End Patch\n"
+                            .into(),
+                        expected_versions: BTreeMap::new(),
+                        operation_key: Some(OperationKey("wait-cancel".into())),
+                        check_only: false,
+                        work_id: None,
+                    },
+                    None,
+                )
+                .await
+        });
+        for _ in 0..30 {
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        waiting.abort();
+        let _ = waiting.await;
+        drop(lease);
+        let _next = store
+            .acquire_write("demo")
+            .await
+            .expect("queue released after cancelled waiter");
     }
 
     fn parse_exec_err(result: Result<Json<ExecCommandResult>, String>) -> ErrorBody {
@@ -1604,14 +1695,17 @@ mod tests {
         registry.insert(ws);
         let cs = CodeSpace::new(registry);
         let err = cs
-            .apply_patch_inner(ApplyPatchParams {
-                workspace_id: WorkspaceId("demo".into()),
-                patch: "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\n".into(),
-                expected_versions: BTreeMap::new(),
-                operation_key: Some(OperationKey("k-box".into())),
-                check_only: false,
-                work_id: None,
-            })
+            .apply_patch_inner(
+                ApplyPatchParams {
+                    workspace_id: WorkspaceId("demo".into()),
+                    patch: "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\n".into(),
+                    expected_versions: BTreeMap::new(),
+                    operation_key: Some(OperationKey("k-box".into())),
+                    check_only: false,
+                    work_id: None,
+                },
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::Unauthorized);

@@ -12,6 +12,9 @@ use crate::files::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT};
 pub const PTY_INITIAL_ROWS: u16 = 24;
 pub const PTY_INITIAL_COLS: u16 = 80;
 
+/// In-memory waiter cap per resource. Excess acquires return `RESOURCE_QUEUE_FULL`.
+pub const MAX_WAITERS_PER_RESOURCE: u32 = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClientEnvironmentKind {
@@ -147,14 +150,39 @@ pub struct ProcessExecutionInfo {
     pub capabilities: Option<ProcessCapabilityInfo>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SerializationScope {
+    Workspace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequestConflictPolicy {
+    WaitFifo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProcessConflictPolicy {
+    Reject,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceSerializationInfo {
+    pub scope: SerializationScope,
+    pub request_conflict: RequestConflictPolicy,
+    pub process_conflict: ProcessConflictPolicy,
+    pub queue_durable: bool,
+    pub max_waiters_per_resource: u32,
     pub live_process_holds_mutation_lease: bool,
     pub parallel_exec: bool,
     pub read_while_process_live: bool,
     pub find_while_process_live: bool,
     pub patch_while_process_live: bool,
+    /// Live process owns the workspace. Not queue saturation.
     pub conflict_error: ErrorCode,
+    pub queue_full_error: ErrorCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -263,12 +291,18 @@ impl WorkspaceExecutionInfo {
             files,
             process,
             serialization: WorkspaceSerializationInfo {
+                scope: SerializationScope::Workspace,
+                request_conflict: RequestConflictPolicy::WaitFifo,
+                process_conflict: ProcessConflictPolicy::Reject,
+                queue_durable: false,
+                max_waiters_per_resource: MAX_WAITERS_PER_RESOURCE,
                 live_process_holds_mutation_lease: true,
                 parallel_exec: false,
                 read_while_process_live: true,
                 find_while_process_live: true,
                 patch_while_process_live: false,
                 conflict_error: ErrorCode::WorkspaceBusy,
+                queue_full_error: ErrorCode::ResourceQueueFull,
             },
             isolation: IsolationInfo {
                 file_tools_workspace_scoped: true,
@@ -399,9 +433,36 @@ mod tests {
         assert_eq!(exec.network.policy, NetworkPolicyState::Restricted);
         assert_eq!(exec.network.enforcement, NetworkEnforcementState::None);
         assert!(!exec.network.client_may_escalate);
+        assert_eq!(exec.serialization.scope, SerializationScope::Workspace);
+        assert_eq!(
+            exec.serialization.request_conflict,
+            RequestConflictPolicy::WaitFifo
+        );
+        assert_eq!(
+            exec.serialization.process_conflict,
+            ProcessConflictPolicy::Reject
+        );
+        assert!(!exec.serialization.queue_durable);
+        assert_eq!(
+            exec.serialization.max_waiters_per_resource,
+            MAX_WAITERS_PER_RESOURCE
+        );
         assert_eq!(exec.serialization.conflict_error, ErrorCode::WorkspaceBusy);
+        assert_eq!(
+            exec.serialization.queue_full_error,
+            ErrorCode::ResourceQueueFull
+        );
         let json = serde_json::to_value(&exec).unwrap();
+        assert_eq!(json["serialization"]["scope"], "workspace");
+        assert_eq!(json["serialization"]["request_conflict"], "wait-fifo");
+        assert_eq!(json["serialization"]["process_conflict"], "reject");
+        assert_eq!(json["serialization"]["queue_durable"], false);
+        assert_eq!(json["serialization"]["max_waiters_per_resource"], 64);
         assert_eq!(json["serialization"]["conflict_error"], "WORKSPACE_BUSY");
+        assert_eq!(
+            json["serialization"]["queue_full_error"],
+            "RESOURCE_QUEUE_FULL"
+        );
         assert!(json.get("environment_id").is_none());
         assert_eq!(json["environment"]["kind"], "host");
         assert_eq!(json["environment"]["file_read_supported"], true);

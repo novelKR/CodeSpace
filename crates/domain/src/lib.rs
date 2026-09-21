@@ -25,9 +25,10 @@ pub use execution::{
     ClientEnvironmentKind, CommandSandboxState, EffectivePermissionInfo, EnvironmentExecutionInfo,
     FileCapabilityInfo, FileExecutionInfo, FileOperationInfo, IsolationInfo,
     NetworkEnforcementState, NetworkInfo, NetworkPolicyState, ProcessCapabilityInfo,
-    ProcessDisconnectAction, ProcessExecutionInfo, ProcessLifetimeInfo, ProcessLifetimeOwner,
-    ProcessRestartRecovery, PtyCapabilityInfo, WorkspaceExecutionInfo, WorkspaceSerializationInfo,
-    PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
+    ProcessConflictPolicy, ProcessDisconnectAction, ProcessExecutionInfo, ProcessLifetimeInfo,
+    ProcessLifetimeOwner, ProcessRestartRecovery, PtyCapabilityInfo, RequestConflictPolicy,
+    SerializationScope, WorkspaceExecutionInfo, WorkspaceSerializationInfo,
+    MAX_WAITERS_PER_RESOURCE, PTY_INITIAL_COLS, PTY_INITIAL_ROWS,
 };
 pub use files::{
     FindParams, FindResult, ReadParams, ReadResult, DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT,

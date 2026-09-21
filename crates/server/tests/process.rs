@@ -778,6 +778,7 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         "{exec_desc}"
     );
     assert!(exec_desc.contains("WORKSPACE_BUSY"), "{exec_desc}");
+    assert!(exec_desc.contains("RESOURCE_QUEUE_FULL"), "{exec_desc}");
     assert!(
         exec_desc.contains("uncertain attempt") || exec_desc.contains("backend remains reachable"),
         "{exec_desc}"
@@ -870,6 +871,16 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
     assert_eq!(
         exec["process"]["capabilities"]["lifetime"]["restart_recovery"],
         "none"
+    );
+    assert_eq!(exec["serialization"]["scope"], "workspace");
+    assert_eq!(exec["serialization"]["request_conflict"], "wait-fifo");
+    assert_eq!(exec["serialization"]["process_conflict"], "reject");
+    assert_eq!(exec["serialization"]["queue_durable"], false);
+    assert_eq!(exec["serialization"]["max_waiters_per_resource"], 64);
+    assert_eq!(exec["serialization"]["conflict_error"], "WORKSPACE_BUSY");
+    assert_eq!(
+        exec["serialization"]["queue_full_error"],
+        "RESOURCE_QUEUE_FULL"
     );
     if codespace_runner::linux_sandbox_available() {
         assert_eq!(exec["isolation"]["command_sandbox"], "linux-sandbox");

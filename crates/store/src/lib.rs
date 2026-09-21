@@ -1,4 +1,8 @@
-//! Single-instance SQLite operations, confirmation holds, and in-process workspace write locks.
+//! Single-instance SQLite operations, confirmation holds, and in-memory
+//! resource occupancy. Occupancy is not a SQLite schema. Request-owned
+//! conflicts wait on a per-resource FIFO that starts at `acquire()`. A live
+//! process rejects overlapping mutation immediately with `WORKSPACE_BUSY`
+//! and fails trailing waiters. Queue saturation is `RESOURCE_QUEUE_FULL`.
 //! HTTP/JSON-RPC request ids are never stored as [`OperationId`] values.
 
 mod approvals;
@@ -19,6 +23,7 @@ use sha2::{Digest, Sha256};
 
 pub use approvals::{ApprovalRecord, ResumeClaim};
 pub use coord::CreateIntent;
+use resource::AcquireOutcome;
 pub use resource::{LockMode, Resource, ResourceGuard};
 
 #[derive(Debug, Clone)]
@@ -54,6 +59,84 @@ pub struct WriteGuard<'a> {
 impl Drop for WriteGuard<'_> {
     fn drop(&mut self) {
         self.store.release_write(&self.workspace_id);
+    }
+}
+
+enum ReservationPhase {
+    PreDispatch,
+    Dispatching,
+    Confirmed,
+    Aborted,
+}
+
+/// Workspace exclusive for an exec that has not necessarily spawned yet.
+///
+/// Drop in `PreDispatch` releases the spawn reservation. After
+/// `arm_dispatch()`, Drop does not release: Runner may already own a process.
+pub struct ProcessReservation<'a> {
+    store: &'a Store,
+    process_id: String,
+    phase: ReservationPhase,
+}
+
+impl ProcessReservation<'_> {
+    pub fn arm_dispatch(&mut self) {
+        if matches!(self.phase, ReservationPhase::PreDispatch) {
+            self.phase = ReservationPhase::Dispatching;
+        }
+    }
+
+    pub fn confirm(mut self) {
+        self.store.confirm_process(&self.process_id);
+        self.phase = ReservationPhase::Confirmed;
+    }
+
+    pub fn abort(mut self) {
+        self.store.release_process(&self.process_id);
+        self.phase = ReservationPhase::Aborted;
+    }
+}
+
+impl Drop for ProcessReservation<'_> {
+    fn drop(&mut self) {
+        if matches!(self.phase, ReservationPhase::PreDispatch) {
+            self.store.release_process(&self.process_id);
+        }
+    }
+}
+
+struct WaitTicket<'a> {
+    store: &'a Store,
+    resource: Resource,
+    mode: LockMode,
+    id: u64,
+    rx: tokio::sync::oneshot::Receiver<Result<(), ErrorBody>>,
+    finished: bool,
+}
+
+impl WaitTicket<'_> {
+    async fn wait(mut self) -> Result<(), ErrorBody> {
+        let result = match (&mut self.rx).await {
+            Ok(value) => value,
+            Err(_) => Err(waiter_closed_error()),
+        };
+        self.finished = true;
+        result
+    }
+}
+
+impl Drop for WaitTicket<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut serializer = self.store.locks.lock().expect("lock mutex");
+        if serializer.cancel_waiter(&self.resource, self.id) {
+            return;
+        }
+        if matches!(self.rx.try_recv(), Ok(Ok(()))) {
+            serializer.unlock(&self.resource, self.mode);
+        }
     }
 }
 
@@ -172,6 +255,24 @@ impl Store {
         })
     }
 
+    pub async fn acquire_write<'a>(
+        &'a self,
+        workspace_id: &str,
+    ) -> Result<WriteGuard<'a>, ErrorBody> {
+        let resource = Resource::Workspace(workspace_id.to_string());
+        let outcome = self
+            .locks
+            .lock()
+            .expect("lock mutex")
+            .acquire_exclusive_write(workspace_id);
+        self.complete_acquire(resource, LockMode::Exclusive, outcome)
+            .await?;
+        Ok(WriteGuard {
+            store: self,
+            workspace_id: workspace_id.to_string(),
+        })
+    }
+
     fn release_write(&self, workspace_id: &str) {
         self.locks
             .lock()
@@ -184,6 +285,33 @@ impl Store {
             .lock()
             .expect("lock mutex")
             .mark_shell_busy(workspace_id, process_id)
+    }
+
+    pub async fn acquire_shell_busy(
+        &self,
+        workspace_id: &str,
+        process_id: &str,
+    ) -> Result<ProcessReservation<'_>, ErrorBody> {
+        let resource = Resource::Workspace(workspace_id.to_string());
+        let outcome = self
+            .locks
+            .lock()
+            .expect("lock mutex")
+            .acquire_shell_busy(workspace_id, process_id);
+        self.complete_acquire(resource, LockMode::Exclusive, outcome)
+            .await?;
+        Ok(ProcessReservation {
+            store: self,
+            process_id: process_id.to_string(),
+            phase: ReservationPhase::PreDispatch,
+        })
+    }
+
+    fn confirm_process(&self, process_id: &str) {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .confirm_process(process_id);
     }
 
     pub fn clear_shell(&self, workspace_id: &str) {
@@ -219,11 +347,66 @@ impl Store {
         Ok(ResourceGuard::new(self, resource, mode))
     }
 
+    pub async fn lock(
+        &self,
+        resource: Resource,
+        mode: LockMode,
+    ) -> Result<ResourceGuard<'_>, ErrorBody> {
+        let outcome = self
+            .locks
+            .lock()
+            .expect("lock mutex")
+            .acquire_lock(resource.clone(), mode);
+        self.complete_acquire(resource.clone(), mode, outcome)
+            .await?;
+        Ok(ResourceGuard::new(self, resource, mode))
+    }
+
     fn release_resource(&self, resource: &Resource, mode: LockMode) {
         self.locks
             .lock()
             .expect("lock mutex")
             .unlock(resource, mode);
+    }
+
+    async fn complete_acquire(
+        &self,
+        resource: Resource,
+        mode: LockMode,
+        outcome: AcquireOutcome,
+    ) -> Result<(), ErrorBody> {
+        match outcome {
+            AcquireOutcome::Granted => Ok(()),
+            AcquireOutcome::Busy(err) => Err(err),
+            AcquireOutcome::Waiting { id, rx } => {
+                WaitTicket {
+                    store: self,
+                    resource,
+                    mode,
+                    id,
+                    rx,
+                    finished: false,
+                }
+                .wait()
+                .await
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiter_count(&self, resource: &Resource) -> usize {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .waiter_count(resource)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exclusive_kind(&self, resource: &Resource) -> Option<&'static str> {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .exclusive_kind(resource)
     }
 
     pub fn begin(
@@ -477,9 +660,10 @@ fn migrate_approvals(conn: &Connection) -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     }
     conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_fp
+        "DROP INDEX IF EXISTS idx_approvals_active_fp;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_fp
          ON approvals(workspace_id, fingerprint)
-         WHERE state IN ('pending','granted','resuming') AND length(fingerprint) > 0;",
+         WHERE state IN ('pending','granted','queued','resuming') AND length(fingerprint) > 0;",
     )
     .map_err(|err| err.to_string())?;
     Ok(())
@@ -512,6 +696,10 @@ fn status_str(status: PatchStatus) -> &'static str {
         PatchStatus::FailedPartial => "failed_partial",
         PatchStatus::Unknown => "unknown",
     }
+}
+
+fn waiter_closed_error() -> ErrorBody {
+    ErrorBody::new(ErrorCode::Internal, "resource waiter closed")
 }
 
 fn sql_err(err: rusqlite::Error) -> ErrorBody {
@@ -840,5 +1028,25 @@ mod tests {
         assert_eq!(status.status, PatchStatus::Checked);
         assert_eq!(status.events[0].name, OperationEventName::Minted);
         assert_eq!(status.events[1].name, OperationEventName::Finished);
+    }
+
+    #[tokio::test]
+    async fn waiter_closed_is_not_workspace_busy() {
+        let store = Store::memory().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(tx);
+        let err = WaitTicket {
+            store: &store,
+            resource: Resource::Workspace("demo".into()),
+            mode: LockMode::Exclusive,
+            id: 0,
+            rx,
+            finished: false,
+        }
+        .wait()
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert_eq!(err.message, "resource waiter closed");
     }
 }

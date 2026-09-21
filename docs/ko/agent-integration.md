@@ -175,7 +175,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-`approval_resolve`는 권한 프로필을 바꾸지 않습니다. `operation_resume`은 정책을 다시 검사한 뒤 원래 패치·실행 경로를 한 번 돌립니다. `consumed`는 단말 결과가 저장된 뒤에만 기록됩니다. 같은 홀드를 다시 재개하면 저장한 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`가 반환됩니다. 중단된 exec 재개는 다시 spawn하지 않습니다. 거절은 단말입니다. `approvals`가 `off`여도 세 도구는 목록에 있으며, 그때는 명시적 `approval_create`만 홀드를 만듭니다. v1은 호스트와 모델을 구분하지 않으므로 같은 MCP 호출자가 grant할 수 있습니다.
+`approval_resolve`는 권한 프로필을 바꾸지 않습니다. `operation_resume`은 `granted`를 `queued`로 옮긴 뒤 정책을 다시 검사하고, 자원을 받은 다음에야 `resuming`으로 올립니다. `queued`에서 재시작하면 다시 acquire합니다. `resuming`에서 재시작하면 저장한 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`가 반환됩니다. `consumed`는 단말 결과가 저장된 뒤에만 기록됩니다. 중단된 exec 재개는 다시 spawn하지 않습니다. 거절은 단말입니다. `approvals`가 `off`여도 세 도구는 목록에 있으며, 그때는 명시적 `approval_create`만 홀드를 만듭니다. v1은 호스트와 모델을 구분하지 않으므로 같은 MCP 호출자가 grant할 수 있습니다.
 
 ## 재시도와 복구
 
@@ -191,7 +191,8 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 | 실행 `dispatch_status: unknown` | 프로세스가 존재할 수 있음. 연결 가능하면 해당 핸들을 조회·종료하고 무조건 재실행하지 않기 |
 | spawn 응답 유실 / `process_id` 없음 | 핸들을 만들어 내거나 검색하지 않기. 중복 시작하지 않기. 프로세스가 작업 공간을 점유 중일 수 있음 |
 | spawn 이후 클라이언트·HTTP 세션 끊김 | 프로세스는 계속 실행됨. 재연결 후 저장한 `process_id` 사용 |
-| `WORKSPACE_BUSY` | 점유 중인 작업을 기다리거나 프로세스 취소. 빠른 반복 재시도 피하기 |
+| `WORKSPACE_BUSY` | 라이브 프로세스가 작업 공간을 점유함. 이미 그 프로세스 뒤에 줄 선 대기자도 포함. 기다리거나 프로세스를 취소. 빠른 반복 재시도 피하기 |
+| `RESOURCE_QUEUE_FULL` | 요청 소유 대기자가 한도 초과. 잠시 뒤 재시도. `WORKSPACE_BUSY`와는 다른 실패 |
 | `TIMEOUT` | 실행이 중단된 것으로 처리하고 일부 변경이 남았는지 확인 |
 | 서버·worker 연결 손실 | 재연결 후 기능과 파일 상태 확인. 기존 프로세스 핸들은 복구되지 않음 |
 

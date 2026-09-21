@@ -724,6 +724,50 @@ async fn restart_resuming_exec_is_ambiguous_without_spawn() {
 }
 
 #[tokio::test]
+async fn restart_queued_exec_reacquires_and_runs() {
+    let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
+    let db = root.path().join("ops.sqlite");
+    let client = spawn_client(&cfg, &db).await;
+    let held = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
+                "workspace_id": "demo",
+                "command": ["/bin/sh", "-c", "printf x > held.txt"]
+            })),
+        )
+        .await;
+    let approval_id = error_body(&held)["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    grant(&client, &approval_id).await;
+    client.cancel().await.expect("cancel");
+    force_approval_state(&db, &approval_id, ApprovalState::Queued, true);
+
+    let client = spawn_client(&cfg, &db).await;
+    let resumed = client
+        .call_tool(
+            CallToolRequestParams::new(TOOL_OPERATION_RESUME)
+                .with_arguments(object!({ "approval_id": approval_id })),
+        )
+        .await
+        .expect("queued exec resume");
+    assert_eq!(
+        payload(&resumed)["exec_command"]["dispatch_status"],
+        "confirmed"
+    );
+    let held_path = ws.join("held.txt");
+    for _ in 0..50 {
+        if held_path.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(std::fs::read_to_string(held_path).unwrap(), "x");
+    client.cancel().await.expect("cancel");
+}
+
+#[tokio::test]
 async fn restart_preserves_pending_granted_and_consumed() {
     let (root, cfg, ws) = write_workspace("workspace-write", Some("confirm"));
     let db = root.path().join("ops.sqlite");

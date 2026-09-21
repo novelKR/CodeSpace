@@ -25,7 +25,8 @@
 | --- | --- |
 | `UNAUTHORIZED` | 도구 정책이 행동을 거부함 |
 | `WORKSPACE_NOT_FOUND` | 작업 공간 ID가 등록되지 않음 |
-| `WORKSPACE_BUSY` | 다른 변경 작업이나 실행 중인 명령이 작업 공간을 점유함 |
+| `WORKSPACE_BUSY` | 라이브 프로세스가 작업 공간 변경 임대를 보유함 |
+| `RESOURCE_QUEUE_FULL` | 한 자원의 요청 소유 대기자가 한도에 도달함 |
 | `INVALID_PATCH` | 패치 파싱·사전 검증·결과 검증 실패. 일부 도우미·입력 오류 경로에도 남아 있음 |
 | `INVALID_COMMAND` | 잘못된 명령 인자 배열을 실행 전에 거부함 |
 | `PROCESS_SPAWN_FAILED` | 관리 프로세스를 시작하지 못한 것으로 백엔드가 확인함 |
@@ -56,6 +57,7 @@
 | `APPROVAL_NOT_FOUND` | 알 수 없는 확인 홀드 ID |
 | `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 이미 결정되었거나, 재개가 이미 진행 중임 |
 | `APPROVAL_AMBIGUOUS` | 재개가 중단되어 단말 결과가 디스크에 없음. `approval_id` 포함. 패치는 `operation_id`도 있을 수 있음 |
+| `INTERNAL` | 스케줄러·스토어 불변조건 실패. 점유가 아니므로 `WORKSPACE_BUSY`로 재시도하지 말 것 |
 
 ## 실행 요청과 완료의 구분
 
