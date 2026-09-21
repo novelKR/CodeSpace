@@ -100,8 +100,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "45bf2a02b2080ae47d33d0c5ce3d9a5881ee7aec765d85a206573f3d9cb9c8a1",
-      "translation_sha256": "f189f125e0def02665ff01ddc45abd5fef372d44cfddd7bf5345a19c8ec9cbfd"
+      "source_sha256": "0788376edef3e4fb7675bf5847df96c3cd97070b77a4b4c331065aeaded82e43",
+      "translation_sha256": "65bee059368ba91115db048be556d38d7f94c945e0d18c64f160f1db15b5091e"
     },
     {
       "id": "operations",
@@ -152,8 +152,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "db6477f49619dfdb0582a74a549731f1b4073607437913e7210b012c4a45ea20",
-      "translation_sha256": "ca90d0dc3900b9e24bf1d4679a0c43a8b9c724233d584ce5fc2c7315b10a68ac"
+      "source_sha256": "d98494a628e5bb6a717f4ccf75836e92235764e25f448dbcc2d75d94695cc690",
+      "translation_sha256": "387686ca418ee694e316441eb2dc047d85d0d2e304aece6090ff5d5016051a40"
     },
     {
       "id": "chatgpt-connector",
@@ -240,8 +240,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "e7bc2b2a86075d17f7eecb672f979dc239b5463688db976277303c511be7f19c",
-      "translation_sha256": "555724dfeaabd4c7cc7d8e2beafa92c15235389bc009047cd2e064d91ca9bec2"
+      "source_sha256": "8779e0782981b88d6fed485336f416d65cfbd544d6b676fc82d811a440781557",
+      "translation_sha256": "b1836fb0915aa764f7853988a14c1e23fc5f8a9126fc8306a370d2aa15295eff"
     },
     {
       "id": "execution-substrate",
@@ -303,8 +303,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "c577ea9c3ac8b682a40b440a152383eb6e930e7436a740c76f7f4d6f961de832",
-      "translation_sha256": "8e6bb3c55e8a1656f1cd5c05a4ef2715a6ea2d4b9dbac01134e82e857ced33de"
+      "source_sha256": "857b87bfff3aa462ea53e17cd9400e77504e7560390f81acfd7ee740ce6b76cb",
+      "translation_sha256": "6a30c1c8e9ce33c0d08a2c020d1e7e6b480a4eabf96a2e060637f1463436a18d"
     },
     {
       "id": "protocol-compatibility",
@@ -368,8 +368,8 @@
         "패치-동작과-복구",
         "패치-요청-계약"
       ],
-      "source_sha256": "8fccab8d541578521e114728c7775d9d9753cf948d7477c9f3e4b17cbecf58a7",
-      "translation_sha256": "d07978bf886453100b35f4856968b03302a2745776e22a4466d83c27656ed220"
+      "source_sha256": "102813160616b25115509ed7e933c13d2c1fe7dbda9ebc02867b83c5b6e30d66",
+      "translation_sha256": "4e300f7f9bc71cb62b588d255a55c2bda97335d76835d760aedaaf17ae6e8e61"
     },
     {
       "id": "security-model",
@@ -414,8 +414,8 @@
         "프로세스-정직성",
         "프로필-mvp"
       ],
-      "source_sha256": "c96676f26bb76b12fdd7f9a73c6a114f7b8dda40d798a070e6194602f642893d",
-      "translation_sha256": "11363cc1c6a3b0b94cc4d58e7ece7a57d27db4ecf3d509bce6e378847eaf4861"
+      "source_sha256": "76c0e770f66e5fdffce7c6ec21be14ea4204e801fc3f373c9f63687be9d3c9b2",
+      "translation_sha256": "be0b5e577dcf358df4e453f201e915adbeda9465b2d73a3ddad9c92c22cb3ba0"
     },
     {
       "id": "runner-isolation",
@@ -474,8 +474,8 @@
         "전송-실패",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "a366946fea6e73966595001b72221ae5b9cfe84ddfd77cabba928c4283168fce",
-      "translation_sha256": "6b97e91bfd708101aedde02ed0ac6f965a09a1136062faa6f5fa3d107d4f26bf"
+      "source_sha256": "04e3006bc1d7eed2b8a94f44b71dbaa417fceb23f168d0ed4b480825af0c8629",
+      "translation_sha256": "f286fa26fa1055491de9245c537716ada252177a0d699b7dda37ecd20eee485c"
     },
     {
       "id": "codex-reuse",

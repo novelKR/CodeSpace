@@ -22,7 +22,8 @@ Errors use uppercase identifiers and a message. An `operation_id` may be present
 | --- | --- |
 | `UNAUTHORIZED` | Action denied by tool policy |
 | `WORKSPACE_NOT_FOUND` | Workspace ID is not registered |
-| `WORKSPACE_BUSY` | Another mutation or live command owns the workspace |
+| `WORKSPACE_BUSY` | A live process owns the workspace mutation lease |
+| `RESOURCE_QUEUE_FULL` | Too many request-owned waiters on one resource |
 | `INVALID_PATCH` | Patch parsing, preflight, or result verification failed; also retained in some helper/input error paths |
 | `INVALID_COMMAND` | Malformed argv rejected before dispatch |
 | `PROCESS_SPAWN_FAILED` | Backend confirmed no managed process was established |
@@ -53,6 +54,7 @@ Errors use uppercase identifiers and a message. An `operation_id` may be present
 | `APPROVAL_NOT_FOUND` | Unknown confirmation-hold id |
 | `APPROVAL_CONFLICT` | Hold is still pending, already decided, or a resume is already in progress |
 | `APPROVAL_AMBIGUOUS` | Resume was interrupted and the terminal result is not on disk. Includes `approval_id`; patch cases may also include `operation_id` |
+| `INTERNAL` | Scheduler or store invariant failed. Not occupancy; do not retry as `WORKSPACE_BUSY` |
 
 ## Dispatch and completion
 

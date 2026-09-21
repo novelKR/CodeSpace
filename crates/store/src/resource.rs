@@ -1,10 +1,19 @@
 //! In-memory resource serialization. Not a SQLite schema and not a thread queue.
-//! Request-owned conflicts wait on a per-resource FIFO. A process-owned
-//! workspace exclusive still rejects immediately.
+//!
+//! FIFO order starts when an eligible request reaches `acquire()`, not when
+//! the MCP message arrives. Request-owned conflicts wait. A confirmed live
+//! process is a barrier: new acquires fail immediately and trailing waiters
+//! are closed with `WORKSPACE_BUSY`. Spawn reservation (`Spawning`) is not
+//! that barrier; spawn failure releases and wakes the next waiter.
+//!
+//! Live MCP mutations take only `Resource::Workspace`. Before any code takes
+//! two resources at once, define a canonical order or `acquire_many`. Path
+//! occupancy is typed but unused. `busy()` still maps unused resource kinds
+//! to `WORKSPACE_BUSY`; split that taxonomy before those keys are public.
 
 use std::collections::{HashMap, VecDeque};
 
-use codespace_domain::{ErrorBody, ErrorCode};
+use codespace_domain::{ErrorBody, ErrorCode, MAX_WAITERS_PER_RESOURCE};
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,7 +37,9 @@ pub enum LockMode {
 enum ExclusiveHolder {
     /// Request-owned RAII exclusive (`WriteGuard`).
     Request,
-    /// Process-owned exclusive (`ProcessId`).
+    /// Exec granted the lease but Runner spawn has not been confirmed.
+    Spawning(String),
+    /// Confirmed or unknown live process (`ProcessId`).
     Process(String),
 }
 
@@ -39,22 +50,12 @@ struct Waiter {
     tx: oneshot::Sender<Result<(), ErrorBody>>,
 }
 
+#[derive(Default)]
 pub(crate) struct ResourceSerializer {
     exclusive: HashMap<Resource, ExclusiveHolder>,
     shared: HashMap<Resource, u32>,
     waiters: HashMap<Resource, VecDeque<Waiter>>,
     next_waiter: u64,
-}
-
-impl Default for ResourceSerializer {
-    fn default() -> Self {
-        Self {
-            exclusive: HashMap::new(),
-            shared: HashMap::new(),
-            waiters: HashMap::new(),
-            next_waiter: 0,
-        }
-    }
 }
 
 pub(crate) enum AcquireOutcome {
@@ -137,8 +138,21 @@ impl ResourceSerializer {
         self.acquire(
             Resource::Workspace(workspace_id.to_string()),
             LockMode::Exclusive,
-            ExclusiveHolder::Process(process_id.to_string()),
+            ExclusiveHolder::Spawning(process_id.to_string()),
         )
+    }
+
+    pub(crate) fn confirm_process(&mut self, process_id: &str) {
+        let mut targets = Vec::new();
+        for (resource, holder) in &mut self.exclusive {
+            if matches!(holder, ExclusiveHolder::Spawning(id) if id == process_id) {
+                *holder = ExclusiveHolder::Process(process_id.to_string());
+                targets.push(resource.clone());
+            }
+        }
+        for resource in targets {
+            self.fail_waiters(&resource, shell_busy());
+        }
     }
 
     pub(crate) fn clear_shell(&mut self, workspace_id: &str) {
@@ -154,7 +168,7 @@ impl ResourceSerializer {
 
     pub(crate) fn release_process(&mut self, process_id: &str) {
         let released = self.release_matching(|holder| match holder {
-            ExclusiveHolder::Process(id) => id == process_id,
+            ExclusiveHolder::Spawning(id) | ExclusiveHolder::Process(id) => id == process_id,
             ExclusiveHolder::Request => false,
         });
         for resource in released {
@@ -163,8 +177,12 @@ impl ResourceSerializer {
     }
 
     pub(crate) fn release_all_processes(&mut self) {
-        let released =
-            self.release_matching(|holder| matches!(holder, ExclusiveHolder::Process(_)));
+        let released = self.release_matching(|holder| {
+            matches!(
+                holder,
+                ExclusiveHolder::Spawning(_) | ExclusiveHolder::Process(_)
+            )
+        });
         for resource in released {
             self.wake(&resource);
         }
@@ -221,6 +239,16 @@ impl ResourceSerializer {
         self.waiters.get(resource).map(VecDeque::len).unwrap_or(0)
     }
 
+    #[cfg(test)]
+    pub(crate) fn exclusive_kind(&self, resource: &Resource) -> Option<&'static str> {
+        match self.exclusive.get(resource) {
+            Some(ExclusiveHolder::Request) => Some("request"),
+            Some(ExclusiveHolder::Spawning(_)) => Some("spawning"),
+            Some(ExclusiveHolder::Process(_)) => Some("process"),
+            None => None,
+        }
+    }
+
     fn acquire(
         &mut self,
         resource: Resource,
@@ -238,9 +266,21 @@ impl ResourceSerializer {
             self.grant(resource, mode, owner);
             return AcquireOutcome::Granted;
         }
+        if self.waiter_count_unlocked(&resource) >= MAX_WAITERS_PER_RESOURCE as usize {
+            return AcquireOutcome::Busy(queue_full());
+        }
         let (id, rx) = self.enqueue(resource.clone(), mode, owner);
         self.wake(&resource);
         AcquireOutcome::Waiting { id, rx }
+    }
+
+    fn fail_waiters(&mut self, resource: &Resource, err: ErrorBody) {
+        let Some(queue) = self.waiters.remove(resource) else {
+            return;
+        };
+        for waiter in queue {
+            let _ = waiter.tx.send(Err(err.clone()));
+        }
     }
 
     fn enqueue(
@@ -348,10 +388,12 @@ impl ResourceSerializer {
             )
     }
 
+    fn waiter_count_unlocked(&self, resource: &Resource) -> usize {
+        self.waiters.get(resource).map(VecDeque::len).unwrap_or(0)
+    }
+
     fn has_waiters(&self, resource: &Resource) -> bool {
-        self.waiters
-            .get(resource)
-            .is_some_and(|queue| !queue.is_empty())
+        self.waiter_count_unlocked(resource) > 0
     }
 
     fn has_exclusive_waiter(&self, resource: &Resource) -> bool {
@@ -384,6 +426,9 @@ impl ResourceSerializer {
 }
 
 fn busy(resource: &Resource) -> ErrorBody {
+    // Unused resource kinds are not a public occupancy contract yet.
+    // Split this taxonomy before Environment/Path/Process/Operation/Watch
+    // become live MCP locks.
     let detail = match resource {
         Resource::Workspace(_) => "workspace write lock is held",
         Resource::Environment(_) => "environment lock is held",
@@ -397,6 +442,13 @@ fn busy(resource: &Resource) -> ErrorBody {
 
 fn shell_busy() -> ErrorBody {
     ErrorBody::new(ErrorCode::WorkspaceBusy, "workspace has a busy shell")
+}
+
+fn queue_full() -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::ResourceQueueFull,
+        format!("resource waiter queue exceeds {MAX_WAITERS_PER_RESOURCE}"),
+    )
 }
 
 fn process_held_busy(resource: &Resource) -> ErrorBody {
@@ -677,16 +729,152 @@ mod tests {
         let resource = Resource::Workspace("demo".into());
         let write = store.acquire_write("demo").await.unwrap();
         let store_exec = store.clone();
-        let exec =
-            tokio::spawn(async move { store_exec.acquire_shell_busy("demo", "proc-wait").await });
+        let exec = tokio::spawn(async move {
+            let reservation = store_exec.acquire_shell_busy("demo", "proc-wait").await?;
+            reservation.confirm();
+            Ok::<(), ErrorBody>(())
+        });
         wait_for_waiters(&store, &resource, 1).await;
         drop(write);
         exec.await.unwrap().unwrap();
+        assert_eq!(store.exclusive_kind(&resource), Some("process"));
         assert_eq!(
             store.try_acquire_write("demo").err().map(|e| e.code),
             Some(ErrorCode::WorkspaceBusy)
         );
         store.release_process("proc-wait");
         let _next = store.try_acquire_write("demo").unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn confirm_live_process_fails_trailing_waiters() {
+        let store = Arc::new(Store::memory().unwrap());
+        let resource = Resource::Workspace("demo".into());
+        let write = store.acquire_write("demo").await.unwrap();
+        let store_exec = store.clone();
+        let exec = tokio::spawn(async move {
+            let reservation = store_exec.acquire_shell_busy("demo", "proc-live").await?;
+            reservation.confirm();
+            Ok::<(), ErrorBody>(())
+        });
+        wait_for_waiters(&store, &resource, 1).await;
+        let store_patch = store.clone();
+        let trailing = tokio::spawn(async move {
+            match store_patch.acquire_write("demo").await {
+                Ok(_) => panic!("trailing waiter should be busy"),
+                Err(err) => err,
+            }
+        });
+        wait_for_waiters(&store, &resource, 2).await;
+        drop(write);
+        exec.await.unwrap().unwrap();
+        let err = trailing.await.unwrap();
+        assert_eq!(err.code, ErrorCode::WorkspaceBusy);
+        assert_eq!(store.waiter_count(&resource), 0);
+        let late = match store.acquire_write("demo").await {
+            Err(err) => err,
+            Ok(_) => panic!("late write should be busy"),
+        };
+        assert_eq!(late.code, ErrorCode::WorkspaceBusy);
+        store.release_process("proc-live");
+        let _next = store.acquire_write("demo").await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_abort_wakes_next_waiter() {
+        let store = Arc::new(Store::memory().unwrap());
+        let resource = Resource::Workspace("demo".into());
+        let write = store.acquire_write("demo").await.unwrap();
+        let store_exec = store.clone();
+        let exec = tokio::spawn(async move {
+            let reservation = store_exec.acquire_shell_busy("demo", "proc-fail").await?;
+            reservation.abort();
+            Ok::<(), ErrorBody>(())
+        });
+        wait_for_waiters(&store, &resource, 1).await;
+        let store_patch = store.clone();
+        let next = tokio::spawn(async move {
+            let _guard = store_patch.acquire_write("demo").await?;
+            Ok::<(), ErrorBody>(())
+        });
+        wait_for_waiters(&store, &resource, 2).await;
+        drop(write);
+        exec.await.unwrap().unwrap();
+        next.await.unwrap().unwrap();
+        assert_eq!(store.exclusive_kind(&resource), None);
+    }
+
+    #[tokio::test]
+    async fn pre_dispatch_drop_releases_spawn_reservation() {
+        let store = Store::memory().unwrap();
+        let resource = Resource::Workspace("demo".into());
+        {
+            let _reservation = store.acquire_shell_busy("demo", "proc-drop").await.unwrap();
+            assert_eq!(store.exclusive_kind(&resource), Some("spawning"));
+        }
+        assert_eq!(store.exclusive_kind(&resource), None);
+        let _write = store.acquire_write("demo").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatching_drop_keeps_spawn_reservation() {
+        let store = Store::memory().unwrap();
+        let resource = Resource::Workspace("demo".into());
+        {
+            let mut reservation = store.acquire_shell_busy("demo", "proc-arm").await.unwrap();
+            reservation.arm_dispatch();
+        }
+        assert_eq!(store.exclusive_kind(&resource), Some("spawning"));
+        store.release_process("proc-arm");
+        assert_eq!(store.exclusive_kind(&resource), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queue_depth_bound_rejects_without_enqueue() {
+        let store = Arc::new(Store::memory().unwrap());
+        let resource = Resource::Workspace("demo".into());
+        let first = store.acquire_write("demo").await.unwrap();
+        let mut waiters = Vec::new();
+        for _ in 0..MAX_WAITERS_PER_RESOURCE {
+            let store_w = store.clone();
+            waiters.push(tokio::spawn(async move {
+                let _guard = store_w.acquire_write("demo").await?;
+                std::future::pending::<()>().await;
+                Ok::<(), ErrorBody>(())
+            }));
+        }
+        wait_for_waiters(&store, &resource, MAX_WAITERS_PER_RESOURCE as usize).await;
+        let err = match store.acquire_write("demo").await {
+            Err(err) => err,
+            Ok(_) => panic!("queue should be full"),
+        };
+        assert_eq!(err.code, ErrorCode::ResourceQueueFull);
+        assert_eq!(
+            store.waiter_count(&resource),
+            MAX_WAITERS_PER_RESOURCE as usize
+        );
+        waiters.pop().unwrap().abort();
+        for _ in 0..50 {
+            if store.waiter_count(&resource) < MAX_WAITERS_PER_RESOURCE as usize {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(store.waiter_count(&resource) < MAX_WAITERS_PER_RESOURCE as usize);
+        let recovered = tokio::spawn({
+            let store = store.clone();
+            async move {
+                let _guard = store.acquire_write("demo").await?;
+                std::future::pending::<()>().await;
+                Ok::<(), ErrorBody>(())
+            }
+        });
+        wait_for_waiters(&store, &resource, MAX_WAITERS_PER_RESOURCE as usize).await;
+        for waiter in waiters {
+            waiter.abort();
+        }
+        recovered.abort();
+        drop(first);
     }
 }

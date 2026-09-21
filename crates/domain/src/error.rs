@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 pub enum ErrorCode {
     Unauthorized,
     WorkspaceNotFound,
+    /// Live process owns the workspace mutation lease.
     WorkspaceBusy,
+    /// Per-resource waiter queue is at `MAX_WAITERS_PER_RESOURCE`.
+    ResourceQueueFull,
     InvalidPatch,
     InvalidCommand,
     ProcessSpawnFailed,
@@ -39,6 +42,8 @@ pub enum ErrorCode {
     ApprovalNotFound,
     ApprovalConflict,
     ApprovalAmbiguous,
+    /// Scheduler or store invariant failed. Not occupancy; do not retry as busy.
+    Internal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -134,6 +139,10 @@ mod tests {
         assert_eq!(json, "\"APPROVAL_CONFLICT\"");
         let json = serde_json::to_string(&ErrorCode::ApprovalAmbiguous).unwrap();
         assert_eq!(json, "\"APPROVAL_AMBIGUOUS\"");
+        let json = serde_json::to_string(&ErrorCode::ResourceQueueFull).unwrap();
+        assert_eq!(json, "\"RESOURCE_QUEUE_FULL\"");
+        let json = serde_json::to_string(&ErrorCode::Internal).unwrap();
+        assert_eq!(json, "\"INTERNAL\"");
     }
 
     #[test]

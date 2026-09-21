@@ -54,7 +54,9 @@ impl ApprovalTargetTool {
 pub enum ApprovalState {
     Pending,
     Granted,
-    /// Resume has been claimed. Execution may be in flight or interrupted.
+    /// Resume claimed; waiting for a resource. No side effect is possible yet.
+    Queued,
+    /// Resource granted. Mutation dispatch may be in flight or interrupted.
     Resuming,
     Denied,
     Consumed,
@@ -65,6 +67,7 @@ impl ApprovalState {
         match self {
             Self::Pending => "pending",
             Self::Granted => "granted",
+            Self::Queued => "queued",
             Self::Resuming => "resuming",
             Self::Denied => "denied",
             Self::Consumed => "consumed",
@@ -75,6 +78,7 @@ impl ApprovalState {
         match value {
             "pending" => Ok(Self::Pending),
             "granted" => Ok(Self::Granted),
+            "queued" => Ok(Self::Queued),
             "resuming" => Ok(Self::Resuming),
             "denied" => Ok(Self::Denied),
             "consumed" => Ok(Self::Consumed),
@@ -142,6 +146,11 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ApprovalsMode::Confirm).unwrap(),
             "confirm"
+        );
+        assert_eq!(ApprovalState::Queued.as_str(), "queued");
+        assert_eq!(
+            ApprovalState::parse("queued").unwrap(),
+            ApprovalState::Queued
         );
         assert_eq!(ApprovalState::Resuming.as_str(), "resuming");
         assert_eq!(

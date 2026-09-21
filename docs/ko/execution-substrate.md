@@ -30,7 +30,7 @@
 | 권한 프로필 | 파일·프로세스 행동의 허용 범위를 게이트웨이가 결정 |
 | 패치 작업 | `operation_id`와 선택적 중복 실행 방지 키, `files`/`changes` 해시, minted/finished 이벤트로 저장하는 패치 원장. `operation_status`로 조회. 명령 실행은 추적하지 않음 |
 | 프로세스 | 서버가 발급하는 명령 핸들. 메모리에만 보관 |
-| 확인 홀드 | 운영자 `approvals` 설정. `approvals` 테이블 행(`pending`/`granted`/`resuming`, 단말 결과가 있을 때까지). 패치 작업이 아니며 권한 부여나 격리 경계도 아님 |
+| 확인 홀드 | 운영자 `approvals` 설정. `approvals` 테이블 행(`pending`/`granted`/`queued`/`resuming`, 단말 결과가 있을 때까지). 패치 작업이 아니며 권한 부여나 격리 경계도 아님 |
 | 논리적 작업 | 작업과 사용자 지시 큐. 전송 세션과 별개 |
 
 `environment_id`는 MCP 도구 인자가 아닙니다. 모델이 전달한 프록시 URL이나 Codex 사용자 설정이 실행 권한의 근거가 되지 않습니다.
@@ -46,7 +46,7 @@
 
 `exec_command`는 디스패치 식별(`process_id`, `dispatch_status`)만 반환합니다. 종료 판정은 `process_status`의 `running`/`exited`와 termination 메타데이터를 사용합니다. 실행 중인 PTY 크기는 `process_resize`로 바꿉니다. `read_process`는 `output_lost`와 `retained_from`을 포함한 출력을 반환합니다. EOF는 성공이 아닙니다. 핸들이 만료된 뒤의 조회는 새 상태가 아니라 `PROCESS_NOT_FOUND`입니다. 파이프 프로세스의 크기 변경은 `PROCESS_NOT_TTY`, 종료된 핸들은 `PROCESS_NOT_RUNNING`입니다. Linux 샌드박스에서 wait 상태는 관리 자식(헬퍼 argv)의 코드이며, 사용자 argv와 동일하다고 문서화하지 않습니다.
 
-작업 공간 잠금은 패치와 명령이 동시에 파일을 변경하지 못하게 합니다. 같은 작업 공간에서 요청이 소유한 패치·exec는 현재 요청이 임대를 놓을 때까지 메모리 FIFO로 기다립니다. 라이브 프로세스가 점유한 동안의 다른 패치·exec는 즉시 `WORKSPACE_BUSY`로 거절하며, 이 대기는 SQLite나 스레드 키 큐가 아닙니다. 명령 실행 중에도 읽기와 검색은 가능하므로 파일 I/O는 사전 경로 검사에만 의존하지 않고 파일을 여는 시점의 심볼릭 링크 변경도 거부해야 합니다. Runner 파일 작업은 `codespace-fs`, 패치 적용은 별도 패치 도우미를 사용합니다. `operation_status`는 기록된 패치 원장(`kind`는 `patch`)을 조회하며, 실행 중인 명령은 `process_id`로만 다루고 이 조회로 복구하지 않습니다.
+작업 공간 잠금은 패치와 명령이 동시에 파일을 변경하지 못하게 합니다. FIFO 순서는 MCP 메시지 도착이 아니라, 적격 요청이 자원을 `acquire()`할 때 시작됩니다. 같은 작업 공간에서 요청이 소유한 패치·exec는 현재 요청이 임대를 놓을 때까지 메모리 FIFO로 기다립니다. exec가 라이브 프로세스가 되면 이미 줄 서 있던 대기자와 이후 도착은 `WORKSPACE_BUSY`로 거절됩니다. 큐가 가득 차면 `RESOURCE_QUEUE_FULL`입니다. 이 대기는 SQLite나 스레드 키 큐가 아닙니다. 명령 실행 중에도 읽기와 검색은 가능하므로 파일 I/O는 사전 경로 검사에만 의존하지 않고 파일을 여는 시점의 심볼릭 링크 변경도 거부해야 합니다. Runner 파일 작업은 `codespace-fs`, 패치 적용은 별도 패치 도우미를 사용합니다. `operation_status`는 기록된 패치 원장(`kind`는 `patch`)을 조회하며, 실행 중인 명령은 `process_id`로만 다루고 이 조회로 복구하지 않습니다.
 
 UDS 전송과 Linux 샌드박스 준비는 서로 다른 프로토콜과 실패 경계를 가집니다. UDS 변경 요청이 일부만 전달되면 결과가 불확실할 수 있습니다. 연결이 끊겼다는 이유만으로 새 변경 요청을 보내지 마세요. 프로세스 수명은 러너 인스턴스가 소유합니다. MCP/HTTP 클라이언트 끊김은 프로세스를 유지하고, UDS 게이트웨이↔worker 단절이나 게이트웨이 종료는 소유 서브트리를 종료합니다. 영속적인 프로세스 복구는 없습니다. 프로세스·격리 규칙 전체는 [러너 격리](runner-isolation.md)에 설명합니다.
 
@@ -55,7 +55,7 @@ UDS 전송과 Linux 샌드박스 준비는 서로 다른 프로토콜과 실패 
 <a id="스케줄러-단일-쓰기-잠금-이후"></a>
 <a id="스케줄러-단일-쓰기-잠금-이후"></a>
 
-점유는 자원별 인메모리 FIFO입니다. 요청 소유 exclusive 대기자는 현재 요청이 임대를 놓으면 순서대로 실행됩니다. 프로세스가 소유한 작업 공간 exclusive는 즉시 `WORKSPACE_BUSY`를 반환합니다. `read`와 `find`는 shared 임대를 잡지 않습니다. 이 큐는 SQLite에 저장되지 않고 스레드 키로도 구분하지 않습니다. 라이브 MCP 변경은 경로 단위 잠금이 아니라 작업 공간 exclusive를 사용합니다.
+점유는 자원별 인메모리 FIFO입니다. FIFO 순서는 `acquire()`에서 시작합니다. 요청 소유 exclusive 대기자는 현재 요청이 임대를 놓으면 순서대로 실행됩니다. 확정된 라이브 프로세스는 장벽입니다. 이미 줄 선 대기자와 새 acquire는 `WORKSPACE_BUSY`를 받습니다. spawn 예약은 그 장벽이 아니며, spawn 실패 시 다음 대기자를 깨웁니다. 큐 깊이는 제한되며 포화는 `RESOURCE_QUEUE_FULL`입니다. `read`와 `find`는 shared 임대를 잡지 않습니다. 이 큐는 SQLite에 저장되지 않고 스레드 키로도 구분하지 않습니다. 라이브 MCP 변경은 경로 단위 잠금이 아니라 작업 공간 exclusive를 사용합니다.
 
 <a id="fs-watch와-검색"></a>
 <a id="fswatch와-검색"></a>
@@ -77,7 +77,7 @@ Runner는 해당 작업 공간에서 처음 `read`·`find`·`version`·`apply_pa
 
 `approval_create`, `approval_resolve`, `operation_resume`을 호출할 수 있습니다. 작업 공간 프로필이 이미 허용한 변경을 홀드가 승인될 때까지 멈춥니다. 보안 경계가 아닙니다. 권한을 높이거나 `{ "network": true }`·`ClientClaims.approved`를 적용하거나 패치 원장에 V4A 스냅샷을 넣지 않습니다. 같은 MCP 호출자가 grant할 수 있습니다.
 
-운영자가 작업 공간 `approvals`를 `confirm`으로 두면, 정책이 허용한 `apply_patch`와 `exec_command`는 `begin()`이나 프로세스 시작 전에 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 같은 논리 요청을 다시 보내면 그 활성 홀드를 재사용합니다. 기본값 `off`에서는 해당 도구가 바로 실행됩니다. 세 도구는 목록에 남아 있으므로 명시적 `approval_create`로 홀드를 만들 수 있습니다. grant는 프로필을 바꾸지 않습니다. 재개는 `granted`를 `resuming`으로 옮긴 뒤 `allow()`를 다시 검사하고 기존 패치·실행 내부 경로를 돌립니다. `consumed`는 단말 결과와 함께만 기록됩니다. 이후 재개는 그 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`를 반환합니다. 중단된 exec는 다시 spawn하지 않습니다. 정책 거절은 그대로 `UNAUTHORIZED`입니다. 명령은 `process_id`로 다룹니다. v1은 호스트와 모델을 구분하지 않습니다. 서버가 보장하는 것은 재개 시 정책 재검사와 이 내구성 계약입니다.
+운영자가 작업 공간 `approvals`를 `confirm`으로 두면, 정책이 허용한 `apply_patch`와 `exec_command`는 `begin()`이나 프로세스 시작 전에 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 같은 논리 요청을 다시 보내면 그 활성 홀드를 재사용합니다. 기본값 `off`에서는 해당 도구가 바로 실행됩니다. 세 도구는 목록에 남아 있으므로 명시적 `approval_create`로 홀드를 만들 수 있습니다. grant는 프로필을 바꾸지 않습니다. 재개는 `granted`를 `queued`로 옮긴 뒤 `allow()`를 다시 검사하고, 자원을 받은 다음에야 `resuming`으로 올립니다. `consumed`는 단말 결과와 함께만 기록됩니다. `queued`에서 재시작하면 다시 acquire합니다. `resuming`에서 이후 재개는 그 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`를 반환합니다. 중단된 exec는 다시 spawn하지 않습니다. 정책 거절은 그대로 `UNAUTHORIZED`입니다. 명령은 `process_id`로 다룹니다. v1은 호스트와 모델을 구분하지 않습니다. 서버가 보장하는 것은 재개 시 정책 재검사와 이 내구성 계약입니다.
 
 ## 아직 제공하지 않는 기능
 

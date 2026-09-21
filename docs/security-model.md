@@ -32,9 +32,9 @@ The operator-registered root is a trust anchor. Keep tokens, the operations data
 
 ## Operation and recovery safety
 
-Version checks prevent applying a patch to an unexpected file version. Operation keys detect duplicate patch requests; they are not authorization tokens. Workspace occupancy serializes mutating patch and exec work. Request-owned conflicts wait in an in-memory FIFO; a live process still returns `WORKSPACE_BUSY`. Occupancy is not durable. There is no durable process recovery.
+Version checks prevent applying a patch to an unexpected file version. Operation keys detect duplicate patch requests; they are not authorization tokens. Workspace occupancy serializes mutating patch and exec work. Request-owned conflicts wait in an in-memory FIFO that starts at acquire. A live process returns `WORKSPACE_BUSY` for trailing waiters and new arrivals. Occupancy is not durable. There is no durable process recovery.
 
-Confirmation holds in `CODESPACE_OPERATIONS_DB` (`approvals`) store the V4A patch or exec argv while the row is `pending`, `granted`, or `resuming`. The patch operations ledger stores hashes, not patch text. After `denied` or `consumed`, the hold body is replaced with digest metadata (tool, workspace, fingerprint). Keep this database outside the workspace root, with tokens and gateway configuration. The hold is a workflow pause: the same MCP caller can grant it. It is not an isolation boundary.
+Confirmation holds in `CODESPACE_OPERATIONS_DB` (`approvals`) store the V4A patch or exec argv while the row is `pending`, `granted`, `queued`, or `resuming`. The patch operations ledger stores hashes, not patch text. After `denied` or `consumed`, the hold body is replaced with digest metadata (tool, workspace, fingerprint). Keep this database outside the workspace root, with tokens and gateway configuration. The hold is a workflow pause: the same MCP caller can grant it. It is not an isolation boundary.
 
 Patch snapshot restoration is best effort and is not an all-failure rollback guarantee. On `unknown`, partial failure, or post-apply verification error, inspect affected files. See [patch behavior](behavior-differences.md) and [integration recovery rules](agent-integration.md).
 

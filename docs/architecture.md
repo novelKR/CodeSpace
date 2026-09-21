@@ -56,7 +56,7 @@ MCP request completion does not end a managed process. Clients continue with its
 
 ## Extension boundaries
 
-The core does not import Codex types directly. Adapters may depend on a broader Codex execution graph; this does not make the gateway a Codex agent. Operator configuration selects environments, while MCP clients select only registered workspaces. Container execution and remote runners are not implemented. Workspace occupancy waits on an in-memory per-resource FIFO for request-owned work; a live process still returns `WORKSPACE_BUSY`.
+The core does not import Codex types directly. Adapters may depend on a broader Codex execution graph; this does not make the gateway a Codex agent. Operator configuration selects environments, while MCP clients select only registered workspaces. Container execution and remote runners are not implemented. Workspace occupancy waits on an in-memory per-resource FIFO for request-owned work. FIFO order starts at acquire. A live process returns `WORKSPACE_BUSY` for trailing waiters and new arrivals. Queue saturation is `RESOURCE_QUEUE_FULL`.
 
 Confirmation-hold tools (`approval_create`, `approval_resolve`, `operation_resume`) are implemented. They pause a mutation the profile already allows until the hold is granted. This is not a security boundary: they do not raise `read-only` to write/exec, honor `ClientClaims.approved`, or change the permission profile. The same MCP caller can grant. Resume re-checks policy. v1 does not separate host and model callers.
 

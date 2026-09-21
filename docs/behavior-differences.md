@@ -39,6 +39,6 @@ A successful result includes affected `files` and `changes` with kind and availa
 
 ## Write lock and transport
 
-One live command blocks other patch/exec work in that workspace with `WORKSPACE_BUSY`. Request-owned patch and exec work waits in an in-memory FIFO until the current request finishes. There is no durable occupancy queue. Reads and searches remain possible. Patch operation keys support replay only for matching request fingerprints; choosing a new key after an uncertain response risks applying the change twice.
+One live command blocks other patch/exec work in that workspace with `WORKSPACE_BUSY`, including waiters already queued behind that process. Request-owned patch and exec work waits in an in-memory FIFO that starts at acquire until the current request finishes. Queue saturation is `RESOURCE_QUEUE_FULL`. There is no durable occupancy queue. Reads and searches remain possible. Patch operation keys support replay only for matching request fingerprints; choosing a new key after an uncertain response risks applying the change twice.
 
 stdio and Streamable HTTP expose the same tool schemas. Connection failure does not establish whether a mutation ran. See [error codes](error-codes.md) and [recovery rules](agent-integration.md).

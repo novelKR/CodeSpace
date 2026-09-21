@@ -193,7 +193,7 @@ impl Store {
                 "consumed" => return replay_consumed(approval_id, row.result_json.as_deref()),
                 "pending" => return Err(conflict("approval is still pending")),
                 "denied" => return Err(conflict("approval was denied")),
-                "granted" | "resuming" => {
+                "granted" | "queued" | "resuming" => {
                     drop(conn);
                     let guard = self.mark_inflight(&approval_id.0)?;
                     let conn = self.conn.lock().expect("sqlite mutex");
@@ -210,7 +210,7 @@ impl Store {
                             let updated = conn
                                 .execute(
                                     "UPDATE approvals
-                                     SET state = 'resuming'
+                                     SET state = 'queued'
                                      WHERE approval_id = ?1 AND state = 'granted'",
                                     params![approval_id.0],
                                 )
@@ -220,6 +220,9 @@ impl Store {
                                 drop(guard);
                                 continue;
                             }
+                            return Ok(ResumeClaim::Execute(row.into_record()?, guard));
+                        }
+                        "queued" => {
                             return Ok(ResumeClaim::Execute(row.into_record()?, guard));
                         }
                         "resuming" => {
@@ -276,7 +279,7 @@ impl Store {
             .execute(
                 "UPDATE approvals
                  SET state = 'consumed', result_json = ?1, params_json = ?2
-                 WHERE approval_id = ?3 AND state = 'resuming'",
+                 WHERE approval_id = ?3 AND state IN ('queued', 'resuming')",
                 params![json, scrubbed, approval_id.0],
             )
             .map_err(db_err)?;
@@ -288,6 +291,31 @@ impl Store {
             ));
         }
         Ok(())
+    }
+
+    pub fn mark_resuming(&self, approval_id: &ApprovalId) -> Result<(), ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let row = load(&conn, &approval_id.0)?.ok_or_else(|| not_found(approval_id))?;
+        match row.state.as_str() {
+            "resuming" => Ok(()),
+            "queued" => {
+                let updated = conn
+                    .execute(
+                        "UPDATE approvals
+                         SET state = 'resuming'
+                         WHERE approval_id = ?1 AND state = 'queued'",
+                        params![approval_id.0],
+                    )
+                    .map_err(db_err)?;
+                if updated != 1 {
+                    return Err(conflict("approval is not queued for dispatch"));
+                }
+                Ok(())
+            }
+            other => Err(conflict(format!(
+                "approval is in an unknown state `{other}`"
+            ))),
+        }
     }
 
     pub fn fail_next_finish(&self) {
@@ -372,7 +400,7 @@ fn load_active_by_fingerprint(
         "SELECT approval_id, workspace_id, tool, fingerprint, params_json, state, resolved_at, result_json
          FROM approvals
          WHERE workspace_id = ?1 AND fingerprint = ?2
-           AND state IN ('pending','granted','resuming')
+           AND state IN ('pending','granted','queued','resuming')
          LIMIT 1",
         params![workspace_id, fingerprint],
         map_row,
@@ -636,6 +664,7 @@ mod tests {
             ResumeClaim::Execute(_, guard) => guard,
             other => panic!("expected execute, got {other:?}"),
         };
+        store.mark_resuming(&created.approval_id).unwrap();
         store.fail_next_finish();
         assert_eq!(
             store
@@ -668,11 +697,41 @@ mod tests {
             ResumeClaim::Execute(_, guard) => guard,
             other => panic!("expected execute, got {other:?}"),
         });
+        store.mark_resuming(&created.approval_id).unwrap();
         match store.claim_resume(&created.approval_id).unwrap() {
             ResumeClaim::Reconcile(record, _guard) => {
                 assert_eq!(record.state, ApprovalState::Resuming);
             }
             other => panic!("expected reconcile, got {other:?}"),
+        };
+    }
+
+    #[test]
+    fn restart_queued_is_execute() {
+        let store = Store::memory().unwrap();
+        let params = patch_params();
+        let created = store
+            .create_approval(
+                "demo",
+                ApprovalTargetTool::ApplyPatch,
+                &Store::fingerprint(&params),
+                serde_json::to_value(&params).unwrap(),
+            )
+            .unwrap();
+        store
+            .resolve_approval(&created.approval_id, ApprovalDecision::Grant)
+            .unwrap();
+        drop(match store.claim_resume(&created.approval_id).unwrap() {
+            ResumeClaim::Execute(_, guard) => guard,
+            other => panic!("expected execute, got {other:?}"),
+        });
+        let (state, _, _) = store.inspect_approval(&created.approval_id).unwrap();
+        assert_eq!(state, ApprovalState::Queued);
+        match store.claim_resume(&created.approval_id).unwrap() {
+            ResumeClaim::Execute(record, _guard) => {
+                assert_eq!(record.tool, ApprovalTargetTool::ApplyPatch);
+            }
+            other => panic!("expected execute, got {other:?}"),
         };
     }
 
