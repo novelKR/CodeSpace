@@ -30,6 +30,36 @@
   ],
   "documents": [
     {
+      "id": "devguard-integration",
+      "section": "project",
+      "order": 1,
+      "route": "/guide/devguard-integration",
+      "source": "docs/devguard-integration.md",
+      "translation": "docs/ko/devguard-integration.md",
+      "anchors": [
+        "consumer-boundary",
+        "devguard-integration",
+        "devguard-integration-roadmap",
+        "devguard-결합-로드맵",
+        "initial-gateway-recovery-scope",
+        "minimum-adoption-conditions",
+        "plan-and-evidence-references",
+        "prerequisites-and-priority",
+        "resource-adoption-levels",
+        "resource-consumer-boundary",
+        "resource-gateway-recovery",
+        "resource-integration-prerequisites",
+        "resource-plan-evidence",
+        "계획과-검증-근거",
+        "선행-조건과-우선순위",
+        "소비-경계",
+        "최소-도입-조건",
+        "최초-gateway-복구-범위"
+      ],
+      "source_sha256": "43b65f547c7a527793c357be37dab642d1e050e6c69c050fdc7f4956dbe2438e",
+      "translation_sha256": "94465c17464e73aaa68c358b7ca363ac5fdb5ab0ebc97eafd90d98019fcb6dfa"
+    },
+    {
       "id": "overview",
       "section": "start",
       "order": 0,
