@@ -80,7 +80,7 @@ Runner나 호스트 손실은 실제 종료가 확인될 때까지 불확실 상
 
 ## 계획과 검증 근거
 
-상세 계획의 문서 revision은 **`3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`**이며 [DevGuard 문서 PR #1](https://github.com/novelKR/DevGuard/pull/1)로 제출했다. 아래 링크는 PR 병합 전에도 존재하는 고정 commit을 가리킨다. 영문이 편집 정본이며 검토된 한국어 번역과 hash 검사를 유지한다. [영문 설계 참조](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md)와 [한국어 대응 설계](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/design.md)는 불변 승인 원문과 별도로 관리한다. 이 값은 문서 식별자이며 런타임 client dependency pin 선정이 아니다. 7개 마일스톤에 걸쳐 **후속 구현 46개 커밋 단위와 23개 논리 PR 묶음**을 정의했으며 후속 구현 상태는 계속 미착수다.
+상세 계획의 문서 revision은 `3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`이며 [DevGuard 문서 PR #1](https://github.com/novelKR/DevGuard/pull/1)로 제출했다. 아래 링크는 PR 병합 전에도 존재하는 고정 commit을 가리킨다. 영문이 편집 정본이며 검토된 한국어 번역과 hash 검사를 유지한다. [영문 설계 참조](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md)와 [한국어 대응 설계](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/design.md)는 불변 승인 원문과 별도로 관리한다. 이 값은 문서 식별자이며 런타임 client dependency pin 선정이 아니다. 7개 마일스톤에 걸쳐 **후속 구현 46개 커밋 단위와 23개 논리 PR 묶음**을 정의했으며 후속 구현 상태는 계속 미착수다.
 
 | 영문 정본에 대응하는 한국어 계획 문서 | 용도 |
 | --- | --- |
