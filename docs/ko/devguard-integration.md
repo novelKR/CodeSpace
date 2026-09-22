@@ -78,10 +78,23 @@ Runner나 호스트 손실은 실제 종료가 확인될 때까지 불확실 상
 
 ## 계획과 검증 근거
 
+상세 계획의 문서 revision은 **`f3e6827f5dca2184c9b100ed9a3438af7322ba64`**이며 [DevGuard 문서 PR #1](https://github.com/novelKR/DevGuard/pull/1)로 제출했다. 아래 링크는 PR 병합 전에도 존재하는 고정 commit을 가리킨다. 이 값은 문서 식별자이며 런타임 client dependency pin 선정이 아니다. 7개 마일스톤에 걸쳐 **후속 구현 46개 커밋 단위와 23개 논리 PR 묶음**을 정의했으며 후속 구현 상태는 계속 미착수다.
+
+| 계획 문서 | 용도 |
+| --- | --- |
+| [계획 index와 마일스톤 지도](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/README.md) | 7개 전체 마일스톤과 commit·PR 경계 탐색 |
+| [확정 결정](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/decisions.md) | 등록·복구 대안 비교, 채택 이유와 재검토 조건 |
+| [최소 소비 조건](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/consumer-readiness.md) | 범용 도입 조건과 플랫폼별 지원 주장 범위 |
+| [CodeSpace 결합 명세](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/codespace-integration.md) | 현재 소스 경로, 모드별 등록·실행·장애·복구 흐름 |
+| [CS-RG 작업 패키지](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/milestones/CS-RG.md) / [P1 복구 작업 패키지](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/milestones/P1-RECOVERY.md) | CodeSpace 예정 commit·시험·진입/완료·rollback |
+| [검증 규칙](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/verification.md) / [PR 진행서](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/pr-delivery.md) | 현재·예정 명령, 증거·SLO와 검토 인계 |
+
+qualification은 idle 기준선 10분, 부하 최소30분, 3회 반복과 원시 측정값 보존을 유지한다. 로컬 관제 지연과 원격 네트워크 시간을 분리한다. 기존 초기 목표인 process status p99 ≤500ms와 종료 요청 응답 p99 ≤1초를 유지하며 실제 scope 종료 시간은 별도로 측정한다. 새 문서 commit이나 가짜 backend 시험 통과를 OS 제어·제품 SLO qualification으로 해석하지 않는다.
+
 설계 기준 CodeSpace commit은 `e94d21475643608ad2a466256fb57266b86faa47`이다. Codex pin은 `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`을 유지한다. 승인된 DevGuard 설계는 독립 저장소의 `docs/design.ko.md`에 보존하며 SHA-256은 `97b67a1f9518c1781156a4b3b26829b285f84f5c9a44da60f3c5dcf1bc768df8`이다.
 
 최초 DG-0 소스 참조는 [DevGuard commit d59cbd4](https://github.com/novelKR/DevGuard/tree/d59cbd43d206a9a9281328a946eddf1dc199f710)이며 [macOS·Ubuntu 계약 CI](https://github.com/novelKR/DevGuard/actions/runs/35671367559)와 연결된다. 검토한 기반 소스를 식별하는 참조이며 CodeSpace 런타임의 client pin은 아니다. 로컬 checkout 없이도 [고정 commit의 설계](https://github.com/novelKR/DevGuard/blob/d59cbd43d206a9a9281328a946eddf1dc199f710/docs/design.ko.md)와 [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/d59cbd43d206a9a9281328a946eddf1dc199f710/milestones.json)을 확인할 수 있다.
 
-지정한 로컬 소스 경로는 `/Volumes/DevData/Projects/IdeaProjects/DevGuard`다. 이 저장소의 `milestones.json`, `docs/contracts.md`, `docs/milestones.md`에서 구현 상태와 플랫폼 검증 상태를 구분한다. Rust 1.95.0 환경에서 `python3 scripts/validate.py`를 실행하면 해당 소스의 DG-0 보고서를 생성한다. 실제 OS 제어, 브라우저 SLO, 안정 버전 아래의 후보 실행과 CodeSpace 런타임 결합은 해당 마일스톤을 완료할 때까지 `not_run`으로 기록한다.
+지정한 로컬 소스 경로는 `/Volumes/DevData/Projects/IdeaProjects/DevGuard`다. 이 저장소의 `milestones.json`, `docs/contracts.md`, `docs/milestones.md`에서 구현 상태와 플랫폼 검증 상태를 구분한다. Rust 1.95.0 환경에서 `python3 scripts/validate.py`를 실행하면 해당 소스의 DG-0 보고서를 생성한다. 실제 OS 제어, 브라우저 SLO, 자기 적용 후보 실행과 CodeSpace 런타임 결합은 해당 마일스톤을 완료할 때까지 `not_run`으로 기록한다. 기존 로드맵 commit `fb822fc24c98f6628dce62d33a5cc67275f8ca34`는 이번 문서 전달에 함께 포함하며, 런타임 기준은 앞서 명시한 별도 commit을 유지한다.
 
 향후 설정과 CLI 예시는 승인 설계 전체를 참조한다. 현재 CodeSpace 릴리스의 설치 명령으로 사용하지 않는다. `target/upstream-reports/local`, 운영 DB, Git 메타데이터와 안정 복구 artifact는 자동 캐시 회수에서 보호한다.
