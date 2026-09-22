@@ -17,13 +17,30 @@ The priority path is **DG-0 → DG-1 → CS-RG → P1-RECOVERY**, following the 
 | Milestone | Owner | Exit condition |
 | --- | --- | --- |
 | DG-0 | DevGuard | Independent repository, accepted design, stable attempt identity, reservation/plan/applied-evidence types, durable fenced transitions, registration and compatibility contracts, qualified fake-backend tests |
-| DG-1 | DevGuard | Real macOS daemon/client/launcher, generic and Cargo development consumption, candidate tests under a stable parent budget, recovery and measured responsiveness |
+| DG-1 | DevGuard | Real macOS daemon/client/launcher, generic and Cargo consumption, bounded candidate tests under a functionally tested bootstrap reference, independent repair and a separately qualified stable artifact |
 | CS-RG | CodeSpace | Qualified full-SHA consumption, pre-spawn process slots, PrepareExec/ExecPrepared, approval preservation, bounded control/data paths and replay, InProcess/UDS parity, upstream regression qualification |
-| P1-RECOVERY | CodeSpace | Durable process identity and recovery reconciled with the resource authority; no replay of uncertain exec |
+| P1-RECOVERY | CodeSpace | Opt-in Gateway restart/reconnection while an independent Runner retains processes and I/O; reconcile workspace, approvals and resource leases without replaying uncertain exec |
 | DG-LINUX | Both | Actual Linux cgroup controllers, ancestor constraints, complete sandbox/proxy scope and control protection; required for overall completion |
 | DG-CACHE / DG-ADAPTERS | DevGuard | Safe registered-cache reclamation and additional tool adapters; not prerequisites for P1-RECOVERY |
 
 After these prerequisites, retain the existing relative order of watch completion, file-search engine work, deterministic hooks, skills, remote environments, federation and artifacts. A contract test on a fake Linux scope is not Linux enforcement qualification.
+
+DG-1 qualifies the standalone daemon/CLI, development workloads and bounded self-use. CS-RG then qualifies the integrated Runner, approvals, replay and saturated control paths. DG-1 does not depend on unimplemented CS-RG behavior.
+
+<a id="resource-adoption-levels"></a>
+
+## Minimum adoption conditions
+
+| Level | Minimum evidence | Allowed use |
+| --- | --- | --- |
+| Contract preparation | DG-0 contracts and exact-source tests | Design adapters and error/state mappings; no operational protection claim |
+| Bounded functional trial | DG-1 candidate with real authentication, launch and reclamation in an explicit test environment | Candidate tests; not daily-use qualification |
+| macOS development | DG-1 qualification, actual host probes, sufficient budget and a real CLI/adapter entrypoint | The validated development commands and host combination |
+| CodeSpace macOS runtime | DG-1 and CS-RG qualification, supported client/artifact/wire combination | Explicit required participation and measured control protection for validated modes |
+| Linux enforcement | Additional qualification for actual controllers, delegation and ancestor limits | Kernel controls for the verified resources and scope |
+| DevGuard self-use | Frozen reference artifact, parent lease, isolated test state/credentials/cache and independent repair | Candidate development inside the parent's budget; daily use requires DG-1 SLO qualification |
+
+Every participating consumer on the actual execution host shares one normal authority and budget. A configuration file alone does not route commands through the governor. Subtract host headroom and static control reservations before admitting work; reject a workload that cannot fit. Report requested, supported and actually applied policy per resource. A different socket or state directory must not create a second full-host budget.
 
 <a id="resource-consumer-boundary"></a>
 
@@ -31,11 +48,31 @@ After these prerequisites, retain the existing relative order of watch completio
 
 Development consumption uses the future independent CLI to govern builds and tests in both repositories. Product consumption belongs in the Runner on the actual execution host; it does not turn DevGuard into a process or PTY broker. The current UDS worker is on the same host as the gateway, not a remote worker.
 
+The execution-owning **Runner registers once**. InProcess registers with the Gateway PID; UDS registers from the worker PID. One static control reservation covers both Gateway and Runner costs. For this SDK consumer, `service-exec` prepares credentials and startup, and the selected Runner completes registration. Service/subordinate-worker registration is deferred until multiple Runners or shared service reservations require it.
+
+Private credential FDs survive only the required pipe/PTY helper stages and close before the user executable. The pinned Codex PTY already supports selected FD inheritance; CodeSpace's private adapter must connect it and test payload isolation. This work does not require updating the Codex pin or exposing credentials through MCP arguments.
+
 The runtime adapter must distinguish an accounted reservation, a proposed execution plan and verified applied policy. Required participation does not imply a tree-wide hard limit on macOS. DevGuard's journal cannot restore CodeSpace process handles or replace the patch operations ledger.
 
-CS-RG must prepare admission before marking an approval resume as dispatching. Resource refusal leaves an unconsumed hold queued. A timeout, lost response or missing process handle is not proof that a command did not run. New work is rejected quickly when the authority is unavailable; existing status and termination remain Runner-local.
+After existing authorization and workspace FIFO acquisition, CS-RG reserves a process slot before spawn and prepares admission before marking an approval resume as dispatching. Resource refusal leaves an unconsumed hold queued. Only a refusal or failure proven not to have started the matching attempt permits approval reuse. A timeout, lost response or missing process handle is not that proof. A tracked helper (`confirmed`), helper `READY` and successful user executable start are distinct events.
+
+Execution slots, resource leases and completed-output retention have separate lifetimes. Resource shortage, authority failure, unsupported required policy and uncertain execution remain distinct outcomes. New work is rejected quickly when the authority is unavailable; existing `process_status` and `terminate_process` use Runner-owned handles without requiring fresh admission. Public MCP tool names remain unchanged.
+
+Control protection covers pending and concurrent requests, total queued/replay/response bytes and retention periods. Separate control/data sockets are insufficient if a shared mutex, writer or callback can still block control. The current full-file read/hash path also needs a separate memory-bound improvement; until then, qualification fixes file sizes and concurrency and does not claim protection for arbitrary file sizes.
 
 The integration will separately qualify the pinned contract/client, daemon/helper artifacts and CodeSpace Runner wire. It must reject missing required capabilities instead of starting a second host-wide authority or silently disabling policy.
+
+Default participation remains `off`; `required` is an explicit operator choice in the future runtime implementation. Strict contract/journal decoding requires actual old/new reader and writer tests: an added field is not automatically backward compatible. Upgrade recovery preserves the current ledger and cannot restore an old snapshot after new admissions.
+
+<a id="resource-gateway-recovery"></a>
+
+## Initial Gateway recovery scope
+
+P1-RECOVERY introduces an operator-selected independent Runner mode and explicit capability. Existing modes keep their current shutdown/disconnect contracts. InProcess shares the Gateway PID and is excluded from live Gateway restart recovery.
+
+The new mode distinguishes normal shutdown, explicit service stop, restart detach and unexpected connection loss. A surviving Runner retains handles, PTY/pipe ownership, bounded output and the original timeout during detach or Gateway loss. Reconnection authenticates the new Gateway, fences stale controller epochs and reconciles workspace occupancy, approvals and resource leases before mutations resume. Reconnecting to an existing execution does not require a new workload budget.
+
+Runner or host loss remains uncertain until actual termination is established. Persisted PID/state does not restore PTY or pipe ownership, and stored argv is never automatically re-executed. Recovery across loss of the Runner and its I/O owner requires a separate future design.
 
 <a id="resource-plan-evidence"></a>
 
