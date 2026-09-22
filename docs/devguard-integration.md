@@ -27,6 +27,8 @@ After these prerequisites, retain the existing relative order of watch completio
 
 DG-1 qualifies the standalone daemon/CLI, development workloads and bounded self-use. CS-RG then qualifies the integrated Runner, approvals, replay and saturated control paths. DG-1 does not depend on unimplemented CS-RG behavior.
 
+DG-1 is delivered as six sequential PR groups, each reviewed, checked on its current head, normally merged and verified on main before the next. Foreground daemons are used through P4; P5 introduces a current-user LaunchAgent. At C10, first test and freeze a parent containing the new parent-budget capability, then immediately begin bounded real self-use. The earlier functional P4/P5 artifacts are not presumed to support newly added parent operations. C12 separately qualifies and promotes the measured artifact/policy/environment combination.
+
 <a id="resource-adoption-levels"></a>
 
 ## Minimum adoption conditions
@@ -38,7 +40,7 @@ DG-1 qualifies the standalone daemon/CLI, development workloads and bounded self
 | macOS development | DG-1 qualification, actual host probes, sufficient budget and a real CLI/adapter entrypoint | The validated development commands and host combination |
 | CodeSpace macOS runtime | DG-1 and CS-RG qualification, supported client/artifact/wire combination | Explicit required participation and measured control protection for validated modes |
 | Linux enforcement | Additional qualification for actual controllers, delegation and ancestor limits | Kernel controls for the verified resources and scope |
-| DevGuard self-use | Frozen reference artifact, parent lease, isolated test state/credentials/cache and independent repair | Candidate development inside the parent's budget; daily use requires DG-1 SLO qualification |
+| DevGuard self-use | Functionally tested C10-capable parent artifact, parent lease, isolated test state/credentials/cache and independent repair | Bounded real candidate development begins at C10; daily use requires C12 SLO qualification |
 
 Every participating consumer on the actual execution host shares one normal authority and budget. A configuration file alone does not route commands through the governor. Subtract host headroom and static control reservations before admitting work; reject a workload that cannot fit. Report requested, supported and actually applied policy per resource. A different socket or state directory must not create a second full-host budget.
 
@@ -78,16 +80,16 @@ Runner or host loss remains uncertain until actual termination is established. P
 
 ## Plan and evidence references
 
-The detailed planning revision is **`f3e6827f5dca2184c9b100ed9a3438af7322ba64`**, submitted in [DevGuard documentation PR #1](https://github.com/novelKR/DevGuard/pull/1). These immutable links remain valid before that PR is merged. This revision identifies documents, not a selected runtime client dependency. The plan defines **46 proposed implementation commit units in 23 logical PR groups** across seven milestones; future implementation remains not started.
+The detailed planning revision is **`3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`**, submitted in [DevGuard documentation PR #1](https://github.com/novelKR/DevGuard/pull/1). These immutable links remain valid before that PR is merged. English is the editorial source, with reviewed Korean counterparts and hash checks. The [English design reference](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md) and [Korean planning translation](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/README.md) are maintained separately from the immutable approval artifact. This revision identifies documents, not a selected runtime client dependency. The plan defines **46 proposed implementation commit units in 23 logical PR groups** across seven milestones; future implementation remains not started.
 
-| Planning document (Korean) | Use |
+| Authoritative planning document (English) | Use |
 | --- | --- |
-| [Planning index and milestone map](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/README.md) | Navigate all seven milestone plans and their commit/PR boundaries |
-| [Accepted decisions](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/decisions.md) | Registration/recovery alternatives, rationale and reconsideration conditions |
-| [Consumer readiness](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/consumer-readiness.md) | Generic minimum conditions and supported platform claims |
-| [CodeSpace integration specification](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/codespace-integration.md) | Current source paths, mode-specific registration, execution, failures and recovery |
-| [CS-RG work packages](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/milestones/CS-RG.md) / [P1 recovery work packages](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/milestones/P1-RECOVERY.md) | CodeSpace's proposed commits, tests, entry/exit gates and rollback |
-| [Verification](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/verification.md) / [PR delivery](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/pr-delivery.md) | Current versus proposed commands, evidence, SLOs and review handoff |
+| [Planning index and milestone map](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/README.md) | Navigate all seven milestone plans and their commit/PR boundaries |
+| [Accepted decisions](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/decisions.md) | Registration/recovery alternatives, rationale and reconsideration conditions |
+| [Consumer readiness](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/consumer-readiness.md) | Generic minimum conditions and supported platform claims |
+| [CodeSpace integration specification](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/codespace-integration.md) | Current source paths, mode-specific registration, execution, failures and recovery |
+| [CS-RG work packages](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/milestones/CS-RG.md) / [P1 recovery work packages](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/milestones/P1-RECOVERY.md) | CodeSpace's proposed commits, tests, entry/exit gates and rollback |
+| [Verification](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/verification.md) / [PR delivery](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/planning/pr-delivery.md) | Current versus proposed commands, evidence, SLOs and review handoff |
 
 Qualification retains a 10-minute idle baseline, at least 30 minutes of load and three repetitions, with raw measurements. Local control latency and remote network time are separate. The documented initial targets remain process status p99 ≤500ms and termination acknowledgement p99 ≤1 second, with actual scope termination measured separately. A new documentation commit or passing fake-backend test does not qualify an OS control or product SLO.
 
@@ -97,4 +99,4 @@ The initial DG-0 source reference is [DevGuard commit d59cbd4](https://github.co
 
 The authorized local source is `/Volumes/DevData/Projects/IdeaProjects/DevGuard`. Its `milestones.json`, `docs/contracts.md` and `docs/milestones.md` distinguish implemented work from platform qualification. Run `python3 scripts/validate.py` there with Rust 1.95.0 to generate an exact-source DG-0 report. Reports explicitly leave real OS controls, browser SLOs, self-governed candidate execution and CodeSpace integration as `not_run` until their milestones are completed. The existing roadmap commit `fb822fc24c98f6628dce62d33a5cc67275f8ca34` is included in this documentation delivery; the runtime baseline remains the separate commit above.
 
-Use the full approved design for future configuration and CLI examples. They are not installation instructions for the current CodeSpace release. Keep `target/upstream-reports/local`, operational databases, Git metadata and stable recovery artifacts outside automatic cache reclamation.
+Use the English design reference and accepted decisions for ongoing development; preserve the full approved design as historical evidence for configuration and CLI examples. They are not installation instructions for the current CodeSpace release. Keep `target/upstream-reports/local`, operational databases, Git metadata and stable recovery artifacts outside automatic cache reclamation.

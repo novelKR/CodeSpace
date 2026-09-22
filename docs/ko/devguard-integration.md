@@ -27,6 +27,8 @@
 
 DG-1은 독립 daemon/CLI, 개발 workload와 상위 예산 안의 자기 적용을 검증한다. CS-RG는 이후 결합된 Runner, 승인, replay와 포화 상태의 관제 경로를 검증한다. DG-1 완료에 아직 구현하지 않은 CS-RG 기능을 요구하지 않는다.
 
+DG-1은 6개 PR 묶음을 순차 전달한다. 각 PR의 검토, 현재 head 검사, 정상 병합과 별도 main 검증을 끝낸 뒤 다음으로 진행한다. P4까지 foreground daemon을 사용하고 P5에서 현재 사용자의 LaunchAgent를 도입한다. C10에서는 새 부모 예산 기능을 먼저 시험하고 그 기능을 포함한 부모를 동결한 직후 실제 bounded 자기 적용을 시작한다. 앞선 P4/P5 기능 artifact가 새 부모 기능을 이미 지원한다고 가정하지 않는다. C12는 측정한 artifact·정책·환경의 SLO 자격과 승격을 별도로 판정한다.
+
 <a id="resource-adoption-levels"></a>
 
 ## 최소 도입 조건
@@ -38,7 +40,7 @@ DG-1은 독립 daemon/CLI, 개발 workload와 상위 예산 안의 자기 적용
 | macOS 개발 | DG-1 qualification, 실제 host probe, 충분한 예산과 실제 CLI/adapter 진입점 | 검증한 개발 명령과 호스트 조합 |
 | CodeSpace macOS 런타임 | DG-1·CS-RG qualification, 지원 client/artifact/wire 조합 | 검증한 모드의 명시적 required 참여와 측정된 관제 보호 |
 | Linux 강제 보호 | 실제 controller·위임 권한·ancestor 상한의 추가 qualification | 검증한 자원과 scope의 kernel 제어 |
-| DevGuard 자기 적용 | 동결한 기준 artifact, parent lease, 격리된 시험 상태·자격·cache, 독립 복구 | 부모 예산 안의 후보 개발. 일상 사용은 DG-1 SLO qualification 필요 |
+| DevGuard 자기 적용 | 부모 예산 기능을 시험한 뒤 동결한 C10 부모 artifact, parent lease, 격리된 시험 상태·자격·cache, 독립 복구 | C10부터 부모 예산 안에서 실제 후보 개발. 일상 사용은 C12 SLO qualification 필요 |
 
 실제 실행 호스트에서 참여하는 모든 소비자는 정상 authority와 예산 하나를 공유한다. 설정 파일을 두는 것만으로 명령이 governor를 통과하지는 않는다. 호스트 여유분과 정적 제어 예약을 제외한 뒤 작업을 허용하며 최소 요구량이 들어가지 않으면 거절한다. 자원마다 요구·지원·실제 적용 결과를 구분한다. socket이나 state 경로를 바꾸어 두 번째 전체 호스트 예산을 만들 수 없어야 한다.
 
@@ -78,16 +80,16 @@ Runner나 호스트 손실은 실제 종료가 확인될 때까지 불확실 상
 
 ## 계획과 검증 근거
 
-상세 계획의 문서 revision은 **`f3e6827f5dca2184c9b100ed9a3438af7322ba64`**이며 [DevGuard 문서 PR #1](https://github.com/novelKR/DevGuard/pull/1)로 제출했다. 아래 링크는 PR 병합 전에도 존재하는 고정 commit을 가리킨다. 이 값은 문서 식별자이며 런타임 client dependency pin 선정이 아니다. 7개 마일스톤에 걸쳐 **후속 구현 46개 커밋 단위와 23개 논리 PR 묶음**을 정의했으며 후속 구현 상태는 계속 미착수다.
+상세 계획의 문서 revision은 **`3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`**이며 [DevGuard 문서 PR #1](https://github.com/novelKR/DevGuard/pull/1)로 제출했다. 아래 링크는 PR 병합 전에도 존재하는 고정 commit을 가리킨다. 영문이 편집 정본이며 검토된 한국어 번역과 hash 검사를 유지한다. [영문 설계 참조](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md)와 [한국어 대응 설계](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/design.md)는 불변 승인 원문과 별도로 관리한다. 이 값은 문서 식별자이며 런타임 client dependency pin 선정이 아니다. 7개 마일스톤에 걸쳐 **후속 구현 46개 커밋 단위와 23개 논리 PR 묶음**을 정의했으며 후속 구현 상태는 계속 미착수다.
 
-| 계획 문서 | 용도 |
+| 영문 정본에 대응하는 한국어 계획 문서 | 용도 |
 | --- | --- |
-| [계획 index와 마일스톤 지도](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/README.md) | 7개 전체 마일스톤과 commit·PR 경계 탐색 |
-| [확정 결정](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/decisions.md) | 등록·복구 대안 비교, 채택 이유와 재검토 조건 |
-| [최소 소비 조건](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/consumer-readiness.md) | 범용 도입 조건과 플랫폼별 지원 주장 범위 |
-| [CodeSpace 결합 명세](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/codespace-integration.md) | 현재 소스 경로, 모드별 등록·실행·장애·복구 흐름 |
-| [CS-RG 작업 패키지](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/milestones/CS-RG.md) / [P1 복구 작업 패키지](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/milestones/P1-RECOVERY.md) | CodeSpace 예정 commit·시험·진입/완료·rollback |
-| [검증 규칙](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/verification.md) / [PR 진행서](https://github.com/novelKR/DevGuard/blob/f3e6827f5dca2184c9b100ed9a3438af7322ba64/docs/planning/pr-delivery.md) | 현재·예정 명령, 증거·SLO와 검토 인계 |
+| [계획 index와 마일스톤 지도](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/README.md) | 7개 전체 마일스톤과 commit·PR 경계 탐색 |
+| [확정 결정](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/decisions.md) | 등록·복구 대안 비교, 채택 이유와 재검토 조건 |
+| [최소 소비 조건](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/consumer-readiness.md) | 범용 도입 조건과 플랫폼별 지원 주장 범위 |
+| [CodeSpace 결합 명세](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/codespace-integration.md) | 현재 소스 경로, 모드별 등록·실행·장애·복구 흐름 |
+| [CS-RG 작업 패키지](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/milestones/CS-RG.md) / [P1 복구 작업 패키지](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/milestones/P1-RECOVERY.md) | CodeSpace 예정 commit·시험·진입/완료·rollback |
+| [검증 규칙](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/verification.md) / [PR 진행서](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/pr-delivery.md) | 현재·예정 명령, 증거·SLO와 검토 인계 |
 
 qualification은 idle 기준선 10분, 부하 최소30분, 3회 반복과 원시 측정값 보존을 유지한다. 로컬 관제 지연과 원격 네트워크 시간을 분리한다. 기존 초기 목표인 process status p99 ≤500ms와 종료 요청 응답 p99 ≤1초를 유지하며 실제 scope 종료 시간은 별도로 측정한다. 새 문서 commit이나 가짜 backend 시험 통과를 OS 제어·제품 SLO qualification으로 해석하지 않는다.
 
@@ -97,4 +99,4 @@ qualification은 idle 기준선 10분, 부하 최소30분, 3회 반복과 원시
 
 지정한 로컬 소스 경로는 `/Volumes/DevData/Projects/IdeaProjects/DevGuard`다. 이 저장소의 `milestones.json`, `docs/contracts.md`, `docs/milestones.md`에서 구현 상태와 플랫폼 검증 상태를 구분한다. Rust 1.95.0 환경에서 `python3 scripts/validate.py`를 실행하면 해당 소스의 DG-0 보고서를 생성한다. 실제 OS 제어, 브라우저 SLO, 자기 적용 후보 실행과 CodeSpace 런타임 결합은 해당 마일스톤을 완료할 때까지 `not_run`으로 기록한다. 기존 로드맵 commit `fb822fc24c98f6628dce62d33a5cc67275f8ca34`는 이번 문서 전달에 함께 포함하며, 런타임 기준은 앞서 명시한 별도 commit을 유지한다.
 
-향후 설정과 CLI 예시는 승인 설계 전체를 참조한다. 현재 CodeSpace 릴리스의 설치 명령으로 사용하지 않는다. `target/upstream-reports/local`, 운영 DB, Git 메타데이터와 안정 복구 artifact는 자동 캐시 회수에서 보호한다.
+이후 개발은 영문 설계 참조와 확정 결정을 기준으로 하며, 설정·CLI 예시의 승인 이력은 원래 전체 설계에 보존한다. 현재 CodeSpace 릴리스의 설치 명령으로 사용하지 않는다. `target/upstream-reports/local`, 운영 DB, Git 메타데이터와 안정 복구 artifact는 자동 캐시 회수에서 보호한다.
