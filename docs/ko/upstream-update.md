@@ -79,3 +79,5 @@ python3 scripts/upstream_dependencies.py --target x86_64-unknown-linux-gnu \
 Cargo 실패는 검증 실패입니다. 경로 식별자는 저장소 상대 경로를 사용합니다.
 CI는 실패 시에도 보고서와 로그를 업로드합니다. 기존 pin 검사 스크립트는
 SHA와 패치 테스트만 확인하며 전체 검증 명령을 대체하지 않습니다.
+
+<!-- CI fixture: documentation-only selection; not for merging. -->
