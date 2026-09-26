@@ -49,6 +49,16 @@ macOS에서는 Linux 격리를 `not_run`, 전체 결과를 `incomplete`로 표�
 Linux CI 근거가 별도로 필요하며 macOS CI는 PTY와 파일 시스템 계약도 검사합니다.
 한 플랫폼 결과만으로 다른 플랫폼 검증을 대체하지 않습니다.
 
+CI는 변경마다 모든 job을 실행하지 않습니다. 계획 job이 `scripts/ci-policy.json`에
+따라 필요한 leg를 고릅니다. crate를 바꾸면 그 crate를 컴파일하는 모든 leg를,
+문서만 바꾸면 아무 leg도 실행하지 않고, 빌드 입력·CI 파일·알 수 없는 경로를
+바꾸면 전체를 실행합니다. policy·Python·pin·format 단계는 항상 실행합니다.
+필수 `rust` job은 계획된 모든 leg가 검사한 커밋의 보고서와 함께 성공하고
+나머지 leg는 모두 건너뛰었을 때만 통과합니다. 매일 예약 실행과 수동 실행은
+전체 검증입니다. 계획은 `python3 scripts/ci_plan.py --base <revision>`으로
+미리 볼 수 있습니다. CI는 증분 데이터와 debuginfo 없이 빌드하며, 각 job은
+`main`만 저장하는 의존성 캐시를 복원합니다.
+
 의존성 검사는 `--locked`와 대상 플랫폼 필터를 사용한 Cargo metadata에서
 제품 root의 일반·빌드 의존성을 탐색하고 개발용 관계는 제외합니다.
 에이전트·제품 crate 및 Runner에서 샌드박스 라이브러리로 향하는 경로는 실패합니다.

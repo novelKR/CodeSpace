@@ -1,0 +1,80 @@
+{
+  "schema": "codespace-ci-policy/v1",
+  "full": [
+    "Cargo.toml", "Cargo.lock", "**/Cargo.toml", "**/Cargo.lock",
+    "rust-toolchain", "rust-toolchain.toml", "**/rust-toolchain", "**/rust-toolchain.toml",
+    ".cargo/**", "**/.cargo/**",
+    "third_party/**", ".gitmodules", ".gitignore",
+    ".github/**", "scripts/**", "docs/upstream-lock.md"
+  ],
+  "no_rust": [
+    "docs/**", "docs-site/**", "README.md", "README.ko.md", "LICENSE", "NOTICE", ".env.example", ".codex/**"
+  ],
+  "components": {
+    "domain": ["crates/domain/**"],
+    "policy": ["crates/policy/**"],
+    "runner": ["crates/runner/**", "deploy/**"],
+    "store": ["crates/store/**"],
+    "server": ["crates/server/**", "tests/**"],
+    "linux-sandbox-protocol": ["crates/linux-sandbox-protocol/**"],
+    "patch": ["crates/patch/**"],
+    "codex-runtime": ["crates/codex-runtime/**"],
+    "pty": ["crates/pty/**"],
+    "file-system": ["crates/file-system/**"],
+    "linux-sandbox": ["crates/linux-sandbox/**"]
+  },
+  "always": {
+    "policy-scan/single": ["policy", "python"],
+    "rust-format/single": ["pin", "format"]
+  },
+  "legs": {
+    "rust-clippy/root": {
+      "stages": ["clippy-root", "dependencies"], "cache": ".",
+      "compiles": ["domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
+    },
+    "rust-clippy/adapters": {
+      "stages": ["clippy-adapters"], "cache": "crates/patch",
+      "compiles": ["domain", "file-system", "patch", "policy", "pty"]
+    },
+    "rust-clippy/codex-adapters": {
+      "stages": ["clippy-codex"], "cache": "crates/codex-runtime",
+      "compiles": ["codex-runtime", "domain", "file-system", "linux-sandbox", "linux-sandbox-protocol", "policy", "pty", "runner"]
+    },
+    "rust-unit/patch": {
+      "stages": ["unit-patch"], "cache": "crates/patch",
+      "compiles": ["domain", "patch", "policy"]
+    },
+    "rust-unit/codex-runtime": {
+      "stages": ["unit-codex-runtime"], "cache": "crates/codex-runtime",
+      "compiles": ["codex-runtime", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner"]
+    },
+    "rust-unit/pty": {
+      "stages": ["unit-pty"], "cache": "crates/pty",
+      "compiles": ["pty"]
+    },
+    "rust-unit/file-system": {
+      "stages": ["unit-file-system"], "cache": "crates/file-system",
+      "compiles": ["file-system"]
+    },
+    "rust-unit/linux-sandbox-protocol": {
+      "stages": ["unit-linux-sandbox-protocol"], "cache": ".",
+      "compiles": ["linux-sandbox-protocol"]
+    },
+    "rust-unit/linux-sandbox": {
+      "stages": ["unit-linux-sandbox"], "cache": "crates/linux-sandbox",
+      "compiles": ["linux-sandbox", "linux-sandbox-protocol"]
+    },
+    "rust-linux-isolation/single": {
+      "stages": ["linux-isolation"], "cache": "crates/linux-sandbox",
+      "compiles": ["linux-sandbox", "linux-sandbox-protocol"]
+    },
+    "rust-integration/single": {
+      "stages": ["integration"], "cache": ".",
+      "compiles": ["codex-runtime", "domain", "file-system", "linux-sandbox", "linux-sandbox-protocol", "patch", "policy", "pty", "runner", "server", "store"]
+    },
+    "rust-macos/single": {
+      "stages": ["macos-core", "dependencies"], "cache": "crates/file-system",
+      "compiles": ["file-system", "pty"]
+    }
+  }
+}
