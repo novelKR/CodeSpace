@@ -126,15 +126,25 @@ fn helper_bin() -> Result<PathBuf, ErrorBody> {
     ))
 }
 
+/// Test-only helper path: the `CODESPACE_PATCH_BIN` that
+/// `scripts/validate-upstream.py` builds and exports before the root tests,
+/// or else a locked build of `crates/patch` into a temporary target dir.
 pub fn ensure_helper_for_tests() -> PathBuf {
     use std::process::Command as StdCommand;
     use std::sync::OnceLock;
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
+        if let Some(bin) = std::env::var_os("CODESPACE_PATCH_BIN")
+            .map(PathBuf::from)
+            .filter(|bin| bin.is_file())
+        {
+            return bin;
+        }
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../patch/Cargo.toml");
         let target = std::env::temp_dir().join("codespace-patch-helper");
         let status = StdCommand::new("cargo")
             .arg("build")
+            .arg("--locked")
             .arg("--manifest-path")
             .arg(&manifest)
             .arg("--bin")
