@@ -69,7 +69,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
       - name: Clippy
         run: python3 scripts/validate-upstream.py ${{ matrix.stage }} --output target/upstream-reports/${{ matrix.name }}
       - uses: actions/upload-artifact@v4
@@ -97,7 +97,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
       - name: Unit tests
         run: python3 scripts/validate-upstream.py unit-${{ matrix.name }} --output target/upstream-reports/unit-${{ matrix.name }}
       - uses: actions/upload-artifact@v4
@@ -121,7 +121,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Enable unprivileged user namespaces for bubblewrap
@@ -165,7 +165,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Enable unprivileged user namespaces for bubblewrap
