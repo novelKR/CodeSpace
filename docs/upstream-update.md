@@ -79,4 +79,4 @@ the gate. Source paths are repository-relative, never machine-specific identitie
 CI uploads reports/logs even on failed validation. The legacy pin script still
 checks only SHA and patch tests; it is not a complete qualification command.
 
-<!-- CI fixture: documentation-only selection; not for merging. -->
+CI fixture: documentation-only selection; not for merging.

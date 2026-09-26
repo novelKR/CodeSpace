@@ -80,4 +80,4 @@ Cargo 실패는 검증 실패입니다. 경로 식별자는 저장소 상대 경
 CI는 실패 시에도 보고서와 로그를 업로드합니다. 기존 pin 검사 스크립트는
 SHA와 패치 테스트만 확인하며 전체 검증 명령을 대체하지 않습니다.
 
-<!-- CI fixture: documentation-only selection; not for merging. -->
+CI fixture: 문서만 바꾼 변경의 선택 실행을 확인하며 머지하지 않습니다.
