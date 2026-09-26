@@ -196,4 +196,4 @@ mod tests {
     }
 }
 
-// CI fixture: pty-only selection; not for merging.
+// CI fixture: pty-only selection (second push); not for merging.
