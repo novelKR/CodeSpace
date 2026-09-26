@@ -46,6 +46,17 @@ On macOS, Linux isolation is explicitly `not_run` and the overall result is
 `incomplete`; Linux CI evidence is still required. macOS CI additionally checks
 PTY and filesystem contracts. Neither result alone replaces the other platform.
 
+CI does not run every job for every change. A planning job selects the legs a
+change needs from `scripts/ci-policy.json`: a crate change runs every leg that
+compiles that crate, documentation runs none, and build inputs, CI files or
+unknown paths run everything. The policy, Python, pin and format stages always
+run. The required `rust` job passes only when every planned leg succeeded with
+a report for the tested commit and every other leg was skipped. Daily scheduled
+and manual runs are full. Preview a plan with
+`python3 scripts/ci_plan.py --base <revision>`. CI builds without incremental
+data or debuginfo, and each job restores a dependency cache that only `main`
+saves.
+
 The dependency stage uses locked, target-filtered Cargo metadata and follows
 normal/build edges from product roots, excluding development edges. It rejects
 agent/product crates and Runner-to-sandbox-library edges with a dependency path.

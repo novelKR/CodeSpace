@@ -4,6 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '43 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to a pull request replaces its running checks; every main
+  # push, scheduled and manual run completes on its own.
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Incremental data is useless in CI, and debuginfo roughly doubles the
@@ -12,6 +24,35 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
+  plan:
+    name: CI / Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      rust-clippy: ${{ steps.plan.outputs.rust-clippy }}
+      rust-clippy-matrix: ${{ steps.plan.outputs.rust-clippy-matrix }}
+      rust-unit: ${{ steps.plan.outputs.rust-unit }}
+      rust-unit-matrix: ${{ steps.plan.outputs.rust-unit-matrix }}
+      rust-linux-isolation: ${{ steps.plan.outputs.rust-linux-isolation }}
+      rust-integration: ${{ steps.plan.outputs.rust-integration }}
+      rust-macos: ${{ steps.plan.outputs.rust-macos }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - name: Verify CI policy
+        run: python3 -B -m unittest discover -s scripts/tests -p 'test_ci_*.py'
+      - id: plan
+        name: Plan affected checks
+        run: python3 -B scripts/ci_plan.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-plan-${{ github.run_attempt }}
+          path: target/ci-plan/plan.json
+          if-no-files-found: error
+
   policy-scan:
     runs-on: ubuntu-latest
     steps:
@@ -51,23 +92,16 @@ jobs:
 
   rust-clippy:
     name: Rust / Clippy (${{ matrix.name }})
+    needs: plan
+    if: ${{ needs.plan.outputs.rust-clippy == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        # rust-cache prunes the shared target dir once per listed workspace and
-        # keeps only that workspace's dependencies, so every leg names a single
-        # anchor workspace whose dependencies cover what the leg compiles.
-        include:
-          - name: root
-            stage: clippy-root dependencies
-            cache-workspace: ". -> target/upstream-validation"
-          - name: adapters
-            stage: clippy-adapters
-            cache-workspace: "crates/patch -> ../../target/upstream-validation"
-          - name: codex-adapters
-            stage: clippy-codex
-            cache-workspace: "crates/codex-runtime -> ../../target/upstream-validation"
+      # Legs, stages and cache anchors come from scripts/ci-policy.json.
+      # rust-cache prunes the shared target dir once per listed workspace and
+      # keeps only that workspace's dependencies, so every leg names a single
+      # anchor workspace whose dependencies cover what the leg compiles.
+      matrix: ${{ fromJSON(needs.plan.outputs.rust-clippy-matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,29 +127,12 @@ jobs:
 
   rust-unit:
     name: Rust / Unit (${{ matrix.name }})
+    needs: plan
+    if: ${{ needs.plan.outputs.rust-unit == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: patch
-            stage: unit-patch
-            cache-workspace: "crates/patch -> ../../target/upstream-validation"
-          - name: codex-runtime
-            stage: unit-codex-runtime
-            cache-workspace: "crates/codex-runtime -> ../../target/upstream-validation"
-          - name: pty
-            stage: unit-pty
-            cache-workspace: "crates/pty -> ../../target/upstream-validation"
-          - name: file-system
-            stage: unit-file-system
-            cache-workspace: "crates/file-system -> ../../target/upstream-validation"
-          - name: linux-sandbox-protocol
-            stage: unit-linux-sandbox-protocol
-            cache-workspace: ". -> target/upstream-validation"
-          - name: linux-sandbox
-            stage: unit-linux-sandbox
-            cache-workspace: "crates/linux-sandbox -> ../../target/upstream-validation"
+      matrix: ${{ fromJSON(needs.plan.outputs.rust-unit-matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,6 +156,8 @@ jobs:
 
   rust-linux-isolation:
     name: Rust / Linux isolation
+    needs: plan
+    if: ${{ needs.plan.outputs.rust-linux-isolation == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -182,6 +201,8 @@ jobs:
 
   rust-integration:
     name: Rust / Integration
+    needs: plan
+    if: ${{ needs.plan.outputs.rust-integration == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -220,6 +241,8 @@ jobs:
 
   rust-macos:
     name: Rust / macOS contracts
+    needs: plan
+    if: ${{ needs.plan.outputs.rust-macos == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -245,23 +268,31 @@ jobs:
 
   rust:
     name: rust
+    # Never skippable: it proves the planned legs passed and the rest were skipped.
     if: ${{ always() }}
     needs:
+      - plan
+      - policy-scan
       - rust-format
       - rust-clippy
       - rust-unit
       - rust-linux-isolation
       - rust-integration
       - rust-macos
-      - policy-scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Require all Rust checks
-        run: |
-          test "${{ needs.rust-format.result }}" = "success"
-          test "${{ needs.rust-clippy.result }}" = "success"
-          test "${{ needs.rust-unit.result }}" = "success"
-          test "${{ needs.rust-linux-isolation.result }}" = "success"
-          test "${{ needs.rust-integration.result }}" = "success"
-          test "${{ needs.rust-macos.result }}" = "success"
-          test "${{ needs.policy-scan.result }}" = "success"
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/download-artifact@v4
+        # A missing report fails the check below, not this download.
+        continue-on-error: true
+        with:
+          pattern: upstream-*
+          path: target/ci-reports
+      - name: Require the planned checks
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+          CI_PLAN: ${{ needs.plan.outputs.plan }}
+        run: python3 -B scripts/check_ci_results.py --reports target/ci-reports

@@ -91,7 +91,7 @@ def run(selected, output):
         before = fingerprint()
         report['inputs'] = before
         report['rust'] = capture('rustc', '-vV')
-        report['build_environment'] = {k: os.environ.get(k) for k in ('DEVELOPER_DIR', 'SDKROOT', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTUP_TOOLCHAIN')}
+        report['build_environment'] = {k: os.environ.get(k) for k in ('DEVELOPER_DIR', 'SDKROOT', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTUP_TOOLCHAIN', 'CARGO_INCREMENTAL', 'CARGO_PROFILE_DEV_DEBUG')}
         if before.get('codex_sha') is None and any(s not in ('policy', 'python') for s in selected):
             raise RuntimeError('Codex submodule is not initialized')
         target = next(line.split(': ', 1)[1] for line in report['rust'].splitlines() if line.startswith('host: '))
