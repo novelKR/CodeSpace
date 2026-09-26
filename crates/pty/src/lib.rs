@@ -195,3 +195,5 @@ mod tests {
         assert_eq!(code, 0);
     }
 }
+
+// CI fixture: pty-only selection; not for merging.
