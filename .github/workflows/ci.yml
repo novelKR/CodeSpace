@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # Incremental data is useless in CI, and debuginfo roughly doubles the
+  # target size that the per-job dependency caches have to hold.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 jobs:
   policy-scan:
     runs-on: ubuntu-latest
@@ -49,13 +55,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # rust-cache prunes the shared target dir once per listed workspace and
+        # keeps only that workspace's dependencies, so every leg names a single
+        # anchor workspace whose dependencies cover what the leg compiles.
         include:
           - name: root
             stage: clippy-root dependencies
+            cache-workspace: ". -> target/upstream-validation"
           - name: adapters
             stage: clippy-adapters
+            cache-workspace: "crates/patch -> ../../target/upstream-validation"
           - name: codex-adapters
             stage: clippy-codex
+            cache-workspace: "crates/codex-runtime -> ../../target/upstream-validation"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,13 +75,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: Cache Cargo downloads
-        uses: actions/cache@v4
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
+          key: ${{ matrix.name }}
+          workspaces: ${{ matrix.cache-workspace }}
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Clippy
         run: python3 scripts/validate-upstream.py ${{ matrix.stage }} --output target/upstream-reports/${{ matrix.name }}
       - uses: actions/upload-artifact@v4
@@ -85,21 +97,39 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [patch, codex-runtime, pty, file-system, linux-sandbox-protocol, linux-sandbox]
+        include:
+          - name: patch
+            stage: unit-patch
+            cache-workspace: "crates/patch -> ../../target/upstream-validation"
+          - name: codex-runtime
+            stage: unit-codex-runtime
+            cache-workspace: "crates/codex-runtime -> ../../target/upstream-validation"
+          - name: pty
+            stage: unit-pty
+            cache-workspace: "crates/pty -> ../../target/upstream-validation"
+          - name: file-system
+            stage: unit-file-system
+            cache-workspace: "crates/file-system -> ../../target/upstream-validation"
+          - name: linux-sandbox-protocol
+            stage: unit-linux-sandbox-protocol
+            cache-workspace: ". -> target/upstream-validation"
+          - name: linux-sandbox
+            stage: unit-linux-sandbox
+            cache-workspace: "crates/linux-sandbox -> ../../target/upstream-validation"
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cache Cargo downloads
-        uses: actions/cache@v4
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
+          key: ${{ matrix.name }}
+          workspaces: ${{ matrix.cache-workspace }}
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Unit tests
-        run: python3 scripts/validate-upstream.py unit-${{ matrix.name }} --output target/upstream-reports/unit-${{ matrix.name }}
+        run: python3 scripts/validate-upstream.py ${{ matrix.stage }} --output target/upstream-reports/unit-${{ matrix.name }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -115,13 +145,12 @@ jobs:
         with:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cache Cargo downloads
-        uses: actions/cache@v4
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
+          workspaces: "crates/linux-sandbox -> ../../target/upstream-validation"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Enable unprivileged user namespaces for bubblewrap
@@ -159,13 +188,12 @@ jobs:
         with:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cache Cargo downloads
-        uses: actions/cache@v4
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/codex-runtime/Cargo.lock', 'crates/file-system/Cargo.lock', 'crates/linux-sandbox/Cargo.lock', 'crates/patch/Cargo.lock', 'crates/pty/Cargo.lock') }}
+          workspaces: ". -> target/upstream-validation"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Enable unprivileged user namespaces for bubblewrap
@@ -200,6 +228,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: "crates/file-system -> ../../target/upstream-validation"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: macOS contracts and dependencies
         run: python3 scripts/validate-upstream.py macos-core dependencies --output target/upstream-reports/macos
       - uses: actions/upload-artifact@v4
