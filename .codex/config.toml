@@ -1,0 +1,13 @@
+# 이 저장소에서는 최대 Context 여유를 열어 두되,
+# 평상시 대화 이력은 500K에서 자동 압축한다.
+model_context_window = 1050000
+model_auto_compact_token_limit = 500000
+model_auto_compact_token_limit_scope = "total"
+
+# mcp_2026_07_28로 MCP 연결을 위한 예제
+# [mcp_servers.example.env]
+# CODEX_MCP_PROTOCOL_VERSION = "2026-07-28"
+
+# Codex stdio requires both the feature and the server-specific opt-in above.
+[features]
+mcp_2026_07_28 = true
