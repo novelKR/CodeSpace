@@ -553,4 +553,145 @@ mod tests {
             start.elapsed()
         );
     }
+
+    // ---------------------------------------------------------------------
+    // DIAGNOSTIC ONLY: branch codex/diag-etxtbsy-fixture, never merged. Each
+    // test panics on purpose so that its outcome appears in the CI log.
+
+    fn write_in_process<T>(dir: &Path, body: &str, meanwhile: impl FnOnce() -> T) -> (PathBuf, T) {
+        // The current fixture's method: this process holds the file open for writing.
+        let path = dir.join("codespace-linux-sandbox");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(body.as_bytes()).unwrap();
+        let value = meanwhile();
+        drop(file);
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        (path, value)
+    }
+
+    fn write_by_child<T>(dir: &Path, body: &str, meanwhile: impl FnOnce() -> T) -> (PathBuf, T) {
+        // The proposed method: only a short-lived /bin/sh child writes the file.
+        let path = dir.join("codespace-linux-sandbox");
+        let mut writer = Command::new("/bin/sh")
+            .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&path)
+            .arg(body)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let value = meanwhile();
+        assert!(writer.wait().unwrap().success());
+        (path, value)
+    }
+
+    /// Fork a child that stays between fork and exec for two seconds, as a
+    /// child spawned by a concurrent test does for a moment, and return once
+    /// it exists.
+    #[cfg(target_os = "linux")]
+    fn fork_and_hold() -> std::thread::JoinHandle<std::process::ExitStatus> {
+        use std::os::unix::process::CommandExt;
+        let (ready, signal) = std::os::unix::net::UnixStream::pair().unwrap();
+        let holder = std::thread::spawn(move || {
+            let fd = signal.as_raw_fd();
+            let mut command = Command::new("/bin/true");
+            // SAFETY: the hook calls only async-signal-safe functions.
+            unsafe {
+                command.pre_exec(move || {
+                    let byte = 1u8;
+                    libc::write(fd, (&byte as *const u8).cast(), 1);
+                    let pause = libc::timespec { tv_sec: 2, tv_nsec: 0 };
+                    libc::nanosleep(&pause, std::ptr::null_mut());
+                    Ok(())
+                });
+            }
+            command.status().unwrap()
+        });
+        let mut byte = [0u8; 1];
+        (&ready).read_exact(&mut byte).unwrap();
+        holder
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn diagnostic_in_process_write_during_a_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let (helper, holder) = write_in_process(dir.path(), "#!/bin/sh\nexit 0\n", fork_and_hold);
+        let started = Command::new(&helper).status();
+        let held = holder.join().unwrap();
+        panic!("DIAGNOSTIC in-process writer: exec in the fork window -> {started:?}; holder {held:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn diagnostic_child_write_during_a_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let (helper, holder) = write_by_child(dir.path(), "#!/bin/sh\nexit 0\n", fork_and_hold);
+        let started = Command::new(&helper).status();
+        let held = holder.join().unwrap();
+        panic!("DIAGNOSTIC child writer: exec in the fork window -> {started:?}; holder {held:?}");
+    }
+
+    /// Natural rate under load: 8 threads write and start a script 200 times
+    /// each while 8 threads keep spawning /bin/true.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn diagnostic_busy_counts_under_concurrent_spawns() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        const WRITERS: usize = 8;
+        const ITERATIONS: usize = 200;
+        const SPAWNERS: usize = 8;
+        fn run(in_process: bool) -> (usize, usize) {
+            let stop = Arc::new(AtomicBool::new(false));
+            let spawners: Vec<_> = (0..SPAWNERS)
+                .map(|_| {
+                    let stop = Arc::clone(&stop);
+                    std::thread::spawn(move || {
+                        let mut spawned: usize = 0;
+                        while !stop.load(Ordering::Relaxed) {
+                            let _ = Command::new("/bin/true").status();
+                            spawned += 1;
+                        }
+                        spawned
+                    })
+                })
+                .collect();
+            let writers: Vec<_> = (0..WRITERS)
+                .map(|_| {
+                    std::thread::spawn(move || {
+                        let dir = tempfile::tempdir().unwrap();
+                        let mut busy: usize = 0;
+                        for _ in 0..ITERATIONS {
+                            let body = "#!/bin/sh\nexit 0\n";
+                            let (path, ()) = if in_process {
+                                write_in_process(dir.path(), body, || ())
+                            } else {
+                                write_by_child(dir.path(), body, || ())
+                            };
+                            match Command::new(&path).status() {
+                                Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) => busy += 1,
+                                Err(err) => panic!("unexpected start failure: {err}"),
+                                Ok(status) => assert!(status.success()),
+                            }
+                            std::fs::remove_file(&path).unwrap();
+                        }
+                        busy
+                    })
+                })
+                .collect();
+            let busy: usize = writers.into_iter().map(|w| w.join().unwrap()).sum();
+            stop.store(true, Ordering::Relaxed);
+            let spawned: usize = spawners.into_iter().map(|s| s.join().unwrap()).sum();
+            (busy, spawned)
+        }
+        let (old_busy, old_spawned) = run(true);
+        let (new_busy, new_spawned) = run(false);
+        let starts = WRITERS * ITERATIONS;
+        panic!(
+            "DIAGNOSTIC busy counts: in-process writer {old_busy} ETXTBSY of {starts} starts \
+             ({old_spawned} concurrent spawns); child writer {new_busy} of {starts} ({new_spawned})"
+        );
+    }
 }
