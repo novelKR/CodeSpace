@@ -3,6 +3,8 @@
 
 # CodeSpace의 Codex 재사용 범위
 
+> **상태: 구현 지시로서 효력 중지.** ‘관리 실행의 재사용 결정’ 절의 결정, 곧 `required` 실행의 기본값을 CodeSpace 소유 Unix transport로 둔 결정과 DevGuard가 계획한 legacy backend 결정은 구현하지 않습니다. CodeSpace 통합 계획에 대해 소유자가 지시한 검토인 CS-RG 통합 경계 재검증(작업 단위가 아닙니다)이 끝날 때까지 적용됩니다. 대체 구조는 승인되지 않았으며, 소유자가 재검증 결과를 검토한 뒤 결정합니다. 이 표기는 지시의 효력만 중지하며 어떤 안전 요구도 완화하지 않습니다. 아래 내용은 이력 추적을 위해 바꾸지 않고 남깁니다.
+
 [English](../codex-reuse.md) | [한국어](codex-reuse.md)
 
 CodeSpace는 특정 버전에 고정한 Codex 소스의 실행 라이브러리를 선택적으로 사용합니다. 계획과 코드 생성은 외부 에이전트가 담당합니다. MCP, 작업 공간 권한, 작업 식별자, 프로세스 관리는 CodeSpace가 담당합니다.
@@ -83,6 +85,8 @@ Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-lin
 `codex-file-search`, 셸 명령 파싱, worktree 준비, 범용 `codex-exec-server` 백엔드는 아직 연결되지 않은 후보입니다. 도입 시 제공하는 실행 기능, 빌드·업데이트 비용, 모델이나 권한 결정 책임이 어댑터 경계를 넘는지를 검토합니다. 사용자에게 영향을 주는 현재 제약은 [Agent Loop 연동](agent-integration.md)에 정리되어 있습니다.
 
 ## 관리 실행의 재사용 결정
+
+> **상태: 구현 지시로서 효력 중지.** CS-RG 통합 경계 재검증이 끝날 때까지 이 절을 근거로 구현하지 않습니다. 대체 구조는 승인되지 않았고, 어떤 안전 요구도 완화되지 않습니다. 내용은 이력 추적을 위해 바꾸지 않고 남깁니다.
 
 DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)과 [ADR-006](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/decisions.md)은 CS-RG에서 Codex 재사용을 다루는 방식을 기록합니다. 계획된 작업에 대한 결정이며 위에서 설명한 연결 어댑터는 바뀌지 않습니다.
 

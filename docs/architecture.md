@@ -2,6 +2,8 @@
 
 # Architecture
 
+> **Status: suspended as an implementation directive.** The target CS-RG structure under Planned execution coordination must not be implemented; the current behavior described there and the rest of this page are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability.
+
 [English](architecture.md) | [한국어](ko/architecture.md)
 
 CodeSpace separates the agent's decisions from workspace execution. The MCP server owns authorization and operation records. A Runner performs already-authorized filesystem and process work. Codex libraries stay behind adapters.
@@ -52,6 +54,8 @@ If helper application fails, the Runner attempts per-file snapshot restoration. 
 MCP request completion does not end a managed process. Clients continue with its `process_id`. Server restart loses those handles. In UDS mode the gateway owns the worker: internal disconnect/shutdown ends the worker and its children, with no reconnect. See [runner isolation](runner-isolation.md) for the distinct transport and isolation boundaries.
 
 ## Planned execution coordination
+
+> **Status: suspended as an implementation directive.** The target CS-RG structure in this section must not be implemented while the CS-RG integration-boundary revalidation is pending; the current behavior paragraph describes implemented code. No replacement architecture has been approved. The text is retained unchanged for historical traceability.
 
 **Current behavior.** The Runner's process supervisor starts pipe commands with Tokio (`tokio::process`) and `tty: true` commands through the `codespace-pty` adapter over Codex `codex-utils-pty` at the [pinned revision](upstream-lock.md) `6b9826e3aa83b1a5947db50f4332cb9c65f1b340` (`rust-v0.154.0`). The pinned PTY spawn reaps its child internally. On the pipe path, the exit waiter, the timeout task and the kill request each call `try_wait`.
 

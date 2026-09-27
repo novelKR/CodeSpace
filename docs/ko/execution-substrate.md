@@ -3,6 +3,8 @@
 
 # 실행 계약
 
+> **상태: 구현 지시로서 효력 중지.** 이 페이지의 ‘계획된 관리 실행 계약’은 적힌 대로 구현하지 않습니다. 구현된 계약은 영향이 없습니다. CodeSpace 통합 계획에 대해 소유자가 지시한 검토인 CS-RG 통합 경계 재검증(작업 단위가 아닙니다)이 끝날 때까지 적용됩니다. 대체 구조는 승인되지 않았으며, 소유자가 재검증 결과를 검토한 뒤 결정합니다. 이 표기는 지시의 효력만 중지하며 어떤 안전 요구도 완화하지 않습니다. 아래 내용은 이력 추적을 위해 바꾸지 않고 남깁니다.
+
 [English](../execution-substrate.md) | [한국어](execution-substrate.md)
 
 외부 Agent Loop는 계획, 모델 문맥, 완료 판단을 담당합니다. CodeSpace는 정해진 도구 동작을 수행하고 상태를 제공합니다. 실행 기능을 추가하더라도 내부 모델 호출이나 Codex 에이전트 세션이 필수 조건이 되어서는 안 됩니다.
@@ -80,6 +82,8 @@ Runner는 해당 작업 공간에서 처음 `read`·`find`·`version`·`apply_pa
 운영자가 작업 공간 `approvals`를 `confirm`으로 두면, 정책이 허용한 `apply_patch`와 `exec_command`는 `begin()`이나 프로세스 시작 전에 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 같은 논리 요청을 다시 보내면 그 활성 홀드를 재사용합니다. 기본값 `off`에서는 해당 도구가 바로 실행됩니다. 세 도구는 목록에 남아 있으므로 명시적 `approval_create`로 홀드를 만들 수 있습니다. grant는 프로필을 바꾸지 않습니다. 재개는 `granted`를 `queued`로 옮긴 뒤 `allow()`를 다시 검사하고, 자원을 받은 다음에야 `resuming`으로 올립니다. `consumed`는 단말 결과와 함께만 기록됩니다. `queued`에서 재시작하면 다시 acquire합니다. `resuming`에서 이후 재개는 그 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`를 반환합니다. 중단된 exec는 다시 spawn하지 않습니다. 정책 거절은 그대로 `UNAUTHORIZED`입니다. 명령은 `process_id`로 다룹니다. v1은 호스트와 모델을 구분하지 않습니다. 서버가 보장하는 것은 재개 시 정책 재검사와 이 내구성 계약입니다.
 
 ## 계획된 관리 실행 계약
+
+> **상태: 구현 지시로서 효력 중지.** CS-RG 통합 경계 재검증이 끝날 때까지 이 절을 근거로 구현하지 않습니다. 대체 구조는 승인되지 않았고, 어떤 안전 요구도 완화되지 않습니다. 내용은 이력 추적을 위해 바꾸지 않고 남깁니다.
 
 이 절의 규칙은 DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)과 [CodeSpace 결합 명세](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/codespace-integration.md)에 따른 CS-RG의 **목표** 계약입니다. 구현된 규칙은 없습니다. 현재 동작은 앞 절들에, 계획한 구조는 [아키텍처](architecture.md)에 설명합니다.
 
