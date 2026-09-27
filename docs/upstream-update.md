@@ -2,6 +2,8 @@
 
 # Updating Codex dependencies
 
+> **Status: suspended as an implementation directive.** The planned CS-RG execution backends mentioned under Boundaries for future crates and backends must not be implemented; the dependency and CI rules are unchanged. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability.
+
 [English](upstream-update.md) | [한국어](ko/upstream-update.md)
 
 Update the pinned revision through a reviewed PR. The change can affect every adapter listed in [Codex reuse](codex-reuse.md), including process, filesystem, and network behavior.
@@ -82,6 +84,8 @@ CI uploads reports/logs even on failed validation. The legacy pin script still
 checks only SHA and patch tests; it is not a complete qualification command.
 
 ## Boundaries for future crates and backends
+
+> **Status: suspended as an implementation directive.** The CS-RG plan for new execution backends mentioned below must not be implemented while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved. The dependency and CI rules in this section are unchanged.
 
 CS-RG plans a DevGuard resource client crate and new execution backends
 ([CS-RG work packages](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/milestones/CS-RG.md),

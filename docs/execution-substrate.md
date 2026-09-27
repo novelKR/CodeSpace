@@ -2,6 +2,8 @@
 
 # Execution contracts
 
+> **Status: suspended as an implementation directive.** The planned managed-execution contracts on this page must not be implemented as described; the implemented contracts are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability.
+
 [English](execution-substrate.md) | [한국어](ko/execution-substrate.md)
 
 An external Agent Loop owns planning, model context, and completion decisions. CodeSpace supplies deterministic tool operations and observable state. Adding an execution feature must not require an internal model call or a Codex agent session.
@@ -71,6 +73,8 @@ The Runner may start a recursive filesystem watcher for a workspace on the first
 When the operator sets workspace `approvals` to `confirm`, a policy-allowed `apply_patch` or `exec_command` returns `APPROVAL_REQUIRED` with an `approval_id` before `begin()` or spawn. Retrying the same logical request reuses that active hold. `off` (the default) still runs those tools immediately; the three tools remain listed so an explicit `approval_create` can open a hold. Grant does not change the profile. Resume claims `granted` into `queued` (restart-safe; no side effect yet), re-checks `allow()`, waits for the resource, then moves to `resuming` only when dispatch can start. `consumed` is recorded only together with the terminal result. A later resume from `queued` reacquires. A later resume from `resuming` returns a stored result, recovers a patch from the operations ledger, or returns `APPROVAL_AMBIGUOUS`. Interrupted exec is not respawned. A denied policy stays `UNAUTHORIZED`. Exec remains on `process_id`. v1 does not authenticate host versus model. The server guarantees the policy re-check on resume plus that durability contract.
 
 ## Planned managed-execution contracts
+
+> **Status: suspended as an implementation directive.** Do not implement from this section while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved, and no safety requirement is relaxed. The text is retained unchanged for historical traceability.
 
 The rules in this section are the **target** CS-RG contracts from DevGuard [design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md) and its [CodeSpace integration specification](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/codespace-integration.md). None is implemented; current behavior is described in the sections above, and the planned structure in [architecture](architecture.md).
 

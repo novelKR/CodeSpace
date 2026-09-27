@@ -2,6 +2,8 @@
 
 # DevGuard integration roadmap
 
+> **Status: suspended as an implementation directive.** The CS-RG work order, the planned consumer boundary and the design revision 1 references on this page must not be implemented as described; current status and prerequisites are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability.
+
 [English](devguard-integration.md) | [한국어](ko/devguard-integration.md)
 
 [DevGuard](https://github.com/novelKR/DevGuard) is an independent resource authority for development workloads, licensed under Apache-2.0 like CodeSpace. Its approved integration path adds a shared admission and accounting layer while CodeSpace keeps process ownership, PTY, input/output, permissions, approval holds and workspace coordination.
@@ -32,6 +34,8 @@ DG-1 qualifies the standalone daemon/CLI, development workloads and bounded self
 DG-1 is delivered as six sequential PR groups, each reviewed, checked on its current head, normally merged and verified on main before the next. Foreground daemons are used through P4; P5 introduces a current-user LaunchAgent. At C10, first test and freeze a parent containing the new parent-budget capability, then immediately begin bounded real self-use. The earlier functional P4/P5 artifacts are not presumed to support newly added parent operations. C12 separately qualifies and promotes the measured artifact/policy/environment combination.
 
 ## CS-RG work order
+
+> **Status: suspended as an implementation directive.** Do not implement from this section while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved, and no safety requirement is relaxed. The text is retained unchanged for historical traceability.
 
 Design revision 1 plans CS-RG as 10 work units in six logical PR groups. The IDs are DevGuard planning labels, not commits or GitHub PR numbers, and no unit is implemented.
 
@@ -67,6 +71,8 @@ Every participating consumer on the actual execution host shares one normal auth
 
 ## Consumer boundary
 
+> **Status: suspended as an implementation directive.** Do not implement from this section while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved, and no safety requirement is relaxed. The text is retained unchanged for historical traceability.
+
 Development consumption uses DevGuard's independent CLI, `devguard exec` from DG-1, to govern builds and tests in both repositories. Product consumption belongs in the Runner on the actual execution host; it does not turn DevGuard into a process or PTY broker. The current UDS worker is on the same host as the gateway, not a remote worker.
 
 The execution-owning **Runner registers once**. InProcess registers with the Gateway PID; UDS registers from the worker PID. One static control reservation covers both Gateway and Runner costs. DG-1 has no separate `service-exec` path: the Gateway passes the consumer credential to a UDS worker through `CredentialHandoff`, InProcess reads it directly, and each bounded session registers that same instance again. Service/subordinate-worker registration is deferred until multiple Runners or shared service reservations require it.
@@ -96,6 +102,8 @@ The new mode distinguishes normal shutdown, explicit service stop, restart detac
 Runner or host loss remains uncertain until actual termination is established. Persisted PID/state does not restore PTY or pipe ownership, and stored argv is never automatically re-executed. Recovery across loss of the Runner and its I/O owner requires a separate future design.
 
 ## Design revision 1 references
+
+> **Status: suspended as an implementation directive.** Do not implement from this section while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved, and no safety requirement is relaxed. The text is retained unchanged for historical traceability.
 
 These immutable links identify the documents that apply design revision 1. They are design provenance, not a runtime client pin.
 

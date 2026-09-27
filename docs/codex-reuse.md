@@ -2,6 +2,8 @@
 
 # How CodeSpace uses Codex
 
+> **Status: suspended as an implementation directive.** The managed-execution decisions under Reuse decisions for managed execution, including the default of a CodeSpace-owned Unix transport for `required` execution and DevGuard's planned legacy-backend decision, must not be implemented. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability.
+
 [English](codex-reuse.md) | [한국어](ko/codex-reuse.md)
 
 CodeSpace uses selected libraries from a pinned Codex checkout to implement execution. The external agent still plans and generates code. CodeSpace owns MCP, workspace permissions, operation identity, and process management.
@@ -65,6 +67,8 @@ All reused components currently come from the [same pinned revision](upstream-lo
 `codex-file-search`, shell-command parsing, worktree provisioning, and a general `codex-exec-server` backend remain candidates, not connected features. Evaluate a candidate by the execution function it supplies, its build/upgrade cost, and whether model or permission authority would cross the adapter boundary. Current user-facing limitations are listed in [Agent Loop integration](agent-integration.md).
 
 ## Reuse decisions for managed execution
+
+> **Status: suspended as an implementation directive.** Do not implement from this section while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved, and no safety requirement is relaxed. The text is retained unchanged for historical traceability.
 
 DevGuard [design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md) and its [ADR-006](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/decisions.md) record how CS-RG treats Codex reuse. These are decisions for planned work; the connected adapters above are unchanged.
 
