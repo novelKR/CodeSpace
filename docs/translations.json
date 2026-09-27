@@ -38,6 +38,9 @@
       "translation": "docs/ko/devguard-integration.md",
       "anchors": [
         "consumer-boundary",
+        "cs-rg-work-order",
+        "cs-rg-작업-순서",
+        "design-revision-1-references",
         "devguard-integration",
         "devguard-integration-roadmap",
         "devguard-결합-로드맵",
@@ -52,12 +55,13 @@
         "resource-plan-evidence",
         "계획과-검증-근거",
         "선행-조건과-우선순위",
+        "설계-개정-1-참조",
         "소비-경계",
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "c7b7eff8618c52f8a411476700c3f6a994567132c76c4cb4e55592b17766ebab",
-      "translation_sha256": "f7660d8dd77e62e3e4a11bfa80a80a5e23e652597977b4fa4119d419099a108e"
+      "source_sha256": "27bbbdd377dd82c08d60c1b7ffa17dae526ce7331d5011c33a508cc589f92cfd",
+      "translation_sha256": "9f3635f347e50c3fcc923a6979f59c8471cf1e85aaf3ae2c6de186036799a12d"
     },
     {
       "id": "overview",
@@ -242,6 +246,7 @@
         "out-of-scope-initial",
         "patch-apply-pipeline",
         "patch-transaction",
+        "planned-execution-coordination",
         "process-lifetime",
         "protocol-compatibility",
         "repository-layout",
@@ -255,6 +260,7 @@
         "패치-적용-파이프라인",
         "프로토콜-호환성",
         "현재-배치",
+        "계획된-실행-조정-구조",
         "구성-요소의-책임과-상태",
         "도구와-프로토콜-참고",
         "목표-배치",
@@ -270,8 +276,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "8779e0782981b88d6fed485336f416d65cfbd544d6b676fc82d811a440781557",
-      "translation_sha256": "b1836fb0915aa764f7853988a14c1e23fc5f8a9126fc8306a370d2aa15295eff"
+      "source_sha256": "d4415a29c321dd9da6bfe184214be761829a5b96eb10a989b8a7655f362c1820",
+      "translation_sha256": "91528ed4f95f092fca1769a2f44ff0ae41c4e57e5e2a8ce67210aaf597e29052"
     },
     {
       "id": "execution-substrate",
@@ -303,6 +309,7 @@
         "pathsandbox-vs-codespace-fs",
         "pathsandbox와-codespace-fs",
         "pathsandbox와-codespace-fs",
+        "planned-managed-execution-contracts",
         "policy-and-mechanism",
         "roadmap-implementation-later",
         "scheduler-after-the-single-write-lock",
@@ -317,6 +324,7 @@
         "실행-기반",
         "훅과-스킬",
         "가져오기-빼기-개념",
+        "계획된-관리-실행-계약",
         "구현-경계-유지",
         "네-축-목표-도메인",
         "로드맵-구현은-나중",
@@ -333,8 +341,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "857b87bfff3aa462ea53e17cd9400e77504e7560390f81acfd7ee740ce6b76cb",
-      "translation_sha256": "6a30c1c8e9ce33c0d08a2c020d1e7e6b480a4eabf96a2e060637f1463436a18d"
+      "source_sha256": "34d8be001918938cc79b54f4845d77e483bb92fa414aa2c8bef4f28a5a165398",
+      "translation_sha256": "9e17b1fa788aa097a6e8d0c70865c817e9b56acddb078e8dbf55cb9e4b8738c6"
     },
     {
       "id": "protocol-compatibility",
@@ -539,6 +547,7 @@
         "policy-vs-mechanism",
         "prefer-reuse-when-that-wp",
         "reject",
+        "reuse-decisions-for-managed-execution",
         "reuse-now-in-code",
         "staged-take-when-those-wps-exist",
         "the-apply-patch-pattern-isolation-not-crate-width",
@@ -566,6 +575,7 @@
         "감독-코드가-아직-있는-이유",
         "거절",
         "격리-층-전이-codex-protocol",
+        "관리-실행의-재사용-결정",
         "권한-결정은-codespace에서-수행",
         "내부-프로토콜-후보",
         "다음-구현-wp",
@@ -584,8 +594,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "9de92581d56525ae1ba0f028cce8c7fd7237747a98c593d4268bd1f4829ad471",
-      "translation_sha256": "b295940bb3eff4a8120639a8aee5dab0b738f4364601430dba93fb144e1df14a"
+      "source_sha256": "f88c8395ef493a9b1c8e3d3abb361240435cabb6075b4e3780ec90f68f59f6ad",
+      "translation_sha256": "50cfefb80f7b49b6bcf765d8280a4e4b3cab499f0561192633f7646f91474153"
     },
     {
       "id": "upstream-lock",
@@ -630,6 +640,7 @@
       "source": "docs/upstream-update.md",
       "translation": "docs/ko/upstream-update.md",
       "anchors": [
+        "boundaries-for-future-crates-and-backends",
         "checklist",
         "codex-의존성-업데이트",
         "forbidden",
@@ -651,10 +662,11 @@
         "재현-가능한-검증-보고서",
         "점검-목록",
         "제출-전-검증",
+        "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "b48c10f573a85e5f2b2076a7962de9875eb6a09c603167e97277720cbf27a534",
-      "translation_sha256": "642490ebece0cc7625b3250a428bb8ebc9880085316810aae8d547ac4cc7ea45"
+      "source_sha256": "a6a0fd89fb3fc557a97de5082b83c0438e927d5ac13e6f7032053aa9ce1f1d85",
+      "translation_sha256": "4a3b46fb40712536325ae85c5a502e6071ed0737cd7f0b8527f1efb61c6b4c37"
     },
     {
       "id": "documentation",

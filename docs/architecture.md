@@ -51,6 +51,31 @@ If helper application fails, the Runner attempts per-file snapshot restoration. 
 
 MCP request completion does not end a managed process. Clients continue with its `process_id`. Server restart loses those handles. In UDS mode the gateway owns the worker: internal disconnect/shutdown ends the worker and its children, with no reconnect. See [runner isolation](runner-isolation.md) for the distinct transport and isolation boundaries.
 
+## Planned execution coordination
+
+**Current behavior.** The Runner's process supervisor starts pipe commands with Tokio (`tokio::process`) and `tty: true` commands through the `codespace-pty` adapter over Codex `codex-utils-pty` at the [pinned revision](upstream-lock.md) `6b9826e3aa83b1a5947db50f4332cb9c65f1b340` (`rust-v0.154.0`). The pinned PTY spawn reaps its child internally. On the pipe path, the exit waiter, the timeout task and the kill request each call `try_wait`.
+
+**Target CS-RG structure.** DevGuard [design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md) plans one Runner coordination layer that CodeSpace owns for every execution: execution identity, the link between approval and execution, state transitions, timeout, termination requests, output recording and cleanup coordination. Platform differences stay behind a narrow backend boundary: child creation, terminal setup, I/O wiring, exit observation and the actual reap. None of this is implemented, and the names below are design concepts, not current APIs. DevGuard client types and Codex types stay out of public MCP types.
+
+```text
+Runner execution coordinator (planned)
+  ├─ resource governor: off / DevGuard
+  ├─ PreparedExecution → LaunchPlan, consumed once
+  ├─ process supervisor: status, timeout, termination, exit observation,
+  │                      reap order, output and release coordination
+  └─ process backends
+       ├─ legacy Codex PTY    (BackendReaped)
+       ├─ legacy Tokio pipe   (BackendReaped)
+       └─ owned Unix process  (OwnerControlledReap; pipe and PTY transports)
+```
+
+| Reap model | Meaning | Planned use |
+| --- | --- | --- |
+| `BackendReaped` | The backend performs the reap and reports the result | Legacy paths for resource participation `off`, the default |
+| `OwnerControlledReap` | CodeSpace observes the exit without reaping, then controls when the same owner reaps | The DevGuard `required` path, which must observe before reaping |
+
+A backend that has already reaped its child must not advertise an `ExitedUnreaped` capability, and the common interface never promises what a backend cannot guarantee. A common supervisor does not by itself make the Runner the owner of a legacy backend's waiter. The contracts are in [execution contracts](execution-substrate.md); status and work order are in the [DevGuard integration roadmap](devguard-integration.md).
+
 <a id="target-layout"></a>
 <a id="out-of-scope-initial"></a>
 

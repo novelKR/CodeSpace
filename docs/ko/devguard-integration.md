@@ -6,7 +6,9 @@
 
 [DevGuard](https://github.com/novelKR/DevGuard)는 개발 작업의 자원을 중앙에서 관리하는 독립 시스템이며 CodeSpace와 동일한 Apache-2.0 라이선스를 적용한다. 승인된 결합 경로에 따라 실행 허용과 자원 회계를 공통 계층에 맡기고, CodeSpace는 프로세스 소유권, PTY, 입출력, 권한, 승인 hold와 workspace 조정을 계속 담당한다.
 
-**현재 상태:** DevGuard는 독립 저장소에서 DG-1을 완료했다([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). DG-0 계약 위에 macOS 실제 호스트 증거, 현재 사용자의 LaunchAgent로 설치하는 인증 daemon, fenced launch helper와 대조, Cargo adapter를 갖춘 `devguard` 명령행 owner, 후보 시험용 parent lease, upgrade와 repair를 제공한다. 측정한 호스트와 정책에서 release `0.1.0-5daee5d-b3fa569e`의 macOS SLO qualification을 마쳤으며 Linux 강제 보호는 qualification하지 않았다. CodeSpace 소비(CS-RG)는 시작하지 않았다. CodeSpace에는 DevGuard client pin, workspace의 `resources` 설정, Runner wire 변경이 없으므로 DevGuard 서비스가 실행 중이어도 CodeSpace 실행을 관리하지 않는다. qualification을 마친 release는 CS-RG의 pin 후보이며 선택된 pin이 아니다.
+**현재 상태:** DevGuard는 독립 저장소에서 DG-1을 완료했다([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). DG-0 계약 위에 macOS 실제 호스트 증거, 현재 사용자의 LaunchAgent로 설치하는 인증 daemon, fenced launch helper와 대조, Cargo adapter를 갖춘 `devguard` 명령행 owner, 후보 시험용 parent lease, upgrade와 repair를 제공한다. 측정한 호스트와 정책에서 release `0.1.0-5daee5d-b3fa569e`(Git tag가 아닌 release ID)의 macOS SLO qualification을 마쳤으며 Linux 강제 보호는 qualification하지 않았다. CodeSpace 소비(CS-RG)는 시작하지 않았다. CodeSpace에는 DevGuard client pin, workspace의 `resources` 설정, Runner wire 변경이 없으므로 DevGuard 서비스가 실행 중이어도 CodeSpace 실행을 관리하지 않는다. qualification을 마친 release는 CS-RG의 pin 후보이며 선택된 pin이 아니다.
+
+DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)은 [DevGuard PR #8](https://github.com/novelKR/DevGuard/pull/8)의 병합 `d4981b4c241cff42687f5c2c681b583c7847776e`로 반영되었으며 CS-RG의 실행 계층과 작업 순서를 개정했다. 이 개정은 계획과 이후 구현을 구속하는 설계 결정을 바꾼다. 현재 CodeSpace 동작이나 구현·qualification 상태는 바꾸지 않는다.
 
 <a id="resource-integration-prerequisites"></a>
 
@@ -18,7 +20,7 @@
 | --- | --- | --- |
 | DG-0 | DevGuard | 독립 저장소, 승인 설계, 안정적인 실행 시도 식별자, 예약·계획·적용 증거 타입, 실행 권한을 한 번만 발급하는 영속 상태 전이, 등록·호환성 계약과 가짜 backend 계약 검증 |
 | DG-1 | DevGuard | 실제 macOS daemon/client/launcher, generic·Cargo 소비, 기능 시험을 통과한 bootstrap 기준의 상위 예산 안에서 후보 시험, 독립 복구와 별도로 qualification을 마친 안정 artifact |
-| CS-RG | CodeSpace | 검증된 full SHA 소비, spawn 전 실행 슬롯, PrepareExec/ExecPrepared, 승인 보존, 상한이 있는 관제·데이터 경로와 replay, InProcess/UDS 동등성, 기존 upstream 회귀 검증 |
+| CS-RG | CodeSpace | 실행 경계 적합성, 검증된 full SHA 소비, spawn 전 실행 슬롯과 실행마다 reaper 하나를 두는 공통 실행 조정, 한 번만 소비하는 PrepareExec/ExecPrepared, 승인 보존, 상한이 있는 관제·데이터 경로와 replay, InProcess/UDS 동등성, 기존 backend 결정, 그 결과 head의 upstream 회귀 검증 |
 | P1-RECOVERY | CodeSpace | 독립 Runner가 프로세스·입출력을 계속 소유하는 동안 운영자 선택 모드로 Gateway 재시작·재연결을 복구. workspace·승인·자원 lease를 대조하며 불확실한 실행을 재실행하지 않음 |
 | DG-LINUX | 양쪽 | 실제 Linux cgroup controller, ancestor 제약, sandbox·proxy를 포함한 scope와 관제 보호. 전체 제품 완료에 필수 |
 | DG-CACHE / DG-ADAPTERS | DevGuard | 등록된 캐시의 안전한 회수와 추가 도구 adapter. P1-RECOVERY의 선행 조건은 아님 |
@@ -28,6 +30,23 @@
 DG-1은 독립 daemon/CLI, 개발 workload와 상위 예산 안의 자기 적용을 검증한다. CS-RG는 이후 결합된 Runner, 승인, replay와 포화 상태의 관제 경로를 검증한다. DG-1 완료에 아직 구현하지 않은 CS-RG 기능을 요구하지 않는다.
 
 DG-1은 6개 PR 묶음을 순차 전달한다. 각 PR의 검토, 현재 head 검사, 정상 병합과 별도 main 검증을 끝낸 뒤 다음으로 진행한다. P4까지 foreground daemon을 사용하고 P5에서 현재 사용자의 LaunchAgent를 도입한다. C10에서는 새 부모 예산 기능을 먼저 시험하고 그 기능을 포함한 부모를 동결한 직후 실제 bounded 자기 적용을 시작한다. 앞선 P4/P5 기능 artifact가 새 부모 기능을 이미 지원한다고 가정하지 않는다. C12는 측정한 artifact·정책·환경의 SLO 자격과 승격을 별도로 판정한다.
+
+## CS-RG 작업 순서
+
+설계 개정 1은 CS-RG를 6개 논리 PR 묶음의 10개 작업 단위로 계획한다. ID는 DevGuard 계획 라벨이며 commit이나 GitHub PR 번호가 아니다. 구현을 마친 단위는 없다.
+
+| 예정 묶음 | 단위 | 계획 내용 |
+| --- | --- | --- |
+| CSRG-P0 | C00 | 실행 경계 적합성 검증. 모든 spawn·reap 경로의 소유권 표, DevGuard launch helper를 사용하는 최소 managed PTY, descriptor·spawn guard 적합성 보고, deadline 전파와 reap 전 관측 측정. 시험 전용이며 제품 동작은 바뀌지 않음 |
+| CSRG-P1 | C01, C02 | client와 helper 출처를 구분해 기록하는 검증된 DevGuard client revision 소비, 실행 소유자 등록과 `resources` 설정 |
+| CSRG-P2 | C03, C04 | spawn 전 슬롯과 실행마다 reaper 하나를 두는 공통 supervisor, 한 번만 소비하는 launch plan과 불확실한 작업을 재실행하지 않는 승인 처리 |
+| CSRG-P3 | C05, C06 | 관제·데이터 보호, 상한이 있는 replay·출력·수명 이벤트 전달 |
+| CSRG-P4 | C07, C09 | 모드 전반의 동등성·장애 시험, 이어서 backend 수렴 결정 |
+| CSRG-P5 | C08 | C09가 남긴 head의 qualification |
+
+CSRG-C09는 최종 qualification 전에 반드시 내려야 하는 결정이다. 기존 `off` backend를 통합하고 대체된 코드·분기·fixture·의존성을 제거하거나, 이유·범위·중복 부분·제공하지 않는 capability·재검토 시점·제거 기준을 기록한 제한적 호환 backend로 유지한다. 문서에 "검토함"이라고 적는 것만으로는 완료되지 않는다. C09가 코드를 바꾸면 영향받는 C07 동등성 시험을 다시 실행하고, CSRG-C08은 그 결과 head를 qualification한다.
+
+이 대응 문서는 DevGuard [PR 진행서](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/pr-delivery.md)의 CSP-D04이며 CSRG-P0 시작 전에 전달해야 하는 조건이다. 계획한 구조는 [아키텍처](architecture.md), 실행 계약은 [실행 계약](execution-substrate.md), 재사용 결정은 [Codex 재사용 범위](codex-reuse.md), 의존성·CI 경계는 [업스트림 업데이트](upstream-update.md)에 정리한다.
 
 <a id="resource-adoption-levels"></a>
 
@@ -50,9 +69,9 @@ DG-1은 6개 PR 묶음을 순차 전달한다. 각 PR의 검토, 현재 head 검
 
 개발 과정에서는 DG-1에서 제공한 독립 CLI인 `devguard exec`로 두 저장소의 빌드와 테스트를 관리한다. 제품 런타임의 소비 지점은 실제 실행 호스트의 Runner다. DevGuard가 프로세스나 PTY 관제를 대신 소유하지 않는다. 현재 UDS worker는 gateway와 같은 호스트에서 실행되며 원격 worker가 아니다.
 
-실행을 소유하는 **Runner가 한 번만 등록**한다. InProcess는 Gateway PID, UDS는 worker PID로 등록한다. 정적 제어 예약 하나에 Gateway와 Runner 비용을 함께 포함한다. SDK를 사용하는 CodeSpace에서 `service-exec`는 자격 전달과 시작을 준비하고 선택된 Runner가 등록을 완료한다. 서비스·하위 worker 등록 모델은 여러 Runner나 공유 서비스 예약이 실제로 필요해질 때 재검토한다.
+실행을 소유하는 **Runner가 한 번만 등록**한다. InProcess는 Gateway PID, UDS는 worker PID로 등록한다. 정적 제어 예약 하나에 Gateway와 Runner 비용을 함께 포함한다. DG-1에는 별도의 `service-exec` 경로가 없다. Gateway는 `CredentialHandoff`로 UDS worker에 소비자 자격을 전달하고 InProcess는 이를 직접 읽으며, 상한이 있는 각 세션은 같은 인스턴스를 다시 등록한다. 서비스·하위 worker 등록 모델은 여러 Runner나 공유 서비스 예약이 실제로 필요해질 때 재검토한다.
 
-private 자격 FD는 pipe·PTY의 필요한 helper 단계까지만 유지하고 사용자 executable 전에 닫는다. 현재 pinned Codex PTY는 선택 FD 상속을 지원하므로 CodeSpace의 private adapter에서 연결하고 payload로의 누출을 시험한다. 이 작업을 위해 Codex pin을 갱신하거나 MCP 인자로 자격을 노출하지 않는다.
+private 자격 FD는 필요한 helper 단계까지만 유지하고 사용자 executable 전에 닫으며, MCP 인자로 자격을 노출하지 않는다. pinned Codex PTY는 선택 FD 상속을 받지만 고수준 spawn이 자식을 내부에서 reap하고 이미 상속 가능한 descriptor만 유지한다. 따라서 현재 PTY wrapper를 확장하는 방식으로는 DevGuard가 관리하는 launch를 처리할 수 없으며, 계획한 경로는 [실행 계약](execution-substrate.md)에 정리한다. 설계 개정 1은 Codex pin을 유지하며 pin 변경은 검증에 근거한 별도 결정이다.
 
 런타임 adapter는 회계상 예약, 실행 계획과 적용이 확인된 정책을 구분해야 한다. macOS에서 참여를 필수로 설정했다고 전체 자손에 대한 강제 상한이 생기지는 않는다. DevGuard journal은 CodeSpace 프로세스 handle을 복구하거나 patch operations 원장을 대체하지 않는다.
 
@@ -76,11 +95,27 @@ P1-RECOVERY는 운영자가 선택하는 독립 Runner 모드와 명시적인 ca
 
 Runner나 호스트 손실은 실제 종료가 확인될 때까지 불확실 상태로 유지한다. 저장된 PID·상태만으로 PTY·pipe 소유권을 복원할 수 없고, 저장한 argv를 자동 재실행하지 않는다. Runner와 입출력 소유자 자체의 손실을 넘는 복구는 별도 후속 설계가 필요하다.
 
+## 설계 개정 1 참조
+
+아래 고정 링크는 설계 개정 1을 반영한 문서를 가리킨다. 설계 출처이며 런타임 client pin이 아니다.
+
+| `d4981b4`의 한국어 대응 문서 | 용도 |
+| --- | --- |
+| [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md) | 실행 소유권, F1a–F1e, D1–D3, 제한적 adaptation과 개정된 작업 순서의 전체 명세 |
+| [확정 결정](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/decisions.md) | ADR-006 실행 소유권과 재사용 정책, 대체된 문구를 표시한 ADR-001 등록 규칙 |
+| [CodeSpace 결합 명세](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/codespace-integration.md) | CodeSpace `b6e7ed2` 기준 소스 대응, 실행 소유권과 backend 결정 |
+| [CS-RG 작업 패키지](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/milestones/CS-RG.md) | CSRG-C00~C09, 시험, 진입/완료 조건과 rollback |
+| [검증 규칙](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/verification.md) / [PR 진행서](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/pr-delivery.md) | CS-RG 실행 검증 matrix, 유지보수 측정과 최종 head 검증 순서 |
+
+이 대응 문서를 작성한 2026-09-27 시점의 DevGuard main은 `30b5fa6f705f053876a8da8d00882772bcf4c41b`로, 시험 파일 하나만 바꾼 [DevGuard PR #9](https://github.com/novelKR/DevGuard/pull/9) 이후의 commit이다. 이 commit은 설계 출처가 아니며, qualification을 마친 release `0.1.0-5daee5d-b3fa569e`는 두 commit과 별도로 기록한다.
+
+개정은 확인 기준을 CodeSpace `b6e7ed22e2c730ac987297455e250cbd6e8e8b0c`로 다시 고정하고, 아래의 기존 `e94d214`를 과거 점검 기준으로 유지한다. CSRG-C00과 CSRG-C09를 추가해 계획 전체는 **후속 구현 48개 커밋 단위와 25개 논리 PR 묶음**이다. 이 중 DG-1의 6개 묶음 12개 단위는 구현을 마쳤고 나머지 19개 묶음 36개 단위는 시작하지 않았다.
+
 <a id="resource-plan-evidence"></a>
 
 ## 계획과 검증 근거
 
-상세 계획의 문서 revision은 `3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`이며 [DevGuard 문서 PR #1](https://github.com/novelKR/DevGuard/pull/1)로 제출했다. 아래 링크는 PR 병합 전에도 존재하는 고정 commit을 가리킨다. 영문이 편집 정본이며 검토된 한국어 번역과 hash 검사를 유지한다. [영문 설계 참조](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md)와 [한국어 대응 설계](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/design.md)는 불변 승인 원문과 별도로 관리한다. 이 값은 문서 식별자이며 런타임 client dependency pin 선정이 아니다. 7개 마일스톤에 걸쳐 **후속 구현 46개 커밋 단위와 23개 논리 PR 묶음**을 정의했다. 이 중 DG-1의 6개 묶음 12개 단위는 구현을 마쳤고 나머지 17개 묶음 34개 단위는 시작하지 않았다.
+최초 상세 계획의 문서 revision은 `3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`이며 [DevGuard 문서 PR #1](https://github.com/novelKR/DevGuard/pull/1)로 제출했다. 아래 링크는 PR 병합 전에도 존재하는 고정 commit을 가리킨다. 영문이 편집 정본이며 검토된 한국어 번역과 hash 검사를 유지한다. [영문 설계 참조](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md)와 [한국어 대응 설계](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/design.md)는 불변 승인 원문과 별도로 관리한다. 이 값은 문서 식별자이며 런타임 client dependency pin 선정이 아니다. 이 revision의 계획은 7개 마일스톤에 걸쳐 후속 구현 46개 커밋 단위와 23개 논리 PR 묶음을 정의했으며, 설계 개정 1이 바꾼 전체 수는 앞 절에 적었다.
 
 | 영문 정본에 대응하는 한국어 계획 문서 | 용도 |
 | --- | --- |
@@ -93,7 +128,7 @@ Runner나 호스트 손실은 실제 종료가 확인될 때까지 불확실 상
 
 qualification은 idle 기준선 10분, 부하 최소30분, 3회 반복과 원시 측정값 보존을 유지한다. 로컬 관제 지연과 원격 네트워크 시간을 분리한다. 기존 초기 목표인 process status p99 ≤500ms와 종료 요청 응답 p99 ≤1초를 유지하며 실제 scope 종료 시간은 별도로 측정한다. 새 문서 commit이나 가짜 backend 시험 통과를 OS 제어·제품 SLO qualification으로 해석하지 않는다.
 
-설계 기준 CodeSpace commit은 `e94d21475643608ad2a466256fb57266b86faa47`이다. Codex pin은 `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`을 유지한다. 승인된 DevGuard 설계는 독립 저장소의 `docs/design.ko.md`에 보존하며 SHA-256은 `97b67a1f9518c1781156a4b3b26829b285f84f5c9a44da60f3c5dcf1bc768df8`이다.
+과거 점검 기준 CodeSpace commit은 `e94d21475643608ad2a466256fb57266b86faa47`이며, 설계 개정 1은 앞 절과 같이 `b6e7ed22e2c730ac987297455e250cbd6e8e8b0c`를 확인 기준으로 삼는다. Codex pin은 `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`을 유지한다. 승인된 DevGuard 설계는 독립 저장소의 `docs/design.ko.md`에 보존하며 SHA-256은 `97b67a1f9518c1781156a4b3b26829b285f84f5c9a44da60f3c5dcf1bc768df8`이다.
 
 최초 DG-0 소스 참조는 [DevGuard commit d59cbd4](https://github.com/novelKR/DevGuard/tree/d59cbd43d206a9a9281328a946eddf1dc199f710)이며 [macOS·Ubuntu 계약 CI](https://github.com/novelKR/DevGuard/actions/runs/35671367559)와 연결된다. 검토한 기반 소스를 식별하는 참조이며 CodeSpace 런타임의 client pin은 아니다. 로컬 checkout 없이도 [고정 commit의 설계](https://github.com/novelKR/DevGuard/blob/d59cbd43d206a9a9281328a946eddf1dc199f710/docs/design.ko.md)와 [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/d59cbd43d206a9a9281328a946eddf1dc199f710/milestones.json)을 확인할 수 있다.
 

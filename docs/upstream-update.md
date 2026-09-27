@@ -14,6 +14,8 @@ Choose an explicit tag or commit and record the reason. Inspect relevant upstrea
 
 Update the submodule, [pin record](upstream-lock.md), affected adapter locks, and attribution when needed. Preserve the separation between core types and Codex adapter types. Never copy a single upstream crate into the product to conceal an incompatible dependency.
 
+No limited adaptation of upstream code exists today. If one is added under the [adaptation policy](codex-reuse.md), review it on every pin change: compare it with the candidate's upstream source against its recorded re-examination condition, update its recorded provenance and divergence, rerun its tests, and remove it or reconverge with upstream when its removal condition holds. Adopting a newer upstream API needs this separate pin update; it is never a side effect of another change.
+
 <a id="local-gate"></a>
 
 ## Validate before submission
@@ -78,3 +80,48 @@ forbidden dependencies, malformed metadata, missing roots, or Cargo failure fail
 the gate. Source paths are repository-relative, never machine-specific identities.
 CI uploads reports/logs even on failed validation. The legacy pin script still
 checks only SHA and patch tests; it is not a complete qualification command.
+
+## Boundaries for future crates and backends
+
+CS-RG plans a DevGuard resource client crate and new execution backends
+([CS-RG work packages](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/milestones/CS-RG.md),
+CSRG-C01 and CSRG-C03). None exists yet, so the dependency and CI policies name
+no product root or component for them. The rules below apply when the PR that
+adds one is opened; they are documentation policy, not an executable gate.
+
+The current checks already enforce these boundaries:
+
+- `scripts/upstream_dependencies.py` inspects the root workspace and each
+  workspace in `ADAPTERS`. It fails when a workspace's members differ from its
+  `PRODUCTS` entry ("missing or unexpected product roots"). `FORBIDDEN`
+  (`codex-core`, `codex-exec`, `codex-app-server`, `codex-login`) is rejected
+  from every product root, and `RUNNER_FORBIDDEN` (`codespace-linux-sandbox`,
+  `codex-linux-sandbox`) from the Runner.
+- `scripts/ci-policy.json` `components` must equal the `crates/` directories
+  that contain a `Cargo.toml` (`test_components_are_the_crates`); every tracked
+  path must be classified, and each leg's `compiles` list must match the crates
+  its stages build (`scripts/tests/test_ci_plan.py`).
+- `scripts/check-no-model-deps.sh` checks each existing adapter's direct Codex
+  keys against that adapter's own allowlist.
+
+The `full` list in `scripts/ci-policy.json` names `Cargo.toml`, `Cargo.lock`,
+`**/Cargo.toml`, `**/Cargo.lock`, `third_party/**`, `.gitmodules`,
+`.github/**`, `scripts/**` and `docs/upstream-lock.md`, plus toolchain,
+`.cargo` and `.gitignore` files. Changes to manifests and lockfiles, the Codex submodule, the
+Codex pin record, CI files and the policy scripts therefore already run every
+leg. New execution-contract, spawn-guard or backend code inside an existing
+crate is covered by that crate's component, for example `crates/runner/**`.
+A PR that adds a crate runs every leg because it adds a manifest, but later
+changes to that crate's sources select legs only through its component. Where
+the DevGuard client pin and helper provenance will be recorded is not decided
+yet (CSRG-C01), so no existing trigger is claimed to cover that record; the PR
+that creates it adds it to `full` or to a component.
+
+The PR that adds a crate, backend or test workspace updates these together:
+its manifest and lockfile; `PRODUCTS` (and `ADAPTERS` for an isolated
+workspace); the adapter allowlist in `check-no-model-deps.sh` when it takes
+direct Codex keys; the `ci-policy.json` component and the `compiles` list of
+every leg that builds it; and the tests that cover it. It never removes or
+narrows `FORBIDDEN`, `RUNNER_FORBIDDEN`, full-graph validation or any other
+check. The planned resource client must bring no transitive Codex dependency,
+and DevGuard client types stay out of public MCP types.

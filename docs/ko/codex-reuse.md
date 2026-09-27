@@ -81,3 +81,15 @@ Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-lin
 재사용하는 구성 요소는 현재 모두 [같은 고정 버전](upstream-lock.md)에서 가져옵니다. 업스트림 수정은 버전 갱신과 검증을 거쳐야 반영되며 자동으로 들어오지 않습니다. [업데이트 검사](upstream-update.md)는 패치뿐 아니라 연결된 모든 어댑터를 포함합니다.
 
 `codex-file-search`, 셸 명령 파싱, worktree 준비, 범용 `codex-exec-server` 백엔드는 아직 연결되지 않은 후보입니다. 도입 시 제공하는 실행 기능, 빌드·업데이트 비용, 모델이나 권한 결정 책임이 어댑터 경계를 넘는지를 검토합니다. 사용자에게 영향을 주는 현재 제약은 [Agent Loop 연동](agent-integration.md)에 정리되어 있습니다.
+
+## 관리 실행의 재사용 결정
+
+DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)과 [ADR-006](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/decisions.md)은 CS-RG에서 Codex 재사용을 다루는 방식을 기록합니다. 계획된 작업에 대한 결정이며 위에서 설명한 연결 어댑터는 바뀌지 않습니다.
+
+- **확인 결과.** 고정 버전 `codex-utils-pty`의 고수준 spawn 함수는 자체 작업에서 자식 프로세스를 reap하고 이미 상속 가능한 descriptor만 유지하므로, DevGuard가 관리하는 실행을 그대로 처리할 수 없습니다. 이는 reap 소유권과 descriptor 전달 계약의 불일치이며 Codex를 재사용할 수 없다는 결론이 아닙니다.
+- **D1, `required` 실행.** 기본값은 현재 고정 버전에서 CodeSpace가 소유하는 Unix 전송입니다. 새 코드를 작성하기 전에 기존 공개 API, 같은 계약을 제공하는 업스트림 후보, 제한적 adaptation, 자체 구현 순서로 재사용 가능성과 계약 차이를 기록합니다.
+- **D2, 기존 `off` 백엔드.** 현재 PTY 어댑터와 Tokio 파이프 경로는 초기 호환을 위해 유지할 수 있습니다. 최종 qualification 전에 CSRG-C09가 통합할지, 근거를 기록한 제한적 호환 백엔드로 유지할지 결정합니다.
+- **D3, DevGuard.** 지금은 DevGuard에 Codex 의존성을 추가하지 않습니다. DevGuard의 핵심 계층과 공유 client는 Codex 없이 유지합니다. DevGuard 실행·플랫폼 어댑터에서 저수준 유틸리티를 재사용할지는 실제로 대체하는 코드, 계약 적합성, 의존성 전파, 복구 경로, 재검증 비용으로 판단하며 기능 이름만으로 의존성을 도입하지 않습니다.
+- **`ProcessDriver`.** Codex의 `ProcessDriver`는 기본 선택이 아닌 선택적 후보입니다. 고정 버전에서 그 bridge는 뒤처진 출력을 건너뛰고 `ProcessHandle`은 Drop 시 프로세스를 종료합니다. 출력 손실, 역압, Drop 기준을 충족한다고 증명된 뒤에만 도입하며, 그렇지 않으면 CodeSpace 자체의 출력·핸들 추상화를 사용합니다.
+- **제한적 adaptation.** PTY 할당, 터미널 설정, 크기 변경, 제한된 입출력 도우미처럼 명확히 분리된 실행 기능에만 허용합니다. `codex-core` 제품 의미, 세션 권한, 에이전트 루프, 넓은 crate 복사, 의존성 검사를 피하려는 중복에는 허용하지 않습니다. 각 adaptation은 출처(소스 저장소, full SHA, 파일 경로), 가져온 범위, 업스트림과 의도적으로 다른 동작, 테스트, 재검토·제거 조건을 기록하며 [업스트림 업데이트](upstream-update.md)에서 고정 버전을 바꿀 때마다 다시 검토합니다. 검사에서 의존성을 숨기기 위해 crate를 복사하는 것은 계속 금지합니다.
+- **고정 버전.** 설계 개정 1은 `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`을 유지합니다. 고정 버전 변경은 새 API 도입에 포함되지 않는, 검증에 근거한 별도 결정입니다.

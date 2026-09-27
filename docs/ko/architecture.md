@@ -58,6 +58,31 @@ UDS worker와 기본 러너는 모두 같은 호스트에서 실행합니다. �
 
 MCP 요청이 끝나도 관리 중인 프로세스는 유지됩니다. 클라이언트는 `process_id`로 후속 호출을 수행합니다. 서버 재시작 후에는 핸들이 사라집니다. UDS 모드에서는 게이트웨이가 worker를 관리하므로 내부 연결 종료나 서버 종료 시 worker와 자식 프로세스가 종료되며 재접속은 지원하지 않습니다. [러너 격리](runner-isolation.md)에서 전송 경계와 격리 경계를 구분해 설명합니다.
 
+## 계획된 실행 조정 구조
+
+**현재 동작.** Runner의 프로세스 관리는 파이프 명령을 Tokio(`tokio::process`)로 시작하고, `tty: true` 명령은 [고정 버전](upstream-lock.md) `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`(`rust-v0.154.0`)의 Codex `codex-utils-pty` 위에 있는 `codespace-pty` 어댑터로 시작합니다. 고정 버전의 PTY spawn은 자식 프로세스를 내부에서 reap합니다. 파이프 경로에서는 종료 대기, 제한 시간 작업, 종료 요청이 각각 `try_wait`를 호출합니다.
+
+**CS-RG 목표 구조.** DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)은 모든 실행에 대해 CodeSpace가 소유하는 Runner 조정 계층 하나를 계획합니다. 이 계층은 실행 식별자, 승인과 실행의 연결, 상태 전이, 제한 시간, 종료 요청, 출력 기록, 정리 조정을 담당합니다. 플랫폼별 차이인 자식 프로세스 생성, 터미널 설정, 입출력 연결, 종료 관측, 실제 reap은 좁은 백엔드 경계 뒤에 둡니다. 이 구조는 구현되지 않았으며 아래 이름은 현재 API가 아니라 설계 개념입니다. DevGuard client 타입과 Codex 타입은 공개 MCP 타입에 들어가지 않습니다.
+
+```text
+Runner 실행 조정자 (계획)
+  ├─ 자원 관리: off / DevGuard
+  ├─ PreparedExecution → LaunchPlan, 한 번만 소비
+  ├─ 프로세스 supervisor: 상태, 제한 시간, 종료, 종료 관측,
+  │                      reap 순서, 출력과 해제 조정
+  └─ 프로세스 백엔드
+       ├─ 기존 Codex PTY    (BackendReaped)
+       ├─ 기존 Tokio 파이프  (BackendReaped)
+       └─ 자체 Unix 프로세스 (OwnerControlledReap, 파이프·PTY 전송)
+```
+
+| reap 모델 | 의미 | 계획된 사용 범위 |
+| --- | --- | --- |
+| `BackendReaped` | 백엔드가 reap하고 결과를 보고 | 자원 참여 `off`(기본값)의 기존 경로 |
+| `OwnerControlledReap` | CodeSpace가 reap하지 않고 종료를 관측한 뒤 같은 소유자가 reap하는 시점을 제어 | reap 전에 관측해야 하는 DevGuard `required` 경로 |
+
+이미 자식 프로세스를 reap한 백엔드는 `ExitedUnreaped` capability를 제공한다고 알리면 안 되며, 공통 인터페이스는 백엔드가 보장할 수 없는 기능을 약속하지 않습니다. 공통 supervisor를 두는 것만으로 Runner가 기존 백엔드의 종료 대기 소유자가 되지는 않습니다. 계약은 [실행 계약](execution-substrate.md), 상태와 작업 순서는 [DevGuard 결합 로드맵](devguard-integration.md)에 정리되어 있습니다.
+
 <a id="목표-배치"></a>
 <a id="목표-배치"></a>
 <a id="초기-범위-밖"></a>

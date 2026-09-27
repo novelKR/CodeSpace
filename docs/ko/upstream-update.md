@@ -16,6 +16,8 @@
 
 서브모듈, [버전 기록](upstream-lock.md), 영향받는 어댑터 잠금 파일, 필요한 출처 고지를 함께 갱신합니다. 핵심 타입과 Codex 어댑터 타입의 분리를 유지하세요. 호환되지 않는 의존성을 감추기 위해 업스트림 crate 하나를 제품에 복사하지 않습니다.
 
+현재 업스트림 코드의 제한적 adaptation은 없습니다. [adaptation 정책](codex-reuse.md)에 따라 추가한다면 고정 버전을 바꿀 때마다 검토합니다. 기록된 재검토 조건에 따라 후보의 업스트림 소스와 비교하고, 출처와 달라진 동작 기록을 갱신하고, 테스트를 다시 실행하며, 제거 조건을 충족하면 제거하거나 업스트림으로 다시 수렴합니다. 새 업스트림 API를 도입하려면 이 별도의 버전 갱신이 필요하며 다른 변경의 부수 효과로 도입하지 않습니다.
+
 <a id="로컬-게이트"></a>
 <a id="로컬-게이트"></a>
 
@@ -79,3 +81,45 @@ python3 scripts/upstream_dependencies.py --target x86_64-unknown-linux-gnu \
 Cargo 실패는 검증 실패입니다. 경로 식별자는 저장소 상대 경로를 사용합니다.
 CI는 실패 시에도 보고서와 로그를 업로드합니다. 기존 pin 검사 스크립트는
 SHA와 패치 테스트만 확인하며 전체 검증 명령을 대체하지 않습니다.
+
+## 향후 crate와 백엔드의 경계
+
+CS-RG는 DevGuard 자원 client crate와 새 실행 백엔드를 계획합니다
+([CS-RG 작업 패키지](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/milestones/CS-RG.md)의
+CSRG-C01과 CSRG-C03). 아직 존재하지 않으므로 의존성·CI 정책에는 이들의 제품 root나
+component가 없습니다. 아래 규칙은 이를 추가하는 PR을 열 때 적용하며, 실행 가능한
+검사가 아니라 문서 정책입니다.
+
+현재 검사는 이미 다음 경계를 강제합니다.
+
+- `scripts/upstream_dependencies.py`는 루트 workspace와 `ADAPTERS`의 각 workspace를
+  검사합니다. workspace 구성원이 `PRODUCTS` 항목과 다르면 실패합니다("missing or
+  unexpected product roots"). `FORBIDDEN`(`codex-core`, `codex-exec`,
+  `codex-app-server`, `codex-login`)은 모든 제품 root에서, `RUNNER_FORBIDDEN`
+  (`codespace-linux-sandbox`, `codex-linux-sandbox`)은 Runner에서 거부합니다.
+- `scripts/ci-policy.json`의 `components`는 `Cargo.toml`이 있는 `crates/` 디렉터리와
+  같아야 합니다(`test_components_are_the_crates`). 추적되는 모든 경로는 분류되어야
+  하며, 각 leg의 `compiles` 목록은 그 단계가 빌드하는 crate와 일치해야 합니다
+  (`scripts/tests/test_ci_plan.py`).
+- `scripts/check-no-model-deps.sh`는 기존 어댑터마다 직접 Codex 키를 그 어댑터의
+  허용 목록과 비교합니다.
+
+`scripts/ci-policy.json`의 `full` 목록에는 `Cargo.toml`, `Cargo.lock`,
+`**/Cargo.toml`, `**/Cargo.lock`, `third_party/**`, `.gitmodules`,
+`.github/**`, `scripts/**`, `docs/upstream-lock.md`와 toolchain·`.cargo`·`.gitignore` 파일이
+있습니다. 따라서 manifest·lockfile, Codex 서브모듈, Codex 버전 기록, CI 파일,
+정책 스크립트를 바꾸면 이미 모든 leg를 실행합니다. 기존 crate 안에 추가하는 실행
+계약·spawn guard·백엔드 코드는 그 crate의 component(예: `crates/runner/**`)가
+다룹니다. crate를 추가하는 PR은 manifest를 추가하므로 모든 leg를 실행하지만, 이후
+그 crate의 소스 변경은 해당 component를 통해서만 leg를 선택합니다. DevGuard client
+pin과 helper 출처를 기록할 위치는 아직 정하지 않았으므로(CSRG-C01) 기존 trigger가
+그 기록을 다룬다고 주장하지 않습니다. 그 기록을 만드는 PR이 이를 `full`이나
+component에 추가합니다.
+
+crate, 백엔드, 테스트 workspace를 추가하는 PR은 다음을 함께 갱신합니다. manifest와
+lockfile, `PRODUCTS`(분리된 workspace이면 `ADAPTERS`도), 직접 Codex 키를 사용하는
+경우 `check-no-model-deps.sh`의 어댑터 허용 목록, `ci-policy.json`의 component와
+그 crate를 빌드하는 모든 leg의 `compiles` 목록, 그리고 이를 다루는 테스트입니다.
+`FORBIDDEN`, `RUNNER_FORBIDDEN`, 전체 그래프 검증이나 다른 검사를 제거하거나 좁히지
+않습니다. 계획된 자원 client는 간접 Codex 의존성을 가져오면 안 되며, DevGuard
+client 타입은 공개 MCP 타입에 들어가지 않습니다.

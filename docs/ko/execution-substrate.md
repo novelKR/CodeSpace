@@ -79,6 +79,22 @@ Runner는 해당 작업 공간에서 처음 `read`·`find`·`version`·`apply_pa
 
 운영자가 작업 공간 `approvals`를 `confirm`으로 두면, 정책이 허용한 `apply_patch`와 `exec_command`는 `begin()`이나 프로세스 시작 전에 `APPROVAL_REQUIRED`와 `approval_id`를 반환합니다. 같은 논리 요청을 다시 보내면 그 활성 홀드를 재사용합니다. 기본값 `off`에서는 해당 도구가 바로 실행됩니다. 세 도구는 목록에 남아 있으므로 명시적 `approval_create`로 홀드를 만들 수 있습니다. grant는 프로필을 바꾸지 않습니다. 재개는 `granted`를 `queued`로 옮긴 뒤 `allow()`를 다시 검사하고, 자원을 받은 다음에야 `resuming`으로 올립니다. `consumed`는 단말 결과와 함께만 기록됩니다. `queued`에서 재시작하면 다시 acquire합니다. `resuming`에서 이후 재개는 그 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`를 반환합니다. 중단된 exec는 다시 spawn하지 않습니다. 정책 거절은 그대로 `UNAUTHORIZED`입니다. 명령은 `process_id`로 다룹니다. v1은 호스트와 모델을 구분하지 않습니다. 서버가 보장하는 것은 재개 시 정책 재검사와 이 내구성 계약입니다.
 
+## 계획된 관리 실행 계약
+
+이 절의 규칙은 DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)과 [CodeSpace 결합 명세](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/codespace-integration.md)에 따른 CS-RG의 **목표** 계약입니다. 구현된 규칙은 없습니다. 현재 동작은 앞 절들에, 계획한 구조는 [아키텍처](architecture.md)에 설명합니다.
+
+**한 번만 소비하는 준비.** 계획된 `PreparedExecution`은 실행 식별자, 명령 의미, 실행 슬롯, 작업 공간 점유, 자원 상태, 최초 deadline을 소유합니다. 그 `LaunchPlan`은 정확히 한 번 소비되거나 취소됩니다. 복제하거나 저장된 argv로 다시 만들지 않고, 자동 재실행은 없으며, 취소된 작업의 Drop이 자원 lease를 반환했다고 가정하지 않습니다.
+
+**별도의 수명.** 종료 관측, reap, 출력, 작업 공간 점유, 자원 lease는 각각 따로 끝납니다. EOF는 종료가 아니고, 종료는 reap이 아니며, 루트의 reap은 자손 종료가 아닙니다. 출력 보존 만료는 lease 해제가 아니고, helper의 `READY`는 payload 성공이 아닙니다. 루트 reap, stdout EOF, 신호 전송만으로 전체 scope의 종료를 증명할 수 없습니다. 확인할 수 없으면 결과를 미완료로 두고 자원은 계속 사용 중으로 계산합니다.
+
+| 보호 규칙 | 계획된 계약 |
+| --- | --- |
+| F1a reap 소유권 | 자식마다 reaper는 하나입니다. `required` 경로에서는 자식을 소유한 객체 밖에서 `wait`, `try_wait`, `waitpid`를 호출하지 않으며, 제한 시간, `terminate_process`, 작업 공간 종료, 서버 종료는 supervisor에 의도를 전달합니다. reap하지 않고 종료를 감지한 뒤 전체 예산 안에서 DevGuard `Observe`를 수행하고, 그다음 같은 소유자가 reap합니다 |
+| F1b descriptor 전달 | 준비부터 payload까지 descriptor의 소유, 상속, 닫기를 명시합니다. permit·자격·transcript descriptor는 그것이 필요한 helper 하나에만 전달하며, 자격 descriptor는 사용자 executable 전에 닫습니다 |
+| F1c 동시 spawn | DevGuard의 `helper_command()`와 `HelperCommand::spawn()`은 `spawn_guard`를 스스로 획득하므로 호출자가 그 주변에서 guard를 잡으면 안 됩니다. 이 guard는 재진입할 수 없습니다. 파이프·PTY spawn, 패치·샌드박스 도우미, 보조 명령, worker 생성, 테스트 도우미를 포함해 같은 OS 프로세스의 다른 모든 자식 생성은 descriptor 생성, 상속 설정, spawn 구간에서만 공통 guard나 검증된 동등 보호를 잡습니다. 기존 Codex PTY의 spawn 경로가 안전하다고 확인되기 전에는 한 프로세스에서 기존·관리 spawn을 섞는 조합을 검증되었다고 선언하지 않습니다. Gateway와 UDS worker는 따로 점검합니다 |
+| F1d 출력과 핸들 | 보존 상한이 있는 CodeSpace 출력 수집기 하나를 사용합니다. bridge 내부 손실, 역압, 핸들 Drop이 상위 계약과 어긋나면 안 되며, 손실 여부를 모르는 상태를 `output_lost=false`로 보고하지 않습니다 |
+| F1e 유지보수 분기 | 기존 백엔드 위에 공통 인터페이스를 두는 것으로 끝나지 않습니다. CSRG-C09가 최종 qualification 전에 통합 또는 제한적 호환 백엔드를 결정합니다 |
+
 ## 아직 제공하지 않는 기능
 
 영속적인 프로세스 복구와 컨테이너·원격 실행은 제공하지 않습니다. MCP `fs/watch`, UDS watch 이벤트, 쓰기 원인 분류도 제공하지 않습니다. 내부 타입이나 협상된 프로토콜 플래그가 존재한다고 해당 기능을 호출할 수 있는 것은 아닙니다.
