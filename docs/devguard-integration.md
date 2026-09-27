@@ -6,7 +6,9 @@
 
 [DevGuard](https://github.com/novelKR/DevGuard) is an independent resource authority for development workloads, licensed under Apache-2.0 like CodeSpace. Its approved integration path adds a shared admission and accounting layer while CodeSpace keeps process ownership, PTY, input/output, permissions, approval holds and workspace coordination.
 
-**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) has not started: CodeSpace has no DevGuard client pin, `resources` workspace setting or Runner wire change, so a running DevGuard service does not govern CodeSpace execution. The qualified release is a pin candidate for CS-RG, not a selected pin.
+**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` (a release ID, not a Git tag) on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) has not started: CodeSpace has no DevGuard client pin, `resources` workspace setting or Runner wire change, so a running DevGuard service does not govern CodeSpace execution. The qualified release is a pin candidate for CS-RG, not a selected pin.
+
+DevGuard [design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md), merged in [DevGuard PR #8](https://github.com/novelKR/DevGuard/pull/8) as `d4981b4c241cff42687f5c2c681b583c7847776e`, revised the CS-RG execution layer and work order. It changes plans and design decisions that bind later implementation. It does not change current CodeSpace behavior or any implementation or qualification status.
 
 <a id="resource-integration-prerequisites"></a>
 
@@ -18,7 +20,7 @@ The priority path is **DG-0 → DG-1 → CS-RG → P1-RECOVERY**, following the 
 | --- | --- | --- |
 | DG-0 | DevGuard | Independent repository, accepted design, stable attempt identity, reservation/plan/applied-evidence types, durable fenced transitions, registration and compatibility contracts, qualified fake-backend tests |
 | DG-1 | DevGuard | Real macOS daemon/client/launcher, generic and Cargo consumption, bounded candidate tests under a functionally tested bootstrap reference, independent repair and a separately qualified stable artifact |
-| CS-RG | CodeSpace | Qualified full-SHA consumption, pre-spawn process slots, PrepareExec/ExecPrepared, approval preservation, bounded control/data paths and replay, InProcess/UDS parity, upstream regression qualification |
+| CS-RG | CodeSpace | Execution-boundary fitness, qualified full-SHA consumption, common execution coordination with pre-spawn process slots and one reaper per execution, one-time PrepareExec/ExecPrepared, approval preservation, bounded control/data paths and replay, InProcess/UDS parity, the legacy backend decision, and upstream regression qualification of the resulting head |
 | P1-RECOVERY | CodeSpace | Opt-in Gateway restart/reconnection while an independent Runner retains processes and I/O; reconcile workspace, approvals and resource leases without replaying uncertain exec |
 | DG-LINUX | Both | Actual Linux cgroup controllers, ancestor constraints, complete sandbox/proxy scope and control protection; required for overall completion |
 | DG-CACHE / DG-ADAPTERS | DevGuard | Safe registered-cache reclamation and additional tool adapters; not prerequisites for P1-RECOVERY |
@@ -28,6 +30,23 @@ After these prerequisites, retain the existing relative order of watch completio
 DG-1 qualifies the standalone daemon/CLI, development workloads and bounded self-use. CS-RG then qualifies the integrated Runner, approvals, replay and saturated control paths. DG-1 does not depend on unimplemented CS-RG behavior.
 
 DG-1 is delivered as six sequential PR groups, each reviewed, checked on its current head, normally merged and verified on main before the next. Foreground daemons are used through P4; P5 introduces a current-user LaunchAgent. At C10, first test and freeze a parent containing the new parent-budget capability, then immediately begin bounded real self-use. The earlier functional P4/P5 artifacts are not presumed to support newly added parent operations. C12 separately qualifies and promotes the measured artifact/policy/environment combination.
+
+## CS-RG work order
+
+Design revision 1 plans CS-RG as 10 work units in six logical PR groups. The IDs are DevGuard planning labels, not commits or GitHub PR numbers, and no unit is implemented.
+
+| Proposed group | Units | Planned content |
+| --- | --- | --- |
+| CSRG-P0 | C00 | Execution-boundary fitness: an ownership table for every spawn and reap path, a minimal managed PTY through DevGuard's launch helper, a descriptor and spawn-guard fitness report, and measured deadline propagation and pre-reap observation. Test-only; product behavior does not change |
+| CSRG-P1 | C01, C02 | A qualified DevGuard client revision with separate client and helper provenance; execution-owner registration and `resources` settings |
+| CSRG-P2 | C03, C04 | A common supervisor with pre-spawn slots and one reaper per execution; one-time launch plans and approval handling that never replays uncertain work |
+| CSRG-P3 | C05, C06 | Control/data protection; bounded replay, output and lifecycle delivery |
+| CSRG-P4 | C07, C09 | Parity and fault tests across modes, then the backend convergence decision |
+| CSRG-P5 | C08 | Qualification of the head that C09 leaves |
+
+CSRG-C09 is a mandatory decision before final qualification. It either integrates the legacy `off` backends and removes the replaced code, branches, fixtures and dependencies, or keeps a limited compatibility backend with a recorded reason, scope, duplicated parts, unsupported capabilities, revisit point and removal criteria. A document stating "reviewed" does not complete it. If C09 changes code, the affected C07 parity tests run again, and CSRG-C08 qualifies that resulting head.
+
+This counterpart documentation, listed as CSP-D04 in DevGuard's [PR delivery plan](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/pr-delivery.md), is a delivery condition before CSRG-P0 starts. The planned structure is in [architecture](architecture.md), its execution contracts in [execution contracts](execution-substrate.md), the reuse decisions in [Codex reuse](codex-reuse.md) and the dependency and CI boundaries in [upstream updates](upstream-update.md).
 
 <a id="resource-adoption-levels"></a>
 
@@ -50,9 +69,9 @@ Every participating consumer on the actual execution host shares one normal auth
 
 Development consumption uses DevGuard's independent CLI, `devguard exec` from DG-1, to govern builds and tests in both repositories. Product consumption belongs in the Runner on the actual execution host; it does not turn DevGuard into a process or PTY broker. The current UDS worker is on the same host as the gateway, not a remote worker.
 
-The execution-owning **Runner registers once**. InProcess registers with the Gateway PID; UDS registers from the worker PID. One static control reservation covers both Gateway and Runner costs. For this SDK consumer, `service-exec` prepares credentials and startup, and the selected Runner completes registration. Service/subordinate-worker registration is deferred until multiple Runners or shared service reservations require it.
+The execution-owning **Runner registers once**. InProcess registers with the Gateway PID; UDS registers from the worker PID. One static control reservation covers both Gateway and Runner costs. DG-1 has no separate `service-exec` path: the Gateway passes the consumer credential to a UDS worker through `CredentialHandoff`, InProcess reads it directly, and each bounded session registers that same instance again. Service/subordinate-worker registration is deferred until multiple Runners or shared service reservations require it.
 
-Private credential FDs survive only the required pipe/PTY helper stages and close before the user executable. The pinned Codex PTY already supports selected FD inheritance; CodeSpace's private adapter must connect it and test payload isolation. This work does not require updating the Codex pin or exposing credentials through MCP arguments.
+Private credential FDs survive only the required helper stages and close before the user executable; credentials are never exposed through MCP arguments. The pinned Codex PTY accepts selected inherited FDs, but its high-level spawn reaps the child internally and keeps only descriptors that are already inheritable. Extending the current PTY wrapper therefore cannot carry a DevGuard-managed launch; the planned path is described in [execution contracts](execution-substrate.md). Design revision 1 keeps the Codex pin, and changing it is a separate decision based on verification.
 
 The runtime adapter must distinguish an accounted reservation, a proposed execution plan and verified applied policy. Required participation does not imply a tree-wide hard limit on macOS. DevGuard's journal cannot restore CodeSpace process handles or replace the patch operations ledger.
 
@@ -76,11 +95,27 @@ The new mode distinguishes normal shutdown, explicit service stop, restart detac
 
 Runner or host loss remains uncertain until actual termination is established. Persisted PID/state does not restore PTY or pipe ownership, and stored argv is never automatically re-executed. Recovery across loss of the Runner and its I/O owner requires a separate future design.
 
+## Design revision 1 references
+
+These immutable links identify the documents that apply design revision 1. They are design provenance, not a runtime client pin.
+
+| Document at `d4981b4` (English) | Use |
+| --- | --- |
+| [Design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md) | Full specification: execution ownership, F1a–F1e, D1–D3, limited adaptation and the revised work order |
+| [Accepted decisions](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/decisions.md) | ADR-006 execution ownership and reuse policy; ADR-001 registration rule with its superseded wording marked |
+| [CodeSpace integration specification](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/codespace-integration.md) | Source mapping at CodeSpace `b6e7ed2`, execution ownership and backend decisions |
+| [CS-RG work packages](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/milestones/CS-RG.md) | CSRG-C00 to C09, tests, entry/exit gates and rollback |
+| [Verification](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/verification.md) / [PR delivery](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/pr-delivery.md) | CS-RG execution verification matrix, maintenance measurements and final-head order |
+
+When this counterpart was written on 2026-09-27, DevGuard main was `30b5fa6f705f053876a8da8d00882772bcf4c41b`, after [DevGuard PR #9](https://github.com/novelKR/DevGuard/pull/9), which changed one test file. That commit is not design provenance, and the qualified release `0.1.0-5daee5d-b3fa569e` is recorded separately from both commits.
+
+The revision re-fixed the confirmation baseline at CodeSpace `b6e7ed22e2c730ac987297455e250cbd6e8e8b0c` and keeps the earlier `e94d214` below as the historical inspection baseline. With CSRG-C00 and CSRG-C09 added, the plan totals **48 proposed implementation commit units in 25 logical PR groups**. DG-1's 12 units in six groups are implemented; the remaining 36 units in 19 groups have not started.
+
 <a id="resource-plan-evidence"></a>
 
 ## Plan and evidence references
 
-The detailed planning revision is **`3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`**, submitted in [DevGuard documentation PR #1](https://github.com/novelKR/DevGuard/pull/1). These immutable links remain valid before that PR is merged. English is the editorial source, with reviewed Korean counterparts and hash checks. The [English design reference](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md) and [Korean planning translation](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/README.md) are maintained separately from the immutable approval artifact. This revision identifies documents, not a selected runtime client dependency. The plan defines **46 proposed implementation commit units in 23 logical PR groups** across seven milestones. DG-1's 12 units in six groups are implemented; the remaining 34 units in 17 groups have not started.
+The original detailed planning revision is **`3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`**, submitted in [DevGuard documentation PR #1](https://github.com/novelKR/DevGuard/pull/1). These immutable links remain valid before that PR is merged. English is the editorial source, with reviewed Korean counterparts and hash checks. The [English design reference](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/design.md) and [Korean planning translation](https://github.com/novelKR/DevGuard/blob/3abf08f6feffeda63f58b17ac2bbe8fff19ec20b/docs/ko/planning/README.md) are maintained separately from the immutable approval artifact. This revision identifies documents, not a selected runtime client dependency. At this revision the plan defined 46 proposed implementation commit units in 23 logical PR groups across seven milestones; design revision 1 changed the totals as stated above.
 
 | Authoritative planning document (English) | Use |
 | --- | --- |
@@ -93,10 +128,10 @@ The detailed planning revision is **`3abf08f6feffeda63f58b17ac2bbe8fff19ec20b`**
 
 Qualification retains a 10-minute idle baseline, at least 30 minutes of load and three repetitions, with raw measurements. Local control latency and remote network time are separate. The documented initial targets remain process status p99 ≤500ms and termination acknowledgement p99 ≤1 second, with actual scope termination measured separately. A new documentation commit or passing fake-backend test does not qualify an OS control or product SLO.
 
-The source baseline is CodeSpace commit `e94d21475643608ad2a466256fb57266b86faa47`. Codex remains pinned to `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`. The approved DevGuard design has SHA-256 `97b67a1f9518c1781156a4b3b26829b285f84f5c9a44da60f3c5dcf1bc768df8` and is stored as `docs/design.ko.md` in the independent repository.
+The historical inspection baseline is CodeSpace commit `e94d21475643608ad2a466256fb57266b86faa47`; design revision 1 confirms `b6e7ed22e2c730ac987297455e250cbd6e8e8b0c`, as stated above. Codex remains pinned to `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`. The approved DevGuard design has SHA-256 `97b67a1f9518c1781156a4b3b26829b285f84f5c9a44da60f3c5dcf1bc768df8` and is stored as `docs/design.ko.md` in the independent repository.
 
 The initial DG-0 source reference is [DevGuard commit d59cbd4](https://github.com/novelKR/DevGuard/tree/d59cbd43d206a9a9281328a946eddf1dc199f710), with [macOS and Ubuntu contract CI](https://github.com/novelKR/DevGuard/actions/runs/35671367559). This identifies the reviewed foundation; it is not a CodeSpace runtime client pin. The [immutable design](https://github.com/novelKR/DevGuard/blob/d59cbd43d206a9a9281328a946eddf1dc199f710/docs/design.ko.md) and [milestone ledger](https://github.com/novelKR/DevGuard/blob/d59cbd43d206a9a9281328a946eddf1dc199f710/milestones.json) are available without the local checkout.
 
-The authorized local source is `/Volumes/DevData/Projects/IdeaProjects/DevGuard`. Its `milestones.json`, `docs/contracts.md` and `docs/milestones.md` distinguish implemented work from platform qualification. Run `python3 scripts/validate.py` there with Rust 1.95.0 for an exact-source report, and `scripts/qualify.py` for the DG-1 suites. The suites leave Linux enforcement, browser responsiveness and real self-use under an installed parent as `not_run`; `scripts/measure.py` measures the macOS SLO on the target host, and only CS-RG qualifies CodeSpace integration. The existing roadmap commit `fb822fc24c98f6628dce62d33a5cc67275f8ca34` is included in this documentation delivery; the runtime baseline remains the separate commit above.
+The authorized source is a local checkout of the DevGuard repository. Its `milestones.json`, `docs/contracts.md` and `docs/milestones.md` distinguish implemented work from platform qualification. Run `python3 scripts/validate.py` there with Rust 1.95.0 for an exact-source report, and `scripts/qualify.py` for the DG-1 suites. The suites leave Linux enforcement, browser responsiveness and real self-use under an installed parent as `not_run`; `scripts/measure.py` measures the macOS SLO on the target host, and only CS-RG qualifies CodeSpace integration. The existing roadmap commit `fb822fc24c98f6628dce62d33a5cc67275f8ca34` is included in this documentation delivery; the runtime baseline remains the separate commit above.
 
 Use the English design reference and accepted decisions for ongoing development; preserve the full approved design as historical evidence for configuration and CLI examples. They are not installation instructions for the current CodeSpace release. Keep `target/upstream-reports/local`, operational databases, Git metadata and stable recovery artifacts outside automatic cache reclamation.
