@@ -408,15 +408,87 @@ fn wait_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
+    /// Writes `body` to `dir/codespace-linux-sandbox` as an executable script.
+    ///
+    /// Linux refuses to execute a file while any process holds it open for
+    /// writing (`ETXTBSY`). Tests run on parallel threads, and a child that
+    /// another thread forks while this process has the script open inherits
+    /// that descriptor until the child execs. So a short-lived `/bin/sh`
+    /// child writes the script: this process never opens it for writing, and
+    /// the writer has exited before the script runs.
     fn write_script(dir: &Path, body: &str) -> PathBuf {
+        write_script_with(dir, body, || ()).0
+    }
+
+    /// [`write_script`], running `meanwhile` after the writer has started and
+    /// before waiting for it, so that a test can fork a child in that window.
+    fn write_script_with<T>(dir: &Path, body: &str, meanwhile: impl FnOnce() -> T) -> (PathBuf, T) {
         let path = dir.join("codespace-linux-sandbox");
-        std::fs::write(&path, body).unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
-        path
+        let mut writer = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+                "sh",
+            ])
+            .arg(&path)
+            .arg(body)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let value = meanwhile();
+        let status = writer.wait().unwrap();
+        assert!(
+            status.success(),
+            "writing {} failed: {status}",
+            path.display()
+        );
+        (path, value)
+    }
+
+    /// Forks a child that stays between fork and exec for two seconds, as a
+    /// child spawned by a concurrent test does for a moment, and returns once
+    /// that child exists.
+    #[cfg(target_os = "linux")]
+    fn fork_and_hold() -> std::thread::JoinHandle<std::process::ExitStatus> {
+        use std::os::unix::process::CommandExt;
+        let (ready, signal) = std::os::unix::net::UnixStream::pair().unwrap();
+        let holder = std::thread::spawn(move || {
+            let fd = signal.as_raw_fd();
+            let mut command = Command::new("/bin/true");
+            // SAFETY: the hook calls only async-signal-safe functions.
+            unsafe {
+                command.pre_exec(move || {
+                    let byte = 1u8;
+                    libc::write(fd, (&byte as *const u8).cast(), 1);
+                    let pause = libc::timespec {
+                        tv_sec: 2,
+                        tv_nsec: 0,
+                    };
+                    libc::nanosleep(&pause, std::ptr::null_mut());
+                    Ok(())
+                });
+            }
+            command.status().unwrap()
+        });
+        let mut byte = [0u8; 1];
+        (&ready).read_exact(&mut byte).unwrap();
+        holder
+    }
+
+    /// A child forked while a script is being written must not keep the
+    /// script from starting. With the earlier in-process writer this start
+    /// failed with `ETXTBSY`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn script_starts_while_a_child_forked_during_its_write_waits_to_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let (helper, holder) = write_script_with(dir.path(), "#!/bin/sh\nexit 0\n", fork_and_hold);
+        let started = Command::new(&helper).status();
+        let held = holder.join().unwrap();
+        assert!(held.success(), "{held:?}");
+        let status = started.expect("the script must start while the forked child waits to exec");
+        assert!(status.success(), "{status:?}");
     }
 
     #[test]
