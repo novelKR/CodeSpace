@@ -19,7 +19,7 @@ This note hands off the CodeSpace side of the 2026-09-27 session that suspended 
 
 ## What is suspended
 
-The owner suspended DevGuard's CS-RG units C00, C03 and C09 as implementation directives. C00 is the managed PTY through DevGuard's `HelperCommand`. C03 is a runner-owned transport outside the Codex adapter. C09 is converging the legacy backends. No replacement is approved.
+CS-RG ("CodeSpace consumption and control protection") is a milestone whose owner is CodeSpace; its plan lives in DevGuard's `docs/planning/milestones/CS-RG.md`. The owner suspended its units C00, C03 and C09 as implementation directives. C00 is the managed PTY through DevGuard's `HelperCommand`. C03 is a runner-owned transport outside the Codex adapter. C09 is converging the legacy backends. No replacement is approved.
 
 In CodeSpace, #75 marks the matching sections as suspended:
 
@@ -80,14 +80,19 @@ None of these was run; they are source readings.
 
 | Failure | Cause, at its evidence level | Status |
 | --- | --- | --- |
-| `linux_sandbox::tests::prepare_unread_large_stdin_times_out` (Rust / Integration) in scheduled run 36275459398 | **Suspected** ETXTBSY: a concurrently forked test child holds a write handle to a freshly written fixture script. A direct experiment showed the mechanism: 42 of 1600 starts failed with an in-process writer, none with a child-process writer. The failing run's holder was not captured | Fixed by #74 (`701e2b1`). **Not yet confirmed** by a scheduled run |
-| `hashFiles('**/Cargo.lock')` template error (runs 36218741807 attempt 1, 35628255763) | The directory walk failed intermittently | Fixed by #67 (`339ae8e`) |
+| `linux_sandbox::tests::prepare_unread_large_stdin_times_out` (Rust / Integration) in scheduled run 36275459398 | **Suspected** ETXTBSY: a concurrently forked test child holds a write handle to a freshly written fixture script. A direct experiment showed the mechanism: 42 of 1600 starts failed with an in-process writer, none with a child-process writer. The failing run's holder was not captured | Fix merged in #74 (`701e2b1`). **Not yet confirmed** by a scheduled run |
+| `hashFiles('**/Cargo.lock')` template error (runs 36218741807 attempt 1, 35628255763) | The directory walk failed intermittently | Fixed by #67 (`339ae8e`); no recurrence recorded since |
 
 ## Next steps and procedures
 
+0. **Approvals and evidence.**
+   - Owner approvals arrive as the owner's direct instruction to the agent doing the work. The PRs and comments in both repositories are written through the same `novelKR` account that the agents use, so a GitHub comment alone does not prove an approval. When you act on an approval, record it on #76 or novelKR/DevGuard#14 with its time and wording.
+   - Raw evidence, its manifests and the collector script exist only in the persistent DevGuard checkout on the owner's host (`<DEVGUARD_CHECKOUT>/evidence/`), and they are never committed. DevGuard #15, section 8.3, lists plain `gh` commands for an agent without that checkout.
+   - Runner modes: the default `InProcessRunner`, or a `UdsRunner` worker that runs the in-process runner ([architecture](https://github.com/novelKR/CodeSpace/blob/794867ef52f530be6bc0d91aa10416d5195367b7/docs/architecture.md)).
 1. **Merge only on the owner's approval naming the exact head.**
    - Right before merging, re-check head and base.
    - Merge with `gh pr merge <n> --repo novelKR/CodeSpace --merge --match-head-commit <sha>`. Never use `--admin`, `--auto` or `--delete-branch`.
+   - Check the merged state, the merge commit's parents and its tree.
    - Afterwards, read the post-merge CI and the documentation publication once.
    - Preserve both in the DevGuard checkout's evidence directory, `<DEVGUARD_CHECKOUT>/evidence/codespace-delivery/`, with a manifest.
    - Only then remove the task worktree. Remote branches are kept.
