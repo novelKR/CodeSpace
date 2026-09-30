@@ -131,7 +131,7 @@ check. The planned resource client must bring no transitive Codex dependency,
 and DevGuard client types stay out of public MCP types.
 
 *Added 2026-09-30, from
-[DevGuard design revision 2](https://github.com/novelKR/DevGuard/blob/637627ecff26a9f71730d00b926b40fb05b47107/docs/design-revision-2.md#33-executable-identity):*
+[DevGuard design revision 2](https://github.com/novelKR/DevGuard/blob/9d223bbd3529d6996fb8ebabeedae5458d31f498/docs/design-revision-2.md#33-executable-identity):*
 a DevGuard binding linked into a CodeSpace executable consumes Codex through
 this repository's gitlink, so that executable keeps one reviewed Codex source
 identity. The executable single-identity check, which accepts each `codex-*`

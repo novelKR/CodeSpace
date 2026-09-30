@@ -594,8 +594,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "0c90a9bdde4d5f376e3ccd17def512caffcfbe0c915863d1258444226eab4068",
-      "translation_sha256": "fa2f53623b6fe0a05340d931d94440029d47e2b40894164fcbd5f7768981e1ec"
+      "source_sha256": "d7f313bf569e680832371c35790f591495a2b33d781bb1f6e789477267132b2d",
+      "translation_sha256": "a94df107ad3e3d5be1a6f146ab282af0d46ac6b85e03bf0701ef6770998a70a2"
     },
     {
       "id": "upstream-lock",
@@ -665,8 +665,8 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "e78b723cbe8d1f04038c134780076b054e01d45d922acbea9bd3fa67005567ec",
-      "translation_sha256": "1118120b33cc87146dae454d8ddcd4da3bad5730a22235d8c32d3b31f57e85f8"
+      "source_sha256": "51748e34ef4a224843f800b579707a7912deb2ace6d712e86fd79b7d6035f9e1",
+      "translation_sha256": "69d7226a096ae2d641ede6aa177f268e6f9a3240382f2d017546dc6384dd957d"
     },
     {
       "id": "documentation",

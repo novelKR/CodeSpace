@@ -129,7 +129,7 @@ lockfile, `PRODUCTS`(분리된 workspace이면 `ADAPTERS`도), 직접 Codex 키�
 client 타입은 공개 MCP 타입에 들어가지 않습니다.
 
 *2026-09-30 추가,
-[DevGuard 설계 개정 2](https://github.com/novelKR/DevGuard/blob/637627ecff26a9f71730d00b926b40fb05b47107/docs/ko/design-revision-2.md#33-실행-파일-정체성)에서:*
+[DevGuard 설계 개정 2](https://github.com/novelKR/DevGuard/blob/9d223bbd3529d6996fb8ebabeedae5458d31f498/docs/ko/design-revision-2.md#33-실행-파일-정체성)에서:*
 CodeSpace 실행 파일에 링크되는 DevGuard binding은 이 저장소의 gitlink를 통해 Codex를
 소비하므로, 그 실행 파일은 검토된 Codex 소스 정체성을 하나만 유지합니다. 제품 root
 안에서 각 `codex-*` package를 gitlink 경로에서만 받아들이는 실행 파일 단일 정체성
