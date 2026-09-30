@@ -85,7 +85,7 @@ checks only SHA and patch tests; it is not a complete qualification command.
 
 ## Boundaries for future crates and backends
 
-> **Status: suspended as an implementation directive.** The CS-RG plan for new execution backends mentioned below must not be implemented while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved. The dependency and CI rules in this section are unchanged.
+> **Status: suspended as an implementation directive.** The CS-RG plan for new execution backends mentioned below must not be implemented while the CS-RG integration-boundary revalidation is pending. No replacement architecture has been approved. The dependency and CI rules in this section are unchanged; a dated addition of 2026-09-30 at the end of this section records DevGuard design revision 2's rule for a DevGuard binding's Codex identity.
 
 CS-RG plans a DevGuard resource client crate and new execution backends
 ([CS-RG work packages](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/planning/milestones/CS-RG.md),
@@ -129,3 +129,12 @@ every leg that builds it; and the tests that cover it. It never removes or
 narrows `FORBIDDEN`, `RUNNER_FORBIDDEN`, full-graph validation or any other
 check. The planned resource client must bring no transitive Codex dependency,
 and DevGuard client types stay out of public MCP types.
+
+*Added 2026-09-30, from
+[DevGuard design revision 2](https://github.com/novelKR/DevGuard/blob/637627ecff26a9f71730d00b926b40fb05b47107/docs/design-revision-2.md#33-executable-identity):*
+a DevGuard binding linked into a CodeSpace executable consumes Codex through
+this repository's gitlink, so that executable keeps one reviewed Codex source
+identity. The executable single-identity check, which accepts each `codex-*`
+package only from the gitlink path within a product root, arrives with the
+first PR that puts a DevGuard crate into a CodeSpace graph. Until then this rule
+is documentation policy, not an executable gate.
