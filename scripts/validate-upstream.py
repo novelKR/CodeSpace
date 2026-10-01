@@ -52,7 +52,10 @@ def stages():
         'clippy-root': [cargo('clippy', 'root', '--all-targets', '--', '-D', 'warnings')],
         'clippy-adapters': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('patch', 'pty', 'file-system')],
         'clippy-codex': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('codex-runtime', 'linux-sandbox')],
-        'macos-core': [cargo(action, a, *(['--all-targets', '--', '-D', 'warnings'] if action == 'clippy' else [])) for a in ('pty', 'file-system') for action in ('clippy', 'test')],
+        'macos-core': [cargo(action, a, *(['--all-targets', '--', '-D', 'warnings'] if action == 'clippy' else [])) for a in ('pty', 'file-system') for action in ('clippy', 'test')]
+        # Descriptor hygiene of the runner host's spawns, whose macOS path the Linux legs cannot exercise.
+        + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'missing_executable_is_process_spawn_failed'),
+           cargo('test', 'root', '-p', 'codespace-server', '--lib', '--', 'descriptors')],
         'integration': [],
         'linux-isolation': [cargo('build', 'linux-sandbox', '--bin', 'codespace-linux-sandbox'), cargo('test', 'linux-sandbox', '--test', 'isolation')],
         'dependencies': [],

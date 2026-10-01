@@ -42,14 +42,15 @@ class SelectionTests(unittest.TestCase):
     def test_components_follow_the_crate_graph(self):
         rows = {
             'crates/domain/src/lib.rs': ordered('rust-clippy/root', 'rust-clippy/adapters', 'rust-clippy/codex-adapters',
-                                                'rust-unit/patch', 'rust-unit/codex-runtime', 'rust-integration/single'),
+                                                'rust-unit/patch', 'rust-unit/codex-runtime', 'rust-integration/single',
+                                                'rust-macos/single'),
             'crates/runner/src/lib.rs': ordered('rust-clippy/root', 'rust-clippy/codex-adapters',
-                                                'rust-unit/codex-runtime', 'rust-integration/single'),
-            'crates/server/src/main.rs': ['rust-clippy/root', 'rust-integration/single'],
-            'crates/store/src/lib.rs': ['rust-clippy/root', 'rust-integration/single'],
+                                                'rust-unit/codex-runtime', 'rust-integration/single', 'rust-macos/single'),
+            'crates/server/src/main.rs': ['rust-clippy/root', 'rust-integration/single', 'rust-macos/single'],
+            'crates/store/src/lib.rs': ['rust-clippy/root', 'rust-integration/single', 'rust-macos/single'],
             'crates/linux-sandbox-protocol/src/lib.rs': ordered(
                 'rust-clippy/root', 'rust-clippy/codex-adapters', 'rust-unit/codex-runtime', 'rust-unit/linux-sandbox-protocol',
-                'rust-unit/linux-sandbox', 'rust-linux-isolation/single', 'rust-integration/single'),
+                'rust-unit/linux-sandbox', 'rust-linux-isolation/single', 'rust-integration/single', 'rust-macos/single'),
             'crates/patch/src/lib.rs': ['rust-clippy/adapters', 'rust-unit/patch', 'rust-integration/single'],
             'crates/codex-runtime/src/lib.rs': ['rust-clippy/codex-adapters', 'rust-unit/codex-runtime',
                                                 'rust-integration/single'],
