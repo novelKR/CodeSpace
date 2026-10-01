@@ -1,5 +1,6 @@
 //! Managed workspace processes. Request lifetime is not process lifetime.
-//! Pipe spawn uses `tokio::process::Command`. `tty: true` uses the isolated
+//! Pipe spawn uses `tokio::process::Command`, whose children keep only their
+//! standard descriptors (`descriptors`). `tty: true` uses the isolated
 //! `codespace-pty` adapter. When the Linux helper probe succeeds, both wrap
 //! the same helper argv. UDS dispatch lives in `UdsRunner`.
 
@@ -289,6 +290,7 @@ impl InProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        crate::descriptors::exclude_unrelated(&mut child);
         for (key, value) in spawn_env(&cwd, &req, launch.sandboxed) {
             child.env(key, value);
         }
@@ -1483,6 +1485,30 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(eof, "SIGTERM on the helper must reap the sandbox tree");
+    }
+
+    #[tokio::test]
+    async fn pipe_child_keeps_only_its_standard_descriptors() {
+        // A descriptor that another thread's creation window could leave inheritable (#79).
+        let held = crate::descriptors::tests::inheritable_descriptor();
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-descriptors".into());
+        let script =
+            crate::descriptors::tests::report_script(std::os::fd::AsRawFd::as_raw_fd(&held));
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/sh".into(), "-c".into(), script],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wait_chunk(&runner, &process_id).await, "held\nclear\n");
     }
 
     #[tokio::test]

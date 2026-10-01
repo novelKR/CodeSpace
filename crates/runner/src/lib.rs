@@ -101,6 +101,7 @@ fn reject_symlink_ancestors(root: &Path, dest: &Path) -> Result<(), ErrorBody> {
 
 mod api;
 mod apply;
+mod descriptors;
 mod files;
 mod linux_sandbox;
 mod patch_helper;
@@ -119,6 +120,7 @@ pub use api::{
     RunnerResizeResult, RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
 };
 pub use codespace_domain::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT};
+pub use descriptors::exclude_unrelated;
 pub use files::VERSION_ABSENT;
 pub use patch_helper::ensure_helper_for_tests;
 pub use process::{
