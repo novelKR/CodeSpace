@@ -1103,8 +1103,8 @@ pub(crate) mod tests {
     }
 
     /// Run the ignored test `name` alone, in a new process of this test binary, and return
-    /// its output. The stand-in worker is `/bin/sh`, which moves its script to descriptor 255
-    /// on macOS; alone, the gateway's descriptors keep low numbers, so a carrier is never there.
+    /// its output. The stand-in worker is a shell, and bash moves its script to descriptor 255;
+    /// alone, the gateway's descriptors keep low numbers, so a carrier is never there.
     fn run_alone(name: &str) -> String {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -1146,11 +1146,12 @@ pub(crate) mod tests {
         script
     }
 
-    /// Start the reporting worker as the gateway starts its worker with DevGuard settings.
+    /// Start the reporting worker as the gateway starts its worker with DevGuard settings. It
+    /// runs under bash: dash, Ubuntu's `/bin/sh`, reads only single-digit descriptors.
     async fn start_reporting_worker(worker: &WorkerSettings, dir: &Path) -> String {
         let report = dir.join("report");
         let script = reporting_worker(dir, &report);
-        let mut command = crate::runtime::worker_command(Path::new("/bin/sh"), &script);
+        let mut command = crate::runtime::worker_command(Path::new("/bin/bash"), &script);
         worker.prepare(&mut command);
         assert!(!format!("{command:?}").contains(SECRET));
         let status = command.status().await.unwrap();

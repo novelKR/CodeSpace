@@ -109,8 +109,9 @@ impl Owner {
         }
     }
 
-    /// An owner that claims another instance identity, as a second process might.
-    #[cfg(test)]
+    /// An owner that claims another instance identity, as a second process might. Only the
+    /// tests against an authority with native host evidence use it.
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn with_instance_id(
         settings: OwnerSettings,
         credential: OwnerCredential,
