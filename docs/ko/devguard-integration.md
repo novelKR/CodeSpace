@@ -47,14 +47,16 @@ CSRG-U1은 CS-RG의 첫 단위다. 두 설정이 필요하며 둘 다 기본값�
 | `--devguard-socket` | `CODESPACE_DEVGUARD_SOCKET` | DevGuard socket. 보통 `/private/tmp/devguard-<uid>/authority.sock` |
 | `--devguard-consumer` | `CODESPACE_DEVGUARD_CONSUMER` | DevGuard 운영자 설정의 consumer ID |
 | `--devguard-generation` | `CODESPACE_DEVGUARD_GENERATION` | 그 consumer의 generation |
-| `--devguard-credential-file` | `CODESPACE_DEVGUARD_CREDENTIAL_FILE` | consumer의 64자 secret만 담은 비공개 파일(0600, 이 사용자 소유, 링크 하나) |
+| `--devguard-credential-file` | `CODESPACE_DEVGUARD_CREDENTIAL_FILE` | consumer의 64자 secret만 담은 비공개 파일(0600, 이 사용자 소유, 링크 하나)의 절대 경로. 경로의 모든 디렉터리는 이 사용자나 root가 소유한 실제 디렉터리여야 하며 그룹이나 다른 사용자가 쓸 수 없어야 한다. 단 root가 소유한 sticky `/tmp`는 예외다. 파일이 들어 있는 디렉터리는 이 사용자의 것이어야 한다 |
 
 **보고하는 내용.** `workspace_info`를 호출할 때마다 DevGuard client로 세션 하나를 열고(연결, `Hello`, `Authenticate`, `Status`) 닫는다. DevGuard의 frame당 250 ms 기한 때문에 세션은 약 1.75초 안에 끝난다. 세션이 진행 중일 때 들어온 호출은 기다렸다가 다음 세션 결과를 함께 쓰므로 CodeSpace가 여는 세션은 동시에 하나뿐이다. 결과는 `workspace_info.resource_authority`에 담긴다.
 
 - `participation: status`, `governs_execution: false`는 항상 이 값이다.
 - `state`: `available`, `unavailable`, `untrusted_authority`, `incompatible`, `credential_refused`, `credential_unavailable` 중 하나.
-- `error_code`: 실패한 단계에 대한 DevGuard의 코드. 메시지는 전달하지 않는다.
-- `report`(available일 때): DevGuard의 protocol, capability, 부여한 role, 저장소·등록·실행 준비 상태와 그 이유.
+- `error_code`: 실패한 단계에 대한 DevGuard의 코드. DevGuard wire의 이름을 쓰는 CodeSpace 열거값 중 하나이며, 메시지는 전달하지 않는다.
+- `report`(available일 때): DevGuard의 protocol, capability와 부여한 role(둘 다 열거값), 저장소·등록·실행 준비 상태. DevGuard의 자유 서술 이유는 전달하지 않으며 `devguardd status`에서 볼 수 있다.
+
+보고하는 값은 모두 열거값, 플래그, protocol 번호이므로 DevGuard의 텍스트는 MCP client에 전달되지 않는다.
 
 DevGuard가 실패해도 `workspace_info`나 다른 도구는 실패하지 않으며, 알 수 없는 workspace는 세션을 열기 전에 거부한다.
 

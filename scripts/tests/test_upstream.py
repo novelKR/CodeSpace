@@ -81,6 +81,17 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(deps.graph(data, ['codespace-devguard'], devguard=True)['violations'],
                          ['devguard-client -> serde -> codex-protocol: brought in by DevGuard'])
 
+    def test_devguard_test_fixtures_stay_out_of_products(self):
+        names = ['codespace-devguard', 'devguard-client', 'devguard-daemon']
+        pinned = {'devguard-client': deps.DEVGUARD_SOURCE, 'devguard-daemon': deps.DEVGUARD_SOURCE}
+        development = fixture(names, [('codespace-devguard', 'devguard-client', None),
+                                      ('codespace-devguard', 'devguard-daemon', 'dev')], pinned)
+        self.assertFalse(deps.graph(development, ['codespace-devguard'], devguard=True)['violations'])
+        product = fixture(names, [('codespace-devguard', 'devguard-client', None),
+                                  ('codespace-devguard', 'devguard-daemon', None)], pinned)
+        self.assertEqual(deps.graph(product, ['codespace-devguard'], devguard=True)['violations'],
+                         ['codespace-devguard -> devguard-daemon: a DevGuard crate outside its product set'])
+
     def test_features_forwarded(self):
         with patch.object(deps.subprocess, 'check_output', return_value=b'{}') as call:
             deps.metadata(Path('Cargo.toml'), 'target', deps.DEVGUARD_FEATURE)

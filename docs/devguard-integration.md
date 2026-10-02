@@ -47,14 +47,16 @@ CSRG-U1 is the first CS-RG unit. It needs two settings, both off by default:
 | `--devguard-socket` | `CODESPACE_DEVGUARD_SOCKET` | DevGuard's socket, normally `/private/tmp/devguard-<uid>/authority.sock` |
 | `--devguard-consumer` | `CODESPACE_DEVGUARD_CONSUMER` | the consumer's id in DevGuard's operator configuration |
 | `--devguard-generation` | `CODESPACE_DEVGUARD_GENERATION` | that consumer's generation |
-| `--devguard-credential-file` | `CODESPACE_DEVGUARD_CREDENTIAL_FILE` | a private file (0600, owned by this user, one link) holding exactly the consumer's 64-character secret |
+| `--devguard-credential-file` | `CODESPACE_DEVGUARD_CREDENTIAL_FILE` | the absolute path of a private file (0600, owned by this user, one link) holding exactly the consumer's 64-character secret. Every directory on the path must be a real directory, owned by this user or root and not writable by group or others, apart from a root-owned sticky `/tmp`; the file's own directory must be this user's |
 
 **What it reports.** Each `workspace_info` call opens one session through DevGuard's client (connect, `Hello`, `Authenticate`, `Status`) and closes it. DevGuard's 250 ms per-frame deadlines bound a session at about 1.75 s. A call that arrives while a session runs waits and shares the next one, so CodeSpace holds at most one session. The result is `workspace_info.resource_authority`:
 
 - `participation: status` and `governs_execution: false`, always;
 - `state`: `available`, `unavailable`, `untrusted_authority`, `incompatible`, `credential_refused` or `credential_unavailable`;
-- `error_code`: DevGuard's code for the step that failed. Its message is not passed on;
-- `report`, when available: DevGuard's protocol, its capabilities, the role it granted, and its storage, registration and execution readiness with its reason.
+- `error_code`: DevGuard's code for the step that failed, as one of CodeSpace's enumerated values named as on DevGuard's wire. Its message is not passed on;
+- `report`, when available: DevGuard's protocol, its capabilities and the role it granted (both enumerated), and its storage, registration and execution readiness. DevGuard's free-text reason is not passed on; `devguardd status` shows it.
+
+Every reported value is an enumeration, a flag or the protocol number, so no text from DevGuard reaches MCP clients.
 
 A DevGuard failure never fails `workspace_info` or any other tool, and an unknown workspace is refused before any session opens.
 

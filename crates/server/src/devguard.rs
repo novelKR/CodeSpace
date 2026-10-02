@@ -14,9 +14,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use clap::{Args, ValueEnum};
-use codespace_devguard::{Settings, State, Status};
+use codespace_devguard::{Capability, ErrorCode, Role, Settings, State, Status};
 use codespace_domain::{
-    ResourceAuthorityInfo, ResourceAuthorityReport, ResourceAuthorityState, ResourceParticipation,
+    ResourceAuthorityCapability, ResourceAuthorityErrorCode, ResourceAuthorityInfo,
+    ResourceAuthorityProvider, ResourceAuthorityReport, ResourceAuthorityRole,
+    ResourceAuthorityState, ResourceParticipation,
 };
 use tokio::sync::Mutex;
 
@@ -135,7 +137,7 @@ impl ResourceAuthority {
         if last.as_ref().map(|probed| probed.info.state) != Some(info.state) {
             tracing::info!(
                 state = ?info.state,
-                error_code = info.error_code.as_deref(),
+                error_code = ?info.error_code,
                 "DevGuard status"
             );
         }
@@ -149,7 +151,7 @@ impl ResourceAuthority {
 
 fn info(status: Status) -> ResourceAuthorityInfo {
     ResourceAuthorityInfo {
-        provider: "devguard".into(),
+        provider: ResourceAuthorityProvider::Devguard,
         participation: ResourceParticipation::Status,
         governs_execution: false,
         state: match status.state {
@@ -160,16 +162,57 @@ fn info(status: Status) -> ResourceAuthorityInfo {
             State::CredentialRefused => ResourceAuthorityState::CredentialRefused,
             State::CredentialUnavailable => ResourceAuthorityState::CredentialUnavailable,
         },
-        error_code: status.error_code.map(str::to_owned),
+        error_code: status.error_code.map(error_code),
         report: status.report.map(|report| ResourceAuthorityReport {
             protocol: report.protocol,
-            capabilities: report.capabilities.into_iter().map(str::to_owned).collect(),
-            role: report.role.to_owned(),
+            capabilities: report.capabilities.into_iter().map(capability).collect(),
+            role: role(report.role),
             storage_validated: report.storage_validated,
             registration_ready: report.registration_ready,
             execution_ready: report.execution_ready,
-            reason: report.reason,
         }),
+    }
+}
+
+fn error_code(code: ErrorCode) -> ResourceAuthorityErrorCode {
+    match code {
+        ErrorCode::Unauthorized => ResourceAuthorityErrorCode::Unauthorized,
+        ErrorCode::InvalidRequest => ResourceAuthorityErrorCode::InvalidRequest,
+        ErrorCode::AttemptConflict => ResourceAuthorityErrorCode::AttemptConflict,
+        ErrorCode::ResourceUnavailable => ResourceAuthorityErrorCode::ResourceUnavailable,
+        ErrorCode::ResourceControlUnavailable => {
+            ResourceAuthorityErrorCode::ResourceControlUnavailable
+        }
+        ErrorCode::ResourcePolicyUnsupported => {
+            ResourceAuthorityErrorCode::ResourcePolicyUnsupported
+        }
+        ErrorCode::InvalidTransition => ResourceAuthorityErrorCode::InvalidTransition,
+        ErrorCode::NotFound => ResourceAuthorityErrorCode::NotFound,
+        ErrorCode::ReconciliationRequired => ResourceAuthorityErrorCode::ReconciliationRequired,
+        ErrorCode::JournalInvalid => ResourceAuthorityErrorCode::JournalInvalid,
+    }
+}
+
+fn capability(capability: Capability) -> ResourceAuthorityCapability {
+    match capability {
+        Capability::DurableAdmission => ResourceAuthorityCapability::DurableAdmission,
+        Capability::FencedLaunch => ResourceAuthorityCapability::FencedLaunch,
+        Capability::PerResourceEvidence => ResourceAuthorityCapability::PerResourceEvidence,
+        Capability::StaticControlReservations => {
+            ResourceAuthorityCapability::StaticControlReservations
+        }
+        Capability::MacosCooperative => ResourceAuthorityCapability::MacosCooperative,
+        Capability::LinuxCgroupV2 => ResourceAuthorityCapability::LinuxCgroupV2,
+        Capability::ParentLease => ResourceAuthorityCapability::ParentLease,
+        Capability::UpgradeDrain => ResourceAuthorityCapability::UpgradeDrain,
+    }
+}
+
+fn role(role: Role) -> ResourceAuthorityRole {
+    match role {
+        Role::Workload => ResourceAuthorityRole::Workload,
+        Role::ControlService => ResourceAuthorityRole::ControlService,
+        Role::Administrator => ResourceAuthorityRole::Administrator,
     }
 }
 
@@ -358,12 +401,16 @@ pub(crate) mod tests {
         for (state, expected) in cases {
             let mapped = info(Status {
                 state,
-                error_code: Some("unauthorized"),
+                error_code: Some(ErrorCode::Unauthorized),
                 report: None,
             });
             assert_eq!(mapped.state, expected);
-            assert_eq!(mapped.error_code.as_deref(), Some("unauthorized"));
+            assert_eq!(
+                mapped.error_code,
+                Some(ResourceAuthorityErrorCode::Unauthorized)
+            );
             // Status participation never governs execution, whatever the authority says.
+            assert_eq!(mapped.provider, ResourceAuthorityProvider::Devguard);
             assert_eq!(mapped.participation, ResourceParticipation::Status);
             assert!(!mapped.governs_execution);
         }
@@ -372,12 +419,11 @@ pub(crate) mod tests {
             error_code: None,
             report: Some(Report {
                 protocol: 1,
-                capabilities: vec!["durable_admission"],
-                role: "workload",
+                capabilities: vec![Capability::DurableAdmission],
+                role: Role::Workload,
                 storage_validated: true,
                 registration_ready: true,
                 execution_ready: true,
-                reason: "open".into(),
             }),
         });
         assert!(!available.governs_execution);
@@ -385,14 +431,30 @@ pub(crate) mod tests {
             available.report,
             Some(ResourceAuthorityReport {
                 protocol: 1,
-                capabilities: vec!["durable_admission".into()],
-                role: "workload".into(),
+                capabilities: vec![ResourceAuthorityCapability::DurableAdmission],
+                role: ResourceAuthorityRole::Workload,
                 storage_validated: true,
                 registration_ready: true,
                 execution_ready: true,
-                reason: "open".into(),
             })
         );
+    }
+
+    #[test]
+    fn reported_codes_capabilities_and_roles_keep_devguard_wire_names() {
+        let wire = |value: serde_json::Value| value.as_str().unwrap().to_owned();
+        for code in ErrorCode::ALL {
+            let reported = serde_json::to_value(error_code(code)).unwrap();
+            assert_eq!(wire(reported), code.wire_name());
+        }
+        for each in Capability::ALL {
+            let reported = serde_json::to_value(capability(each)).unwrap();
+            assert_eq!(wire(reported), each.wire_name());
+        }
+        for each in Role::ALL {
+            let reported = serde_json::to_value(role(each)).unwrap();
+            assert_eq!(wire(reported), each.wire_name());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

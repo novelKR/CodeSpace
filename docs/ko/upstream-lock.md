@@ -40,7 +40,7 @@ gateway의 opt-in `devguard` feature([CSRG-U1](devguard-integration.md#devguard-
 | 사용하는 구성 요소 | `crates/devguard`(`codespace-devguard`). `codespace-server`는 `devguard` feature를 켰을 때만 링크 |
 | 검사 | `scripts/upstream_dependencies.py`(`DEVGUARD_SOURCE`) |
 
-의존성 검사는 모든 제품 그래프에서 각 `devguard-*` package를 이 커밋에서만, 각 `codex-*` package를 Codex gitlink에서만 받아들입니다. feature 없이 빌드한 그래프의 DevGuard package와, DevGuard crate가 도달하는 CodeSpace·Codex package는 거부합니다. 고정 버전은 어댑터 manifest, 두 lockfile, `DEVGUARD_SOURCE`, 이 기록을 함께 갱신하는 검토된 PR로만 바꿉니다.
+의존성 검사는 모든 제품 그래프에서 각 `devguard-*` package를 이 커밋에서만, 각 `codex-*` package를 Codex gitlink에서만 받아들입니다. 제품 그래프에는 `devguard-client`와 `devguard-contract`만 허용하므로 DevGuard의 테스트 fixture는 개발 의존성으로만 남습니다. feature 없이 빌드한 그래프의 DevGuard package와, DevGuard crate가 도달하는 CodeSpace·Codex package는 거부합니다. 고정 버전은 어댑터 manifest, 두 lockfile, `DEVGUARD_SOURCE`, 이 기록을 함께 갱신하는 검토된 PR로만 바꿉니다.
 
 <a id="파일-복사-벤더가-금지인-이유"></a>
 <a id="파일-복사-벤더가-금지인-이유"></a>

@@ -38,7 +38,7 @@ The gateway's opt-in `devguard` feature ([CSRG-U1](devguard-integration.md#devgu
 | Consumer | `crates/devguard` (`codespace-devguard`), linked by `codespace-server` only with its `devguard` feature |
 | Check | `scripts/upstream_dependencies.py` (`DEVGUARD_SOURCE`) |
 
-In every product graph, the dependency check accepts each `devguard-*` package only from this commit and each `codex-*` package only from the Codex gitlink. It rejects any DevGuard package in a graph built without the feature, and any CodeSpace or Codex package that DevGuard's crates reach. Change the pin through a reviewed PR that updates the adapter manifest, both lockfiles, `DEVGUARD_SOURCE` and this record together.
+In every product graph, the dependency check accepts each `devguard-*` package only from this commit and each `codex-*` package only from the Codex gitlink. It admits only `devguard-client` and `devguard-contract` to a product graph, so DevGuard's test fixtures stay development dependencies. It rejects any DevGuard package in a graph built without the feature, and any CodeSpace or Codex package that DevGuard's crates reach. Change the pin through a reviewed PR that updates the adapter manifest, both lockfiles, `DEVGUARD_SOURCE` and this record together.
 
 <a id="why-file-copy-vendor-is-forbidden"></a>
 <a id="what-is-reused-vs-rejected"></a>

@@ -20,6 +20,9 @@ RUNNER_FORBIDDEN = {'codespace-linux-sandbox', 'codex-linux-sandbox'}
 DEVGUARD_SOURCE = ('git+https://github.com/novelKR/DevGuard?rev=f1f908429abea962d62d6b53c56a26c17250179b'
                    '#f1f908429abea962d62d6b53c56a26c17250179b')
 CODEX_PATH = 'path:third_party/codex/'
+# DevGuard's crates a product may link. Its test fixtures (`devguard-daemon` and what it
+# brings) stay development dependencies.
+DEVGUARD_PRODUCT = {'devguard-client', 'devguard-contract'}
 # The gateway links DevGuard only with this feature (CSRG-U1).
 DEVGUARD_FEATURE = 'codespace-server/devguard'
 
@@ -50,6 +53,8 @@ def graph(data, roots, devguard=False):
         name, source = packages[pid]['name'], json.loads(key(pid))[2]
         if name.startswith('devguard-') and source != DEVGUARD_SOURCE:
             return 'not the reviewed DevGuard pin'
+        if name.startswith('devguard-') and name not in DEVGUARD_PRODUCT:
+            return 'a DevGuard crate outside its product set'
         if name.startswith('codex-') and not source.startswith(CODEX_PATH):
             return 'not the Codex gitlink'
         if not devguard and (name == 'codespace-devguard' or name.startswith('devguard-')):
