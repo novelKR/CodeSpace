@@ -138,3 +138,15 @@ identity. The executable single-identity check, which accepts each `codex-*`
 package only from the gitlink path within a product root, arrives with the
 first PR that puts a DevGuard crate into a CodeSpace graph. Until then this rule
 is documentation policy, not an executable gate.
+
+*Added 2026-10-02, CSRG-U1:* the first DevGuard crate is the isolated workspace
+`crates/devguard` (product root `codespace-devguard`, component `devguard`, with
+its own unit and adapter clippy legs). `codespace-server` links it only with its
+`devguard` feature. Its pin is recorded in
+[upstream lock](upstream-lock.md#devguard-client-pin), which is already in `full`.
+`scripts/upstream_dependencies.py` now enforces the executable single-identity
+rule above in every product graph, including the root graph with the feature on.
+It also checks the DevGuard pin, keeps DevGuard out of every graph built without
+the feature, and rejects any CodeSpace or Codex crate that DevGuard's crates
+reach. `check-no-model-deps.sh` scans the adapter's manifest and sources as it
+scans core. Validate the adapter with the other isolated adapters.
