@@ -1,7 +1,8 @@
-//! The resource authority's status in `workspace_info` (CSRG-U1). It exists only with the
-//! `devguard` feature and is reported only when the gateway was started with
-//! `--devguard status`. These are CodeSpace's types; no DevGuard type reaches MCP. Every value
-//! is an enumeration, a flag or a protocol number: no free text from the authority does.
+//! The resource authority in `workspace_info`: its status (CSRG-U1) and the registration of
+//! CodeSpace's execution owner (CSRG-U2). It exists only with the `devguard` feature and is
+//! reported only when the gateway was started with `--devguard status` or `register`. These are
+//! CodeSpace's types; no DevGuard type reaches MCP. Every value is an enumeration, a flag, a
+//! protocol number or a process ID: no free text from the authority is.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,9 @@ pub struct ResourceAuthorityInfo {
     /// The authority's own report, when `available`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<ResourceAuthorityReport>,
+    /// The execution owner's registration, with `registration` participation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration: Option<ResourceRegistrationInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -35,6 +39,64 @@ pub enum ResourceParticipation {
     /// CodeSpace reads the authority's status and nothing more: no registration, admission or
     /// launch.
     Status,
+    /// The process that owns CodeSpace's executions registers itself with the authority and
+    /// reports its status. Nothing is admitted or launched through the authority.
+    Registration,
+}
+
+/// The execution owner's registration, from a session the owner opened itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResourceRegistrationInfo {
+    pub owner: ResourceOwner,
+    pub state: ResourceRegistrationState,
+    /// The authority's code for the step that failed. Its message is not reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<ResourceAuthorityErrorCode>,
+    /// The owner's process ID as the authority registered it, when `registered`. CodeSpace has
+    /// checked that it is the owner's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
+
+/// The process that owns CodeSpace's executions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceOwner {
+    /// The gateway, which runs executions in its own process.
+    InProcess,
+    /// The UDS worker, which owns the execution handles.
+    Worker,
+}
+
+/// What the owner's latest registration session found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceRegistrationState {
+    /// The authority registered the owner process under its instance identity.
+    Registered,
+    /// No authority answered, or a response was missing or invalid.
+    Unavailable,
+    /// The socket's peer, or the identity it declared, is not the expected authority.
+    UntrustedAuthority,
+    /// The authority offers no protocol or capability set registration needs.
+    Incompatible,
+    /// The consumer settings or secret could not be used, so no session was opened.
+    CredentialUnavailable,
+    /// The authority refused the consumer credential: a wrong consumer, generation or secret.
+    CredentialRefused,
+    /// The consumer is not a control service.
+    RoleMismatch,
+    /// The authority is not ready to register instances.
+    NotReady,
+    /// The authority refused the registration.
+    Refused,
+    /// The identity the authority registered is not the owner process, or it changed.
+    OwnerMismatch,
+    /// The owner could not be asked: the worker connection is gone.
+    OwnerUnreachable,
+    /// This runner mode cannot register its execution owner: a worker the gateway did not
+    /// start, or one built without registration.
+    UnsupportedMode,
 }
 
 /// What the latest status session found.
@@ -136,6 +198,7 @@ mod tests {
                 registration_ready: false,
                 execution_ready: false,
             }),
+            registration: None,
         });
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(
@@ -167,6 +230,57 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["resource_authority"]["error_code"], "unauthorized");
         assert!(json["resource_authority"].get("report").is_none());
+        assert!(json["resource_authority"].get("registration").is_none());
+
+        // A status report without the registration field still decodes.
+        let back: WorkspaceInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(back, info);
+    }
+
+    #[test]
+    fn the_owner_registration_is_reported_with_its_owner_and_pid() {
+        let mut info = workspace_info(None);
+        info.resource_authority = Some(ResourceAuthorityInfo {
+            provider: ResourceAuthorityProvider::Devguard,
+            participation: ResourceParticipation::Registration,
+            governs_execution: false,
+            state: ResourceAuthorityState::Available,
+            error_code: None,
+            report: None,
+            registration: Some(ResourceRegistrationInfo {
+                owner: ResourceOwner::Worker,
+                state: ResourceRegistrationState::Registered,
+                error_code: None,
+                pid: Some(4242),
+            }),
+        });
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["resource_authority"]["participation"], "registration");
+        assert_eq!(
+            json["resource_authority"]["registration"],
+            serde_json::json!({"owner": "worker", "state": "registered", "pid": 4242})
+        );
+        let back: WorkspaceInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(back, info);
+
+        info.resource_authority = Some(ResourceAuthorityInfo {
+            registration: Some(ResourceRegistrationInfo {
+                owner: ResourceOwner::InProcess,
+                state: ResourceRegistrationState::Refused,
+                error_code: Some(ResourceAuthorityErrorCode::AttemptConflict),
+                pid: None,
+            }),
+            ..info.resource_authority.unwrap()
+        });
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            json["resource_authority"]["registration"],
+            serde_json::json!({
+                "owner": "in_process",
+                "state": "refused",
+                "error_code": "attempt_conflict",
+            })
+        );
     }
 
     #[test]

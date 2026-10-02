@@ -53,14 +53,20 @@ def stages():
                         # The gateway with its opt-in DevGuard status connection (CSRG-U1).
                         cargo('clippy', 'root', '-p', 'codespace-server', '--features', 'devguard', '--all-targets', '--', '-D', 'warnings')],
         'clippy-adapters': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('patch', 'pty', 'file-system', 'devguard')],
-        'clippy-codex': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('codex-runtime', 'linux-sandbox')],
+        'clippy-codex': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('codex-runtime', 'linux-sandbox')]
+        # The worker with its own DevGuard registration (CSRG-U2).
+        + [cargo('clippy', 'codex-runtime', '--features', 'devguard', '--all-targets', '--', '-D', 'warnings')],
         'macos-core': [cargo(action, a, *(['--all-targets', '--', '-D', 'warnings'] if action == 'clippy' else [])) for a in ('pty', 'file-system') for action in ('clippy', 'test')]
         # Descriptor hygiene of the runner host's spawns, whose macOS path the Linux legs cannot exercise.
         + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'missing_executable_is_process_spawn_failed'),
            cargo('test', 'root', '-p', 'codespace-server', '--lib', '--', 'descriptors')]
-        # The DevGuard status adapter against an authority with native host evidence, and the
-        # gateway's DevGuard tests where socket creation is not atomically close-on-exec.
+        # The DevGuard adapter against an authority with native host evidence, and the DevGuard
+        # tests of the runner, the worker and the gateway where socket creation is not atomically
+        # close-on-exec, the gateway's against the worker and the fixture authority built here.
+        + devguard_binaries()
         + [cargo('test', 'devguard'),
+           cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
+           cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire'),
            cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard')],
         'integration': [],
         'linux-isolation': [cargo('build', 'linux-sandbox', '--bin', 'codespace-linux-sandbox'), cargo('test', 'linux-sandbox', '--test', 'isolation')],
@@ -69,6 +75,7 @@ def stages():
     for area in ADAPTERS:
         extra = ['--bins', '--test', 'cli'] if area == 'linux-sandbox' else []
         result['unit-' + area] = [cargo('test', area, *extra)]
+    result['unit-codex-runtime'].append(cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'))
     result['unit-linux-sandbox-protocol'] = [cargo('test', 'root', '-p', 'codespace-linux-sandbox-protocol')]
     return result
 
@@ -76,10 +83,33 @@ def stages():
 HELPERS = {'patch': ('codespace-patch', 'CODESPACE_PATCH_BIN'),
            'codex-runtime': ('codespace-codex-runtime', 'CODESPACE_RUNTIME_BIN'),
            'linux-sandbox': ('codespace-linux-sandbox', 'CODESPACE_LINUX_SANDBOX_BIN')}
+TARGET_DIR = (ROOT / 'target' / 'upstream-validation').resolve()
+# The gateway's DevGuard registration tests (CSRG-U2) need the worker built with its DevGuard
+# feature, kept beside the default worker, and DevGuard's fixture authority in its own process.
+DEVGUARD_RUNTIME = 'codespace-codex-runtime-devguard'
+DEVGUARD_FIXTURE = 'examples/fixture_authority'
+DEVGUARD_STAGES = ('integration', 'macos-core')
 
 
 def helper_env(target_dir):
     return {variable: str(target_dir / 'debug' / binary) for binary, variable in HELPERS.values()}
+
+
+def devguard_env(target_dir):
+    """Where the stages that build them find the DevGuard test binaries. With them named, a
+    test that needs one fails instead of skipping."""
+    return {'CODESPACE_DEVGUARD_RUNTIME_BIN': str(target_dir / 'debug' / DEVGUARD_RUNTIME),
+            'CODESPACE_DEVGUARD_FIXTURE_BIN': str(target_dir / 'debug' / DEVGUARD_FIXTURE),
+            'CODESPACE_REQUIRE_DEVGUARD_BINS': '1'}
+
+
+def devguard_binaries():
+    """Build the worker with its DevGuard feature and copy it beside the default worker, whose
+    build replaces that path, then the fixture authority."""
+    worker = TARGET_DIR / 'debug' / 'codespace-codex-runtime'
+    return [cargo('build', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
+            ['cp', str(worker), str(TARGET_DIR / 'debug' / DEVGUARD_RUNTIME)],
+            cargo('build', 'devguard', '--example', 'fixture_authority')]
 
 
 def execute(commands, env, log):
@@ -108,7 +138,7 @@ def run(selected, output):
         env['PIN_ONLY'] = '1'
         # Full policy scan for reproducible standalone and CI qualification.
         env.pop('SCAN_BASE', None)
-        target_dir = (ROOT / 'target' / 'upstream-validation').resolve()
+        target_dir = TARGET_DIR
         env['CARGO_TARGET_DIR'] = str(target_dir)
         env.update(helper_env(target_dir))
         for stage in selected:
@@ -123,12 +153,15 @@ def run(selected, output):
                 if stage == 'dependencies':
                     commands = [[sys.executable, 'scripts/upstream_dependencies.py', '--target', target, '--output', str(output / 'dependencies.json')]]
                 elif stage == 'integration':
-                    commands = [cargo('build', area, '--bin', binary) for area, (binary, _) in HELPERS.items()]
+                    commands = devguard_binaries()
+                    commands += [cargo('build', area, '--bin', binary) for area, (binary, _) in HELPERS.items()]
                     commands += [cargo('test', 'root', '--workspace'),
                                  cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard')]
                 stage_env = env.copy()
                 if stage == 'linux-isolation':
                     stage_env['CODESPACE_REQUIRE_LINUX_SANDBOX'] = '1'
+                if stage in DEVGUARD_STAGES:
+                    stage_env.update(devguard_env(target_dir))
                 with (output / (stage + '.log')).open('w') as log:
                     execute(commands, stage_env, log)
                 entry['status'] = 'passed'

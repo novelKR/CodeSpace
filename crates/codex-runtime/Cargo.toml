@@ -14,6 +14,11 @@ description = "Isolated Codex execution adapter: process-hardening and Unix sock
 members = ["."]
 resolver = "2"
 
+[features]
+# The worker registers itself with DevGuard as CodeSpace's execution owner (CSRG-U2). Off by
+# default. It links DevGuard's client, which needs Rust 1.95.
+devguard = ["codespace-runner/devguard"]
+
 [dependencies]
 codespace-runner = { path = "../runner" }
 codex-process-hardening = { path = "../../third_party/codex/codex-rs/process-hardening" }

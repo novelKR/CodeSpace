@@ -81,6 +81,18 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(deps.graph(data, ['codespace-devguard'], devguard=True)['violations'],
                          ['devguard-client -> serde -> codex-protocol: brought in by DevGuard'])
 
+    def test_the_worker_links_devguard_only_with_its_feature(self):
+        names = ['codespace-codex-runtime', 'codespace-runner', 'codespace-devguard', 'devguard-client',
+                 'codex-utils-pty']
+        edges = [('codespace-codex-runtime', 'codespace-runner', None), ('codespace-runner', 'codespace-devguard', None),
+                 ('codespace-devguard', 'devguard-client', None), ('codespace-runner', 'codex-utils-pty', None)]
+        data = fixture(names, edges, {'devguard-client': deps.DEVGUARD_SOURCE})
+        self.assertEqual(deps.graph(data, ['codespace-codex-runtime'])['violations'], [
+            'codespace-codex-runtime -> codespace-runner -> codespace-devguard -> devguard-client: '
+            'DevGuard outside the devguard feature',
+            'codespace-codex-runtime -> codespace-runner -> codespace-devguard: DevGuard outside the devguard feature'])
+        self.assertFalse(deps.graph(data, ['codespace-codex-runtime'], devguard=True)['violations'])
+
     def test_devguard_test_fixtures_stay_out_of_products(self):
         names = ['codespace-devguard', 'devguard-client', 'devguard-daemon']
         pinned = {'devguard-client': deps.DEVGUARD_SOURCE, 'devguard-daemon': deps.DEVGUARD_SOURCE}
@@ -96,6 +108,8 @@ class GraphTests(unittest.TestCase):
         with patch.object(deps.subprocess, 'check_output', return_value=b'{}') as call:
             deps.metadata(Path('Cargo.toml'), 'target', deps.DEVGUARD_FEATURE)
             self.assertEqual(call.call_args.args[0][-2:], ['--features', 'codespace-server/devguard'])
+            deps.metadata(Path('crates/codex-runtime/Cargo.toml'), 'target', deps.RUNTIME_DEVGUARD_FEATURE)
+            self.assertEqual(call.call_args.args[0][-2:], ['--features', 'codespace-codex-runtime/devguard'])
             deps.metadata(Path('Cargo.toml'), 'target')
             self.assertNotIn('--features', call.call_args.args[0])
 
@@ -137,6 +151,22 @@ class RunnerTests(unittest.TestCase):
     def test_helper_paths_absolute(self):
         env = validation.helper_env(Path('/tmp/build'))
         self.assertEqual(env['CODESPACE_PATCH_BIN'], '/tmp/build/debug/codespace-patch')
+        env = validation.devguard_env(Path('/tmp/build'))
+        self.assertEqual(env['CODESPACE_DEVGUARD_RUNTIME_BIN'], '/tmp/build/debug/codespace-codex-runtime-devguard')
+        self.assertEqual(env['CODESPACE_DEVGUARD_FIXTURE_BIN'], '/tmp/build/debug/examples/fixture_authority')
+        self.assertEqual(env['CODESPACE_REQUIRE_DEVGUARD_BINS'], '1')
+
+    def test_devguard_worker_is_built_before_and_kept_beside_the_default_one(self):
+        build, copy, fixture = validation.devguard_binaries()
+        self.assertIn('--features', build)
+        self.assertEqual(build[build.index('--features') + 1], 'devguard')
+        self.assertEqual(copy[0], 'cp')
+        self.assertEqual(Path(copy[1]).name, 'codespace-codex-runtime')
+        self.assertEqual(Path(copy[2]).name, validation.DEVGUARD_RUNTIME)
+        self.assertEqual(fixture[-2:], ['--example', 'fixture_authority'])
+        # The default worker is built after the copy, so CODESPACE_RUNTIME_BIN stays the default.
+        for stage in validation.DEVGUARD_STAGES:
+            self.assertIn(stage, validation.stages())
 
     def test_report_and_platform_skip(self):
         with tempfile.TemporaryDirectory() as tmp, \

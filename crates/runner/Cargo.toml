@@ -7,8 +7,14 @@ rust-version.workspace = true
 publish = false
 description = "Runner trait, execution DTOs, InProcessRunner, and opt-in UdsRunner"
 
+[features]
+# The execution owner's DevGuard registration (CSRG-U2). Off by default. It links DevGuard's
+# client, which needs Rust 1.95.
+devguard = ["dep:codespace-devguard", "codespace-domain/devguard"]
+
 [dependencies]
 codespace-domain = { path = "../domain" }
+codespace-devguard = { path = "../devguard", optional = true }
 codespace-policy = { path = "../policy" }
 codespace-pty = { path = "../pty" }
 codespace-fs = { path = "../file-system" }

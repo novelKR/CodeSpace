@@ -23,8 +23,10 @@ CODEX_PATH = 'path:third_party/codex/'
 # DevGuard's crates a product may link. Its test fixtures (`devguard-daemon` and what it
 # brings) stay development dependencies.
 DEVGUARD_PRODUCT = {'devguard-client', 'devguard-contract'}
-# The gateway links DevGuard only with this feature (CSRG-U1).
+# The gateway links DevGuard only with this feature (CSRG-U1), and the UDS worker only with its
+# own (CSRG-U2).
 DEVGUARD_FEATURE = 'codespace-server/devguard'
+RUNTIME_DEVGUARD_FEATURE = 'codespace-codex-runtime/devguard'
 
 
 def metadata(manifest, target, *features):
@@ -135,11 +137,13 @@ def inspect(target):
             raise ValueError(f'{area}: missing or unexpected product roots: {sorted(members)}')
         report['graphs'][area] = graph(data, [members[name] for name in sorted(PRODUCTS[area])],
                                        devguard=area == 'devguard')
-    # The root graph again, with the gateway's DevGuard feature on.
-    data = metadata(ROOT / 'Cargo.toml', target, DEVGUARD_FEATURE)
-    members = {p['name']: p['id'] for p in data['packages'] if p['id'] in data['workspace_members']}
-    report['graphs']['root+devguard'] = graph(data, [members[name] for name in sorted(PRODUCTS['root'])],
-                                              devguard=True)
+    # The root and worker graphs again, each with its DevGuard feature on.
+    for area, feature in (('root', DEVGUARD_FEATURE), ('codex-runtime', RUNTIME_DEVGUARD_FEATURE)):
+        manifest = ROOT / ('Cargo.toml' if area == 'root' else f'crates/{area}/Cargo.toml')
+        data = metadata(manifest, target, feature)
+        members = {p['name']: p['id'] for p in data['packages'] if p['id'] in data['workspace_members']}
+        report['graphs'][area + '+devguard'] = graph(data, [members[name] for name in sorted(PRODUCTS[area])],
+                                                     devguard=True)
     return report
 
 

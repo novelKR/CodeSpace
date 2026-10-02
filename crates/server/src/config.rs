@@ -69,7 +69,8 @@ pub struct Cli {
     #[arg(long, env = "CODESPACE_RUNTIME_BIN")]
     pub runtime_bin: Option<std::path::PathBuf>,
 
-    /// Opt-in, status-only DevGuard connection (CSRG-U1).
+    /// Opt-in DevGuard connection: status (CSRG-U1) or the execution owner's registration
+    /// (CSRG-U2).
     #[cfg(feature = "devguard")]
     #[command(flatten)]
     pub devguard: crate::devguard::DevGuardArgs,

@@ -1,22 +1,30 @@
-//! Opt-in, status-only DevGuard adapter (CSRG-U1).
+//! Opt-in DevGuard adapter: bounded sessions through DevGuard's generic client.
 //!
 //! [`probe`] opens one bounded session to a DevGuard authority through DevGuard's generic
 //! client: connect, `Hello`, `Authenticate` as an operator-provisioned consumer, then `Status`,
-//! and closes it. It registers, admits and launches nothing, and CodeSpace's execution paths
-//! never call it. Every outcome is a [`Status`], never an error for the caller.
+//! and closes it (CSRG-U1). [`Owner::register`] registers the process that owns CodeSpace's
+//! executions in such a session (CSRG-U2), and [`handoff`] hands the consumer secret to the UDS
+//! worker that owns them. Nothing here admits or launches anything. Every outcome is a
+//! [`Status`] or a [`Registration`], never an error for the caller.
 //!
 //! DevGuard's transport bounds the session: connecting and each frame read or write have a
-//! 250 ms deadline, so a probe ends within about 1.75 s.
+//! 250 ms deadline, so a probe ends within about 1.75 s and a registration within about 2.25 s.
 //!
-//! A [`Status`] holds only this crate's own enumerations, flags and DevGuard's protocol
-//! number. DevGuard's messages and its free-text readiness reason are not kept.
+//! A [`Status`] or [`Registration`] holds only this crate's own enumerations, flags, process
+//! IDs and DevGuard's protocol number. DevGuard's messages and its free-text readiness reason
+//! are not kept.
 //!
-//! The consumer secret is read from its private file for each probe, held in DevGuard's
-//! redacting `Secret` and sent only in the `Authenticate` frame. It never enters a [`Status`],
-//! the environment or an argument, and this crate logs nothing. The file is opened
-//! close-on-exec and closed before the probe returns. The session socket comes from DevGuard's
-//! `connect_timeout`, which macOS cannot create close-on-exec atomically; CodeSpace's spawners
-//! keep it out of their children (#79).
+//! The consumer secret is read from its private file for each session, or handed to the worker
+//! once, held in DevGuard's redacting `Secret` and sent only in the `Authenticate` frame. It
+//! never enters a [`Status`], the environment or an argument, and this crate logs nothing. The
+//! file is opened close-on-exec and closed before the session ends. The session socket comes
+//! from DevGuard's `connect_timeout`, which macOS cannot create close-on-exec atomically;
+//! CodeSpace's spawners keep it out of their children (#79).
+
+pub mod handoff;
+mod registration;
+
+pub use registration::{Owner, OwnerCredential, OwnerSettings, Registration, RegistrationState};
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -24,7 +32,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 
-use devguard_client::protocol::{CallerCredential, SessionRole};
+use devguard_client::protocol::{CallerCredential, ServiceStatus, SessionRole};
 use devguard_client::Client;
 use devguard_contract as contract;
 use devguard_contract::{Compatibility, Error, Secret, PROTOCOL_VERSION};
@@ -276,20 +284,25 @@ fn probe_with(settings: &Settings, authority_uid: u32, compatibility: Compatibil
     Status {
         state: State::Available,
         error_code: None,
-        report: Some(Report {
-            protocol: client.hello.protocol,
-            capabilities: client
-                .hello
-                .capabilities
-                .iter()
-                .copied()
-                .map(Capability::from)
-                .collect(),
-            role: role.into(),
-            storage_validated: status.storage_validated,
-            registration_ready: status.registration_ready,
-            execution_ready: status.execution_ready,
-        }),
+        report: Some(report(&client, role, status)),
+    }
+}
+
+/// The authority's report from its `Hello` and `Status`, without the free-text reason.
+fn report(client: &Client, role: SessionRole, status: ServiceStatus) -> Report {
+    Report {
+        protocol: client.hello.protocol,
+        capabilities: client
+            .hello
+            .capabilities
+            .iter()
+            .copied()
+            .map(Capability::from)
+            .collect(),
+        role: role.into(),
+        storage_validated: status.storage_validated,
+        registration_ready: status.registration_ready,
+        execution_ready: status.execution_ready,
     }
 }
 
@@ -410,7 +423,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// DevGuard's own codes, capabilities and roles at the pin.
-    const CODES: [contract::ErrorCode; 10] = [
+    pub(crate) const CODES: [contract::ErrorCode; 10] = [
         contract::ErrorCode::Unauthorized,
         contract::ErrorCode::InvalidRequest,
         contract::ErrorCode::AttemptConflict,
@@ -441,16 +454,16 @@ mod tests {
     /// A DevGuard authority on fixture paths, served as DevGuard's own server tests serve
     /// one: with native host evidence on macOS, and elsewhere without it, so registration and
     /// execution stay closed while `Hello`, `Authenticate` and `Status` are served.
-    struct Authority {
-        directory: tempfile::TempDir,
-        paths: AuthorityPaths,
+    pub(crate) struct Authority {
+        pub(crate) directory: tempfile::TempDir,
+        pub(crate) paths: AuthorityPaths,
         generation: String,
         stop: Arc<AtomicBool>,
         worker: Option<JoinHandle<devguard_contract::Result<()>>>,
     }
 
     impl Authority {
-        fn start() -> Self {
+        pub(crate) fn start() -> Self {
             let directory = short_directory();
             let paths = AuthorityPaths::fixture(directory.path());
             let config = config::initialize(&paths).unwrap();
@@ -468,7 +481,7 @@ mod tests {
         }
 
         /// The bootstrap workload consumer, read from the credential file DevGuard wrote.
-        fn settings(&self) -> Settings {
+        pub(crate) fn settings(&self) -> Settings {
             Settings {
                 socket: self.paths.socket(),
                 consumer: "dev-cli".into(),
@@ -477,7 +490,7 @@ mod tests {
             }
         }
 
-        fn secret(&self) -> String {
+        pub(crate) fn secret(&self) -> String {
             std::fs::read_to_string(self.paths.cli_credential()).unwrap()
         }
 
@@ -496,7 +509,7 @@ mod tests {
     }
 
     /// Short enough for a Unix socket path, and private as DevGuard requires.
-    fn short_directory() -> tempfile::TempDir {
+    pub(crate) fn short_directory() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("cs-dg-")
             .tempdir_in(if cfg!(target_os = "macos") {
@@ -507,7 +520,7 @@ mod tests {
             .unwrap()
     }
 
-    fn private_file(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
+    pub(crate) fn private_file(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
         let path = dir.join(name);
         let mut file = OpenOptions::new()
             .write(true)

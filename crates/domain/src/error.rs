@@ -42,6 +42,9 @@ pub enum ErrorCode {
     ApprovalNotFound,
     ApprovalConflict,
     ApprovalAmbiguous,
+    /// The workspace requires resource participation that this CodeSpace cannot provide, so
+    /// nothing was started. Not occupancy; an operator setting or support decision changes it.
+    ResourcePolicyUnsupported,
     /// Scheduler or store invariant failed. Not occupancy; do not retry as busy.
     Internal,
 }
@@ -141,6 +144,8 @@ mod tests {
         assert_eq!(json, "\"APPROVAL_AMBIGUOUS\"");
         let json = serde_json::to_string(&ErrorCode::ResourceQueueFull).unwrap();
         assert_eq!(json, "\"RESOURCE_QUEUE_FULL\"");
+        let json = serde_json::to_string(&ErrorCode::ResourcePolicyUnsupported).unwrap();
+        assert_eq!(json, "\"RESOURCE_POLICY_UNSUPPORTED\"");
         let json = serde_json::to_string(&ErrorCode::Internal).unwrap();
         assert_eq!(json, "\"INTERNAL\"");
     }

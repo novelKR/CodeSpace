@@ -107,6 +107,8 @@ mod linux_sandbox;
 mod patch_helper;
 mod patch_verify;
 mod process;
+#[cfg(feature = "devguard")]
+pub mod registration;
 mod rollback;
 mod socket;
 mod uds;
@@ -134,12 +136,16 @@ pub fn linux_sandbox_available() -> bool {
     linux_sandbox::probe()
 }
 
+#[cfg(feature = "devguard")]
+pub use registration::OwnerRegistration;
 pub use socket::{
     allocate_private_runner_dir, is_forbidden_runner_dir, reclaim_leftover_socket,
     runner_socket_path, RUNNER_SOCKET_NAME,
 };
 pub use uds::{DisconnectHook, UdsRunner, RUNNER_CALL_DEADLINE};
 pub use watch::{FsWatchEvent, FsWatchKind, WatchClosed, WatchSubscription};
+#[cfg(feature = "devguard")]
+pub use wire::serve_runner_connection_with_registration;
 pub use wire::{
     host_worker, read_frame, serve_runner_connection, write_frame, RunnerEvent, RunnerOp,
     RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,

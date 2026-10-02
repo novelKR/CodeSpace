@@ -39,7 +39,7 @@
     },
     "rust-clippy/codex-adapters": {
       "stages": ["clippy-codex"], "cache": "crates/codex-runtime",
-      "compiles": ["codex-runtime", "domain", "file-system", "linux-sandbox", "linux-sandbox-protocol", "policy", "pty", "runner"]
+      "compiles": ["codex-runtime", "devguard", "domain", "file-system", "linux-sandbox", "linux-sandbox-protocol", "policy", "pty", "runner"]
     },
     "rust-unit/patch": {
       "stages": ["unit-patch"], "cache": "crates/patch",
@@ -47,7 +47,7 @@
     },
     "rust-unit/codex-runtime": {
       "stages": ["unit-codex-runtime"], "cache": "crates/codex-runtime",
-      "compiles": ["codex-runtime", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner"]
+      "compiles": ["codex-runtime", "devguard", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner"]
     },
     "rust-unit/pty": {
       "stages": ["unit-pty"], "cache": "crates/pty",
@@ -79,7 +79,7 @@
     },
     "rust-macos/single": {
       "stages": ["macos-core", "dependencies"], "cache": "crates/file-system",
-      "compiles": ["devguard", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
+      "compiles": ["codex-runtime", "devguard", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
     }
   }
 }

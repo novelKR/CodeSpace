@@ -11,9 +11,9 @@ name = "codespace-mcp"
 path = "src/main.rs"
 
 [features]
-# Opt-in, status-only DevGuard connection (CSRG-U1). Off by default. It links DevGuard's
-# client, which needs Rust 1.95.
-devguard = ["dep:codespace-devguard", "codespace-domain/devguard"]
+# Opt-in DevGuard connection: status (CSRG-U1) and the execution owner's registration
+# (CSRG-U2). Off by default. It links DevGuard's client, which needs Rust 1.95.
+devguard = ["dep:codespace-devguard", "codespace-domain/devguard", "codespace-runner/devguard"]
 
 [[test]]
 name = "security"
