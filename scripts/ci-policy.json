@@ -74,7 +74,7 @@
     },
     "rust-macos/single": {
       "stages": ["macos-core", "dependencies"], "cache": "crates/file-system",
-      "compiles": ["file-system", "pty"]
+      "compiles": ["domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
     }
   }
 }

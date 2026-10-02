@@ -77,6 +77,7 @@ fn probe_helper(helper: &Path) -> bool {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    crate::descriptors::exclude_unrelated_std(&mut child);
     let Ok(child) = child.spawn() else {
         return false;
     };
@@ -138,11 +139,14 @@ pub(crate) fn prepare_run_from_helper(
         argv: argv.to_vec(),
     };
     let payload = serde_json::to_vec(&request).map_err(|err| spawn_failed(err.to_string()))?;
-    let spawned = Command::new(helper)
+    let mut command = Command::new(helper);
+    command
         .arg("prepare")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::descriptors::exclude_unrelated_std(&mut command);
+    let spawned = command
         .spawn()
         .map_err(|err| spawn_failed(format!("failed to spawn linux sandbox prepare: {err}")))?;
     prepare_from_child(helper, spawned, &payload, PREPARE_TIMEOUT, PREPARE_IO_LIMIT)
