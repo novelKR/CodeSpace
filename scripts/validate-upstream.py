@@ -50,8 +50,11 @@ def stages():
         'python': [[sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts/tests']],
         'format': [cargo('fmt', area, '--check') for area in ('root',) + ADAPTERS],
         'clippy-root': [cargo('clippy', 'root', '--all-targets', '--', '-D', 'warnings'),
-                        # The gateway with its opt-in DevGuard status connection (CSRG-U1).
-                        cargo('clippy', 'root', '-p', 'codespace-server', '--features', 'devguard', '--all-targets', '--', '-D', 'warnings')],
+                        # The gateway with its opt-in DevGuard connection (CSRG-U1, U2), and the
+                        # domain types and runner registration that its feature turns on.
+                        cargo('clippy', 'root', '-p', 'codespace-server', '--features', 'devguard', '--all-targets', '--', '-D', 'warnings'),
+                        cargo('clippy', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--all-targets', '--', '-D', 'warnings'),
+                        cargo('clippy', 'root', '-p', 'codespace-domain', '--features', 'devguard', '--all-targets', '--', '-D', 'warnings')],
         'clippy-adapters': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('patch', 'pty', 'file-system', 'devguard')],
         'clippy-codex': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('codex-runtime', 'linux-sandbox')]
         # The worker with its own DevGuard registration (CSRG-U2).
@@ -156,7 +159,9 @@ def run(selected, output):
                     commands = devguard_binaries()
                     commands += [cargo('build', area, '--bin', binary) for area, (binary, _) in HELPERS.items()]
                     commands += [cargo('test', 'root', '--workspace'),
-                                 cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard')]
+                                 cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard'),
+                                 cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib'),
+                                 cargo('test', 'root', '-p', 'codespace-domain', '--features', 'devguard', '--lib')]
                 stage_env = env.copy()
                 if stage == 'linux-isolation':
                     stage_env['CODESPACE_REQUIRE_LINUX_SANDBOX'] = '1'

@@ -236,7 +236,9 @@ def compiled(stage):
     if stage == 'integration':
         commands = validation.devguard_binaries()
         commands += [validation.cargo('build', area) for area in validation.HELPERS] + [validation.cargo('test')]
-        commands += [validation.cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard')]
+        commands += [validation.cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard'),
+                     validation.cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib'),
+                     validation.cargo('test', 'root', '-p', 'codespace-domain', '--features', 'devguard', '--lib')]
     crates = set()
     for command in (command for command in commands if command[0] == 'cargo'):
         manifest = [arg for arg in command if arg.startswith('crates/') and arg.endswith('/Cargo.toml')]

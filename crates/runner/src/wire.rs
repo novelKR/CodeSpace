@@ -799,6 +799,109 @@ mod tests {
             .collect();
             assert_eq!(order, ["rrpc-status", "rrpc-terminate", "rrpc-reg"]);
         }
+
+        /// Through the gateway's client: while every registration session of the worker fails,
+        /// a running process still times out, reports its outcome and can be queried.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_timeout_needs_no_successful_registration() {
+            use crate::{Runner, RunnerExecRequest, UdsRunner};
+            use codespace_domain::{
+                ProcessState, ProcessTermination, Profile, ResourceRegistrationState,
+            };
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let dir = private_directory();
+            let credential = dir.path().join("consumer.secret");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&credential)
+                .unwrap()
+                .write_all("cd".repeat(32).as_bytes())
+                .unwrap();
+            // An authority that accepts each session and answers nothing: every registration
+            // ends unavailable at DevGuard's frame deadline.
+            let socket = dir.path().join("silent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let stream = stream.unwrap();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(2));
+                        drop(stream);
+                    });
+                }
+            });
+            let owner = Owner::new(
+                OwnerSettings {
+                    socket,
+                    consumer: "codespace".into(),
+                    generation: "g1".into(),
+                },
+                OwnerCredential::File(credential),
+            );
+            let (client, server) = tokio::net::UnixStream::pair().unwrap();
+            let (worker, events) = host_worker();
+            let registration = OwnerRegistration::new(owner, ResourceOwner::Worker);
+            tokio::spawn(async move {
+                serve_runner_connection_with_registration(
+                    server,
+                    worker,
+                    events,
+                    Some(registration),
+                )
+                .await
+                .expect("serve");
+            });
+            let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+            runner.handshake().await.unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let registering = {
+                let (runner, stop) = (runner.clone(), stop.clone());
+                tokio::spawn(async move {
+                    let mut failed = 0usize;
+                    while !stop.load(Ordering::Relaxed) {
+                        let info = runner.registration().await.unwrap();
+                        assert_eq!(
+                            info.registration.unwrap().state,
+                            ResourceRegistrationState::Unavailable
+                        );
+                        failed += 1;
+                    }
+                    failed
+                })
+            };
+            let root = tempfile::tempdir().unwrap();
+            let workspace = Workspace::new(
+                codespace_domain::WorkspaceId("demo".into()),
+                root.path().to_path_buf(),
+                Profile::WorkspaceWrite,
+            );
+            let process_id = ProcessId("proc-timeout".into());
+            let mut request = RunnerExecRequest::for_host(
+                vec!["/bin/sleep".into(), "30".into()],
+                process_id.clone(),
+                Profile::WorkspaceWrite,
+            );
+            request.timeout_ms = 300;
+            runner.exec(&workspace, request).await.unwrap();
+            let mut status = runner.process_status(&process_id).await.unwrap();
+            for _ in 0..500 {
+                if status.state == ProcessState::Exited {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                status = runner.process_status(&process_id).await.unwrap();
+            }
+            assert_eq!(status.state, ProcessState::Exited, "{status:?}");
+            assert_eq!(
+                status.termination,
+                Some(ProcessTermination::Timeout),
+                "{status:?}"
+            );
+            stop.store(true, Ordering::Relaxed);
+            assert!(registering.await.unwrap() > 0);
+        }
     }
 
     #[tokio::test]
