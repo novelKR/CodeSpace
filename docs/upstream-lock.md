@@ -22,6 +22,24 @@ All current Codex execution adapters use the Git submodule in `third_party/codex
 
 See [connected components](codex-reuse.md) for the exact adapter responsibilities. Patch tests cover selected parity cases, not the entire upstream suite or all Codex behavior.
 
+<a id="devguard-client-pin"></a>
+
+## DevGuard client pin
+
+The gateway's opt-in `devguard` feature ([CSRG-U1](devguard-integration.md#devguard-status-connection)) links DevGuard's generic client from one reviewed, immutable commit.
+
+| Field | Value |
+| --- | --- |
+| Project | [DevGuard](https://github.com/novelKR/DevGuard) |
+| License | Apache-2.0, with the same copyright holder as CodeSpace |
+| Commit | `f1f908429abea962d62d6b53c56a26c17250179b`, DevGuard `main` after [DevGuard PR #21](https://github.com/novelKR/DevGuard/pull/21) |
+| Source | Cargo Git dependency at that `rev` |
+| Crates | `devguard-client` and `devguard-contract` in the product; `devguard-daemon` with `test-fixtures` only in the adapter's tests |
+| Consumer | `crates/devguard` (`codespace-devguard`), linked by `codespace-server` only with its `devguard` feature |
+| Check | `scripts/upstream_dependencies.py` (`DEVGUARD_SOURCE`) |
+
+In every product graph, the dependency check accepts each `devguard-*` package only from this commit and each `codex-*` package only from the Codex gitlink. It rejects any DevGuard package in a graph built without the feature, and any CodeSpace or Codex package that DevGuard's crates reach. Change the pin through a reviewed PR that updates the adapter manifest, both lockfiles, `DEVGUARD_SOURCE` and this record together.
+
 <a id="why-file-copy-vendor-is-forbidden"></a>
 <a id="what-is-reused-vs-rejected"></a>
 

@@ -10,6 +10,8 @@ pub mod intent;
 pub mod patch;
 pub mod process;
 pub mod profile;
+#[cfg(feature = "devguard")]
+pub mod resource_authority;
 pub mod tools;
 pub mod work;
 
@@ -47,6 +49,10 @@ pub use process::{
     WriteStdinParams,
 };
 pub use profile::Profile;
+#[cfg(feature = "devguard")]
+pub use resource_authority::{
+    ResourceAuthorityInfo, ResourceAuthorityReport, ResourceAuthorityState, ResourceParticipation,
+};
 pub use tools::{
     LIVE_TOOLS, SERVER_NAME, SERVER_VERSION, TOOL_APPLY_PATCH, TOOL_APPROVAL_CREATE,
     TOOL_APPROVAL_RESOLVE, TOOL_EXEC_COMMAND, TOOL_FIND, TOOL_OPERATION_RESUME,

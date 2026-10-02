@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish = false
 description = "CodeSpace domain types (no rmcp)"
 
+[features]
+# The resource authority's status in `workspace_info` (CSRG-U1). Off by default.
+devguard = []
+
 [dependencies]
 schemars = { workspace = true }
 serde = { workspace = true }

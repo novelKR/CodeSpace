@@ -8,21 +8,31 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-ADAPTERS = ('patch', 'codex-runtime', 'pty', 'file-system', 'linux-sandbox')
+ADAPTERS = ('patch', 'codex-runtime', 'pty', 'file-system', 'linux-sandbox', 'devguard')
 PRODUCTS = {'root': {'codespace-domain', 'codespace-policy', 'codespace-runner', 'codespace-store', 'codespace-server', 'codespace-linux-sandbox-protocol'},
             'patch': {'codespace-patch'}, 'codex-runtime': {'codespace-codex-runtime'},
-            'pty': {'codespace-pty'}, 'file-system': {'codespace-fs'}, 'linux-sandbox': {'codespace-linux-sandbox'}}
+            'pty': {'codespace-pty'}, 'file-system': {'codespace-fs'}, 'linux-sandbox': {'codespace-linux-sandbox'},
+            'devguard': {'codespace-devguard'}}
 FORBIDDEN = {'codex-core', 'codex-exec', 'codex-app-server', 'codex-login'}
 RUNNER_FORBIDDEN = {'codespace-linux-sandbox', 'codex-linux-sandbox'}
+# One reviewed DevGuard source, recorded in docs/upstream-lock.md, and the Codex gitlink. Every
+# `devguard-*` and `codex-*` package of every product graph must come from them.
+DEVGUARD_SOURCE = ('git+https://github.com/novelKR/DevGuard?rev=f1f908429abea962d62d6b53c56a26c17250179b'
+                   '#f1f908429abea962d62d6b53c56a26c17250179b')
+CODEX_PATH = 'path:third_party/codex/'
+# The gateway links DevGuard only with this feature (CSRG-U1).
+DEVGUARD_FEATURE = 'codespace-server/devguard'
 
 
-def metadata(manifest, target):
+def metadata(manifest, target, *features):
+    selected = ['--features', ','.join(features)] if features else []
     return json.loads(subprocess.check_output(
         ['cargo', 'metadata', '--locked', '--format-version', '1',
-         '--filter-platform', target, '--manifest-path', str(manifest)], cwd=ROOT))
+         '--filter-platform', target, '--manifest-path', str(manifest)] + selected, cwd=ROOT))
 
 
-def graph(data, roots):
+def graph(data, roots, devguard=False):
+    """The product graph of `roots`. Unless `devguard`, it must hold no DevGuard package."""
     packages = {p['id']: p for p in data['packages']}
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     if not roots or any(r not in packages or r not in nodes for r in roots):
@@ -36,7 +46,22 @@ def graph(data, roots):
             source = 'path:' + path.relative_to(ROOT).as_posix()
         return json.dumps([p['name'], p['version'], source], separators=(',', ':'))
 
-    found, edges, violations = set(), set(), []
+    def identity(pid):
+        name, source = packages[pid]['name'], json.loads(key(pid))[2]
+        if name.startswith('devguard-') and source != DEVGUARD_SOURCE:
+            return 'not the reviewed DevGuard pin'
+        if name.startswith('codex-') and not source.startswith(CODEX_PATH):
+            return 'not the Codex gitlink'
+        if not devguard and (name == 'codespace-devguard' or name.startswith('devguard-')):
+            return 'DevGuard outside the devguard feature'
+        return None
+
+    def product_edges(pid):
+        for dep in nodes[pid]['deps']:
+            if any(kind['kind'] in (None, 'normal', 'build') for kind in dep['dep_kinds']):
+                yield dep['pkg']
+
+    found, edges, violations, reached = set(), set(), [], set()
     for root in roots:
         queue, seen = deque([(root, [root])]), set()
         banned = FORBIDDEN | (RUNNER_FORBIDDEN if packages[root]['name'] == 'codespace-runner' else set())
@@ -46,8 +71,13 @@ def graph(data, roots):
                 continue
             seen.add(pid)
             found.add(key(pid))
-            if packages[pid]['name'] in banned:
-                violations.append(' -> '.join(packages[x]['name'] for x in trail))
+            name, path = packages[pid]['name'], ' -> '.join(packages[x]['name'] for x in trail)
+            if name in banned:
+                violations.append(path)
+            problem = identity(pid)
+            if problem:
+                violations.append(f'{path}: {problem}')
+            reached.add(pid)
             for dep in nodes[pid]['deps']:
                 for kind in dep['dep_kinds']:
                     if kind['kind'] not in (None, 'normal', 'build'):
@@ -57,6 +87,17 @@ def graph(data, roots):
                         raise ValueError('unresolved dependency node')
                     edges.add((key(pid), key(child), kind['kind'] or 'normal', kind.get('target') or ''))
                     queue.append((child, trail + [child]))
+    # DevGuard's crates carry no CodeSpace or Codex code: nothing they reach is either.
+    for start in (pid for pid in reached if packages[pid]['name'].startswith('devguard-')):
+        queue, seen = deque([(start, [start])]), set()
+        while queue:
+            pid, trail = queue.popleft()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if packages[pid]['name'].startswith(('codex-', 'codespace-')):
+                violations.append(' -> '.join(packages[x]['name'] for x in trail) + ': brought in by DevGuard')
+            queue.extend((child, trail + [child]) for child in product_edges(pid))
     return {'packages': sorted(found), 'edges': [list(e) for e in sorted(edges)],
             'violations': sorted(set(violations))}
 
@@ -87,7 +128,13 @@ def inspect(target):
         members = {p['name']: p['id'] for p in data['packages'] if p['id'] in data['workspace_members']}
         if set(members) != PRODUCTS[area]:
             raise ValueError(f'{area}: missing or unexpected product roots: {sorted(members)}')
-        report['graphs'][area] = graph(data, [members[name] for name in sorted(PRODUCTS[area])])
+        report['graphs'][area] = graph(data, [members[name] for name in sorted(PRODUCTS[area])],
+                                       devguard=area == 'devguard')
+    # The root graph again, with the gateway's DevGuard feature on.
+    data = metadata(ROOT / 'Cargo.toml', target, DEVGUARD_FEATURE)
+    members = {p['name']: p['id'] for p in data['packages'] if p['id'] in data['workspace_members']}
+    report['graphs']['root+devguard'] = graph(data, [members[name] for name in sorted(PRODUCTS['root'])],
+                                              devguard=True)
     return report
 
 

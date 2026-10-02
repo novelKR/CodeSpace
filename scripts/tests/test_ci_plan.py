@@ -57,6 +57,8 @@ class SelectionTests(unittest.TestCase):
             'crates/file-system/src/lib.rs': [leg.replace('unit/pty', 'unit/file-system') for leg in PTY],
             'crates/linux-sandbox/src/main.rs': ['rust-clippy/codex-adapters', 'rust-unit/linux-sandbox',
                                                  'rust-linux-isolation/single', 'rust-integration/single'],
+            'crates/devguard/src/lib.rs': ['rust-clippy/root', 'rust-clippy/adapters', 'rust-unit/devguard',
+                                           'rust-integration/single', 'rust-macos/single'],
         }
         rows['deploy/Dockerfile'] = rows['crates/runner/src/lib.rs']
         rows['tests/e2e/flow.rs'] = rows['crates/server/src/main.rs']
@@ -231,6 +233,7 @@ def compiled(stage):
     commands = validation.stages()[stage]
     if stage == 'integration':
         commands = [validation.cargo('build', area) for area in validation.HELPERS] + [validation.cargo('test')]
+        commands += [validation.cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard')]
     crates = set()
     for command in commands:
         manifest = [arg for arg in command if arg.startswith('crates/') and arg.endswith('/Cargo.toml')]

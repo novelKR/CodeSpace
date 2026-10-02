@@ -98,10 +98,22 @@ pub async fn serve_http(
     store: Arc<Store>,
     runner: RuntimeBackend,
 ) -> anyhow::Result<(std::net::SocketAddr, CancellationToken)> {
+    serve_http_handler(
+        config,
+        CodeSpace::with_store_and_runner(registry, store, runner),
+    )
+    .await
+}
+
+/// Serve a handler built by the caller, such as one that reports a resource authority.
+pub async fn serve_http_handler(
+    config: HttpConfig,
+    handler: CodeSpace,
+) -> anyhow::Result<(std::net::SocketAddr, CancellationToken)> {
     let addr = format!("{}:{}", config.host, config.port);
     let cancel = CancellationToken::new();
     let bearer_required = config.bearer_token.is_some();
-    let router = http_router_with_runner(&config, registry, store, cancel.clone(), runner);
+    let router = finish_http_router(&config, handler, cancel.clone());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound = listener.local_addr()?;
     let child = cancel.clone();

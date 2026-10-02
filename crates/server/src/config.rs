@@ -68,6 +68,11 @@ pub struct Cli {
     /// `codespace-codex-runtime` binary for uds mode.
     #[arg(long, env = "CODESPACE_RUNTIME_BIN")]
     pub runtime_bin: Option<std::path::PathBuf>,
+
+    /// Opt-in, status-only DevGuard connection (CSRG-U1).
+    #[cfg(feature = "devguard")]
+    #[command(flatten)]
+    pub devguard: crate::devguard::DevGuardArgs,
 }
 
 impl Cli {
@@ -118,5 +123,19 @@ mod tests {
         let host =
             Cli::try_parse_from(["codespace-mcp", "--runner", "in-process"]).expect("in-process");
         assert_eq!(host.runner, RunnerMode::InProcess);
+    }
+
+    /// Without the `devguard` feature the gateway has no DevGuard setting at all.
+    #[cfg(not(feature = "devguard"))]
+    #[test]
+    fn devguard_settings_need_the_devguard_feature() {
+        for flag in [
+            "--devguard",
+            "--devguard-socket",
+            "--devguard-credential-file",
+        ] {
+            let err = Cli::try_parse_from(["codespace-mcp", flag, "status"]).expect_err(flag);
+            assert!(err.to_string().contains(flag), "{err}");
+        }
     }
 }

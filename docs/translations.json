@@ -43,6 +43,7 @@
         "design-revision-1-references",
         "devguard-integration",
         "devguard-integration-roadmap",
+        "devguard-status-connection",
         "devguard-결합-로드맵",
         "initial-gateway-recovery-scope",
         "minimum-adoption-conditions",
@@ -53,15 +54,17 @@
         "resource-gateway-recovery",
         "resource-integration-prerequisites",
         "resource-plan-evidence",
+        "status-only-connection-csrg-u1",
         "계획과-검증-근거",
+        "상태-전용-연결csrg-u1",
         "선행-조건과-우선순위",
         "설계-개정-1-참조",
         "소비-경계",
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "2d1b053525282e929c29959cbe7d1f86f958fea4a8ba3854d3de1d144f118f96",
-      "translation_sha256": "a1ace7a4838fed12263e9afb731b68acd06718f0d48559718ef0ae9c7c97cf7b"
+      "source_sha256": "a92076f3a89056b0427fb5e658ec3f1ec86b319c552dd87ad6d19e0e356044c8",
+      "translation_sha256": "1f14527ed09772bec5c756c13f316dbbf707273c142c5e02be232aa93cab2ce0"
     },
     {
       "id": "overview",
@@ -610,6 +613,8 @@
         "codex-고정-버전",
         "deployment-pin",
         "deployment-pin-w06",
+        "devguard-client-pin",
+        "devguard-client-고정-버전",
         "pinned-codex-revision",
         "promotion-rule",
         "upstream-lock",
@@ -629,8 +634,8 @@
         "파일-복사-벤더가-금지인-이유",
         "확인과-갱신"
       ],
-      "source_sha256": "00ae232546cc64b203cd4329a8f37490794045cda51911f610b1c049a0c0b80e",
-      "translation_sha256": "e7dc572e16802284728dfb6cf3b6bac7f500d3e3b3f7cbc93c20eb917330d5c3"
+      "source_sha256": "647b06afaf88d7d8bbb723a215747387569e1d74fa62eb70d86dea43b9a6bb78",
+      "translation_sha256": "19798ddef14c005d7c1cb5de27f08006e516a3f07893315fa75884035bed25c7"
     },
     {
       "id": "upstream-update",
@@ -665,8 +670,8 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "51748e34ef4a224843f800b579707a7912deb2ace6d712e86fd79b7d6035f9e1",
-      "translation_sha256": "69d7226a096ae2d641ede6aa177f268e6f9a3240382f2d017546dc6384dd957d"
+      "source_sha256": "e4bdfb3f8a4ec451d492cbb3e71ead6867a0decee4dcb35c7e9003f08f746ee5",
+      "translation_sha256": "d483dc4f64d780cf50c670073bc56db68ee259ab04f3bc519e57cc751cbfa879"
     },
     {
       "id": "documentation",

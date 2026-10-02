@@ -30,6 +30,10 @@ pub struct WorkspaceInfo {
     pub root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution: Option<WorkspaceExecutionInfo>,
+    /// The resource authority's status, when the gateway reads one (CSRG-U1).
+    #[cfg(feature = "devguard")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_authority: Option<crate::resource_authority::ResourceAuthorityInfo>,
 }
 
 pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
@@ -49,6 +53,8 @@ pub fn workspace_info(workspace_id: Option<String>) -> WorkspaceInfo {
         profile: None,
         root: None,
         execution: None,
+        #[cfg(feature = "devguard")]
+        resource_authority: None,
     }
 }
 
@@ -81,6 +87,16 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         assert!(json.get("execution").is_none());
         assert!(json.get("environment_id").is_none());
+    }
+
+    /// Without the `devguard` feature the contract has no resource-authority field at all.
+    #[cfg(not(feature = "devguard"))]
+    #[test]
+    fn without_the_devguard_feature_there_is_no_resource_authority() {
+        let schema = serde_json::to_value(schemars::schema_for!(WorkspaceInfo)).unwrap();
+        assert!(schema["properties"].get("execution").is_some());
+        assert!(schema["properties"].get("resource_authority").is_none());
+        assert!(!schema.to_string().contains("ResourceAuthority"));
     }
 
     #[test]

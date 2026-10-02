@@ -1,0 +1,28 @@
+# Isolated workspace (excluded from the repo root workspace), so the DevGuard
+# fixture authority its tests serve stays out of the root graph. The gateway
+# links this crate only with its `devguard` feature (CSRG-U1).
+
+[package]
+name = "codespace-devguard"
+version = "0.6.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.95"
+publish = false
+description = "Opt-in, status-only DevGuard adapter: one bounded session through DevGuard's generic client"
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+# One reviewed, immutable DevGuard source identity, recorded in
+# docs/upstream-lock.md and checked by scripts/upstream_dependencies.py.
+[dependencies]
+devguard-client = { git = "https://github.com/novelKR/DevGuard", rev = "f1f908429abea962d62d6b53c56a26c17250179b" }
+devguard-contract = { git = "https://github.com/novelKR/DevGuard", rev = "f1f908429abea962d62d6b53c56a26c17250179b" }
+libc = "0.2"
+
+[dev-dependencies]
+devguard-daemon = { git = "https://github.com/novelKR/DevGuard", rev = "f1f908429abea962d62d6b53c56a26c17250179b", features = ["test-fixtures"] }
+serde_json = "1"
+tempfile = "3"

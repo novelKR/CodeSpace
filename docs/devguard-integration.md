@@ -2,13 +2,13 @@
 
 # DevGuard integration roadmap
 
-> **Status: suspended as an implementation directive.** The CS-RG work order, the planned consumer boundary and the design revision 1 references on this page must not be implemented as described; current status and prerequisites are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability.
+> **Status: suspended as an implementation directive.** The CS-RG work order, the planned consumer boundary and the design revision 1 references on this page must not be implemented as described; current status and prerequisites are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability, except the current status and the [status-only connection](#devguard-status-connection) of CSRG-U1, which the owner approved on 2026-10-02 outside this suspension.
 
 [English](devguard-integration.md) | [한국어](ko/devguard-integration.md)
 
 [DevGuard](https://github.com/novelKR/DevGuard) is an independent resource authority for development workloads, licensed under Apache-2.0 like CodeSpace. Its approved integration path adds a shared admission and accounting layer while CodeSpace keeps process ownership, PTY, input/output, permissions, approval holds and workspace coordination.
 
-**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` (a release ID, not a Git tag) on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) has not started: CodeSpace has no DevGuard client pin, `resources` workspace setting or Runner wire change, so a running DevGuard service does not govern CodeSpace execution. The qualified release is a pin candidate for CS-RG, not a selected pin.
+**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` (a release ID, not a Git tag) on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) began with CSRG-U1, an opt-in, status-only connection: a gateway built with the `devguard` feature and started with `--devguard status` reports DevGuard's status in `workspace_info`, through DevGuard's client pinned at [`f1f9084`](upstream-lock.md#devguard-client-pin). It registers, admits and launches nothing. CodeSpace still has no `resources` workspace setting or Runner wire change, so a running DevGuard service does not govern CodeSpace execution. The qualified release remains a candidate for execution, not a selected pin; the client pin is a source pin of the client crates.
 
 DevGuard [design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md), merged in [DevGuard PR #8](https://github.com/novelKR/DevGuard/pull/8) as `d4981b4c241cff42687f5c2c681b583c7847776e`, revised the CS-RG execution layer and work order. It changes plans and design decisions that bind later implementation. It does not change current CodeSpace behavior or any implementation or qualification status.
 
@@ -32,6 +32,37 @@ After these prerequisites, retain the existing relative order of watch completio
 DG-1 qualifies the standalone daemon/CLI, development workloads and bounded self-use. CS-RG then qualifies the integrated Runner, approvals, replay and saturated control paths. DG-1 does not depend on unimplemented CS-RG behavior.
 
 DG-1 is delivered as six sequential PR groups, each reviewed, checked on its current head, normally merged and verified on main before the next. Foreground daemons are used through P4; P5 introduces a current-user LaunchAgent. At C10, first test and freeze a parent containing the new parent-budget capability, then immediately begin bounded real self-use. The earlier functional P4/P5 artifacts are not presumed to support newly added parent operations. C12 separately qualifies and promotes the measured artifact/policy/environment combination.
+
+<a id="devguard-status-connection"></a>
+
+## Status-only connection (CSRG-U1)
+
+CSRG-U1 is the first CS-RG unit. It needs two settings, both off by default:
+
+- **Build.** The gateway's Cargo feature `devguard` (`cargo build -p codespace-server --features devguard`). It links DevGuard's `devguard-client` and `devguard-contract` from the [pinned commit](upstream-lock.md#devguard-client-pin) and needs Rust 1.95. Without it, the binary's dependency graph, its flags and its MCP contract are unchanged.
+- **Run.** `--devguard status` (`CODESPACE_DEVGUARD=status`), with an operator-provisioned DevGuard consumer:
+
+| Flag | Environment | Value |
+| --- | --- | --- |
+| `--devguard-socket` | `CODESPACE_DEVGUARD_SOCKET` | DevGuard's socket, normally `/private/tmp/devguard-<uid>/authority.sock` |
+| `--devguard-consumer` | `CODESPACE_DEVGUARD_CONSUMER` | the consumer's id in DevGuard's operator configuration |
+| `--devguard-generation` | `CODESPACE_DEVGUARD_GENERATION` | that consumer's generation |
+| `--devguard-credential-file` | `CODESPACE_DEVGUARD_CREDENTIAL_FILE` | a private file (0600, owned by this user, one link) holding exactly the consumer's 64-character secret |
+
+**What it reports.** Each `workspace_info` call opens one session through DevGuard's client (connect, `Hello`, `Authenticate`, `Status`) and closes it. DevGuard's 250 ms per-frame deadlines bound a session at about 1.75 s. A call that arrives while a session runs waits and shares the next one, so CodeSpace holds at most one session. The result is `workspace_info.resource_authority`:
+
+- `participation: status` and `governs_execution: false`, always;
+- `state`: `available`, `unavailable`, `untrusted_authority`, `incompatible`, `credential_refused` or `credential_unavailable`;
+- `error_code`: DevGuard's code for the step that failed. Its message is not passed on;
+- `report`, when available: DevGuard's protocol, its capabilities, the role it granted, and its storage, registration and execution readiness with its reason.
+
+A DevGuard failure never fails `workspace_info` or any other tool, and an unknown workspace is refused before any session opens.
+
+**What it does not do.** It registers, admits and launches nothing, and no execution path consults it. There is no `resources` setting and no Runner wire change. In UDS mode the gateway opens the session, not the worker.
+
+**The secret.** CodeSpace reads it from its file for each session and sends it only in `Authenticate`. It is never in a flag, the environment, `workspace_info` or a log; only the state and DevGuard's code are logged.
+
+**Children.** DevGuard's client creates its session socket with `socket()`, which macOS cannot make close-on-exec atomically. CodeSpace's pipe, patch-helper, sandbox-helper and worker spawns mark every descriptor above 2 close-on-exec in the child ([#79](https://github.com/novelKR/CodeSpace/issues/79)), and PTY children close theirs, so a session socket open during a spawn reaches no child. Tests check this against the pipe, PTY and worker spawners.
 
 ## CS-RG work order
 

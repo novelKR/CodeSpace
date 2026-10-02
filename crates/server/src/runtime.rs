@@ -118,7 +118,7 @@ impl Drop for RuntimeProcess {
 
 /// The worker gets the socket path, a null stdin, the Gateway's stdout and stderr, and no other
 /// descriptor of the Gateway's.
-fn worker_command(bin: &Path, socket: &Path) -> Command {
+pub(crate) fn worker_command(bin: &Path, socket: &Path) -> Command {
     let mut command = Command::new(bin);
     command.arg(socket).stdin(Stdio::null()).kill_on_drop(true);
     codespace_runner::exclude_unrelated(&mut command);

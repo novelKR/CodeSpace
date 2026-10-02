@@ -10,6 +10,11 @@ publish = false
 name = "codespace-mcp"
 path = "src/main.rs"
 
+[features]
+# Opt-in, status-only DevGuard connection (CSRG-U1). Off by default. It links DevGuard's
+# client, which needs Rust 1.95.
+devguard = ["dep:codespace-devguard", "codespace-domain/devguard"]
+
 [[test]]
 name = "security"
 path = "../../tests/security/adversarial.rs"
@@ -27,6 +32,7 @@ codespace-domain = { path = "../domain" }
 codespace-policy = { path = "../policy" }
 codespace-runner = { path = "../runner" }
 codespace-store = { path = "../store" }
+codespace-devguard = { path = "../devguard", optional = true }
 rmcp = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "io-std", "io-util", "net", "time", "process", "sync"] }
 tokio-util = "0.7"

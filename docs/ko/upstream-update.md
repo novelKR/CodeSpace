@@ -135,3 +135,15 @@ CodeSpace 실행 파일에 링크되는 DevGuard binding은 이 저장소의 git
 안에서 각 `codex-*` package를 gitlink 경로에서만 받아들이는 실행 파일 단일 정체성
 검사는 DevGuard crate를 CodeSpace graph에 처음 넣는 PR에서 추가됩니다. 그때까지 이
 규칙은 실행 가능한 검사가 아니라 문서 정책입니다.
+
+*2026-10-02 추가, CSRG-U1:* 첫 DevGuard crate는 분리된 workspace인
+`crates/devguard`(제품 root `codespace-devguard`, component `devguard`, 자체 unit과
+어댑터 clippy leg)입니다. `codespace-server`는 `devguard` feature를 켰을 때만 이를
+링크합니다. 고정 버전은 이미 `full`에 속한
+[업스트림 고정 문서](upstream-lock.md#devguard-client-pin)에 기록합니다.
+`scripts/upstream_dependencies.py`는 이제 feature를 켠 root graph를 포함한 모든 제품
+graph에서 위의 실행 파일 단일 정체성 규칙을 강제합니다. 또한 DevGuard 고정 버전을
+확인하고, feature 없이 빌드한 모든 graph에서 DevGuard를 제외하며, DevGuard crate가
+도달하는 CodeSpace·Codex crate를 거부합니다. `check-no-model-deps.sh`는 어댑터의
+manifest와 소스를 core와 같은 방식으로 검사합니다. 이 어댑터도 다른 분리된 어댑터와
+함께 검증합니다.

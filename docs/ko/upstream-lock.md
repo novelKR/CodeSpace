@@ -24,6 +24,24 @@
 
 정확한 역할은 [연결된 구성 요소](codex-reuse.md)를 참고하세요. 패치 테스트는 선택된 동작 일치 사례를 검사하며 업스트림 전체 테스트나 Codex의 모든 동작을 검증하지는 않습니다.
 
+<a id="devguard-client-pin"></a>
+
+## DevGuard client 고정 버전
+
+gateway의 opt-in `devguard` feature([CSRG-U1](devguard-integration.md#devguard-status-connection))는 검토를 거친 변경 불가능한 커밋 하나에서 DevGuard의 범용 client를 링크합니다.
+
+| 항목 | 값 |
+| --- | --- |
+| 프로젝트 | [DevGuard](https://github.com/novelKR/DevGuard) |
+| 라이선스 | Apache-2.0. 저작권자는 CodeSpace와 같음 |
+| 커밋 | `f1f908429abea962d62d6b53c56a26c17250179b`. [DevGuard PR #21](https://github.com/novelKR/DevGuard/pull/21) 병합 후의 DevGuard `main` |
+| 소스 | 그 `rev`의 Cargo Git 의존성 |
+| crate | 제품에는 `devguard-client`와 `devguard-contract`. `test-fixtures`를 켠 `devguard-daemon`은 어댑터 테스트에서만 사용 |
+| 사용하는 구성 요소 | `crates/devguard`(`codespace-devguard`). `codespace-server`는 `devguard` feature를 켰을 때만 링크 |
+| 검사 | `scripts/upstream_dependencies.py`(`DEVGUARD_SOURCE`) |
+
+의존성 검사는 모든 제품 그래프에서 각 `devguard-*` package를 이 커밋에서만, 각 `codex-*` package를 Codex gitlink에서만 받아들입니다. feature 없이 빌드한 그래프의 DevGuard package와, DevGuard crate가 도달하는 CodeSpace·Codex package는 거부합니다. 고정 버전은 어댑터 manifest, 두 lockfile, `DEVGUARD_SOURCE`, 이 기록을 함께 갱신하는 검토된 PR로만 바꿉니다.
+
 <a id="파일-복사-벤더가-금지인-이유"></a>
 <a id="파일-복사-벤더가-금지인-이유"></a>
 <a id="재사용하는-것과-거절하는-것"></a>

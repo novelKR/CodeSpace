@@ -21,7 +21,8 @@
     "codex-runtime": ["crates/codex-runtime/**"],
     "pty": ["crates/pty/**"],
     "file-system": ["crates/file-system/**"],
-    "linux-sandbox": ["crates/linux-sandbox/**"]
+    "linux-sandbox": ["crates/linux-sandbox/**"],
+    "devguard": ["crates/devguard/**"]
   },
   "always": {
     "policy-scan/single": ["policy", "python"],
@@ -30,11 +31,11 @@
   "legs": {
     "rust-clippy/root": {
       "stages": ["clippy-root", "dependencies"], "cache": ".",
-      "compiles": ["domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
+      "compiles": ["devguard", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
     },
     "rust-clippy/adapters": {
       "stages": ["clippy-adapters"], "cache": "crates/patch",
-      "compiles": ["domain", "file-system", "patch", "policy", "pty"]
+      "compiles": ["devguard", "domain", "file-system", "patch", "policy", "pty"]
     },
     "rust-clippy/codex-adapters": {
       "stages": ["clippy-codex"], "cache": "crates/codex-runtime",
@@ -64,17 +65,21 @@
       "stages": ["unit-linux-sandbox"], "cache": "crates/linux-sandbox",
       "compiles": ["linux-sandbox", "linux-sandbox-protocol"]
     },
+    "rust-unit/devguard": {
+      "stages": ["unit-devguard"], "cache": "crates/devguard",
+      "compiles": ["devguard"]
+    },
     "rust-linux-isolation/single": {
       "stages": ["linux-isolation"], "cache": "crates/linux-sandbox",
       "compiles": ["linux-sandbox", "linux-sandbox-protocol"]
     },
     "rust-integration/single": {
       "stages": ["integration"], "cache": ".",
-      "compiles": ["codex-runtime", "domain", "file-system", "linux-sandbox", "linux-sandbox-protocol", "patch", "policy", "pty", "runner", "server", "store"]
+      "compiles": ["codex-runtime", "devguard", "domain", "file-system", "linux-sandbox", "linux-sandbox-protocol", "patch", "policy", "pty", "runner", "server", "store"]
     },
     "rust-macos/single": {
       "stages": ["macos-core", "dependencies"], "cache": "crates/file-system",
-      "compiles": ["domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
+      "compiles": ["devguard", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
     }
   }
 }
