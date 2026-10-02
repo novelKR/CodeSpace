@@ -979,6 +979,32 @@ fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<Workspace
     Ok(info)
 }
 
+impl CodeSpace {
+    /// The gateway's handler for its settings. With the `devguard` feature and
+    /// `--devguard status`, `workspace_info` also reports DevGuard's status; otherwise no
+    /// DevGuard session is ever opened.
+    pub fn from_cli(
+        cli: &crate::config::Cli,
+        registry: Registry,
+        store: Arc<Store>,
+        runner: RuntimeBackend,
+    ) -> Self {
+        let handler = Self::with_store_and_runner(registry, store, runner);
+        #[cfg(feature = "devguard")]
+        if let Some(settings) = cli.devguard.settings() {
+            tracing::info!(
+                participation = "status",
+                "DevGuard status connection enabled; it governs no execution"
+            );
+            return handler
+                .with_resource_authority(crate::devguard::ResourceAuthority::new(settings));
+        }
+        #[cfg(not(feature = "devguard"))]
+        let _ = cli;
+        handler
+    }
+}
+
 #[cfg(feature = "devguard")]
 impl CodeSpace {
     /// Report this authority's status in `workspace_info`. It governs no execution.
@@ -1743,6 +1769,7 @@ mod devguard_tests {
     use super::*;
     use crate::devguard::tests::{settings, short_directory, Endpoint, SECRET};
     use crate::devguard::ResourceAuthority;
+    use clap::Parser;
 
     async fn reported(handler: &CodeSpace) -> serde_json::Value {
         let Json(info) = handler
@@ -1775,6 +1802,47 @@ mod devguard_tests {
             })
         );
         assert!(!on.to_string().contains(SECRET));
+    }
+
+    /// Through the same construction as `main`: with every setting present, `off` opens no
+    /// session and `status` opens one per call.
+    #[tokio::test]
+    async fn runtime_off_opens_no_session_through_the_gateway_handler() {
+        let dir = short_directory();
+        let socket = dir.path().join("watched.sock");
+        let endpoint = Endpoint::start(&socket, drop);
+        let credential = settings(dir.path(), socket.clone()).credential_file;
+        for (mode, sessions) in [("off", 0), ("status", 1)] {
+            let args: Vec<std::ffi::OsString> = vec![
+                "codespace-mcp".into(),
+                "--devguard".into(),
+                mode.into(),
+                "--devguard-socket".into(),
+                socket.clone().into(),
+                "--devguard-consumer".into(),
+                "codespace".into(),
+                "--devguard-generation".into(),
+                "g1".into(),
+                "--devguard-credential-file".into(),
+                credential.clone().into(),
+            ];
+            let cli = crate::config::Cli::try_parse_from(args).unwrap();
+            let store = Arc::new(Store::memory().unwrap());
+            let handler = CodeSpace::from_cli(
+                &cli,
+                Registry::new(),
+                store,
+                RuntimeBackend::in_process(Arc::new(|_| {})),
+            );
+            let reported = reported(&handler).await;
+            assert_eq!(
+                reported.get("resource_authority").is_some(),
+                mode == "status"
+            );
+            // Let an attempted connection reach the endpoint before counting.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert_eq!(endpoint.accepted(), sessions, "{mode}");
+        }
     }
 
     #[tokio::test]

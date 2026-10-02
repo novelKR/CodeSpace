@@ -8,6 +8,9 @@
 //! DevGuard's transport bounds the session: connecting and each frame read or write have a
 //! 250 ms deadline, so a probe ends within about 1.75 s.
 //!
+//! A [`Status`] holds only this crate's own enumerations, flags and DevGuard's protocol
+//! number. DevGuard's messages and its free-text readiness reason are not kept.
+//!
 //! The consumer secret is read from its private file for each probe, held in DevGuard's
 //! redacting `Secret` and sent only in the `Authenticate` frame. It never enters a [`Status`],
 //! the environment or an argument, and this crate logs nothing. The file is opened
@@ -19,11 +22,12 @@ use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use devguard_client::protocol::{CallerCredential, SessionRole};
 use devguard_client::Client;
-use devguard_contract::{Capability, Compatibility, Error, ErrorCode, Secret, PROTOCOL_VERSION};
+use devguard_contract as contract;
+use devguard_contract::{Compatibility, Error, Secret, PROTOCOL_VERSION};
 
 /// Operator settings for one DevGuard consumer. None of them is a secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,8 +38,11 @@ pub struct Settings {
     pub consumer: String,
     /// The consumer's generation in DevGuard's operator configuration.
     pub generation: String,
-    /// A private regular file of this user, with one link, holding exactly the consumer's
-    /// 64-character secret, as DevGuard writes its own credential files.
+    /// The absolute path of a private regular file of this user, with one link, holding
+    /// exactly the consumer's 64-character secret, as DevGuard writes its own credential
+    /// files. Every directory on the path must be a real directory, owned by this user or root
+    /// and not writable by group or others, apart from a root-owned sticky `/tmp`; the file's
+    /// own directory must be this user's.
     pub credential_file: PathBuf,
 }
 
@@ -56,27 +63,172 @@ pub enum State {
     CredentialUnavailable,
 }
 
+/// DevGuard's error codes, without their messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
+    Unauthorized,
+    InvalidRequest,
+    AttemptConflict,
+    ResourceUnavailable,
+    ResourceControlUnavailable,
+    ResourcePolicyUnsupported,
+    InvalidTransition,
+    NotFound,
+    ReconciliationRequired,
+    JournalInvalid,
+}
+
+impl ErrorCode {
+    pub const ALL: [Self; 10] = [
+        Self::Unauthorized,
+        Self::InvalidRequest,
+        Self::AttemptConflict,
+        Self::ResourceUnavailable,
+        Self::ResourceControlUnavailable,
+        Self::ResourcePolicyUnsupported,
+        Self::InvalidTransition,
+        Self::NotFound,
+        Self::ReconciliationRequired,
+        Self::JournalInvalid,
+    ];
+
+    /// The code's name on DevGuard's wire.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Unauthorized => "unauthorized",
+            Self::InvalidRequest => "invalid_request",
+            Self::AttemptConflict => "attempt_conflict",
+            Self::ResourceUnavailable => "resource_unavailable",
+            Self::ResourceControlUnavailable => "resource_control_unavailable",
+            Self::ResourcePolicyUnsupported => "resource_policy_unsupported",
+            Self::InvalidTransition => "invalid_transition",
+            Self::NotFound => "not_found",
+            Self::ReconciliationRequired => "reconciliation_required",
+            Self::JournalInvalid => "journal_invalid",
+        }
+    }
+}
+
+impl From<contract::ErrorCode> for ErrorCode {
+    fn from(code: contract::ErrorCode) -> Self {
+        match code {
+            contract::ErrorCode::Unauthorized => Self::Unauthorized,
+            contract::ErrorCode::InvalidRequest => Self::InvalidRequest,
+            contract::ErrorCode::AttemptConflict => Self::AttemptConflict,
+            contract::ErrorCode::ResourceUnavailable => Self::ResourceUnavailable,
+            contract::ErrorCode::ResourceControlUnavailable => Self::ResourceControlUnavailable,
+            contract::ErrorCode::ResourcePolicyUnsupported => Self::ResourcePolicyUnsupported,
+            contract::ErrorCode::InvalidTransition => Self::InvalidTransition,
+            contract::ErrorCode::NotFound => Self::NotFound,
+            contract::ErrorCode::ReconciliationRequired => Self::ReconciliationRequired,
+            contract::ErrorCode::JournalInvalid => Self::JournalInvalid,
+        }
+    }
+}
+
+/// The capabilities a DevGuard authority states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    DurableAdmission,
+    FencedLaunch,
+    PerResourceEvidence,
+    StaticControlReservations,
+    MacosCooperative,
+    LinuxCgroupV2,
+    ParentLease,
+    UpgradeDrain,
+}
+
+impl Capability {
+    pub const ALL: [Self; 8] = [
+        Self::DurableAdmission,
+        Self::FencedLaunch,
+        Self::PerResourceEvidence,
+        Self::StaticControlReservations,
+        Self::MacosCooperative,
+        Self::LinuxCgroupV2,
+        Self::ParentLease,
+        Self::UpgradeDrain,
+    ];
+
+    /// The capability's name on DevGuard's wire.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::DurableAdmission => "durable_admission",
+            Self::FencedLaunch => "fenced_launch",
+            Self::PerResourceEvidence => "per_resource_evidence",
+            Self::StaticControlReservations => "static_control_reservations",
+            Self::MacosCooperative => "macos_cooperative",
+            Self::LinuxCgroupV2 => "linux_cgroup_v2",
+            Self::ParentLease => "parent_lease",
+            Self::UpgradeDrain => "upgrade_drain",
+        }
+    }
+}
+
+impl From<contract::Capability> for Capability {
+    fn from(capability: contract::Capability) -> Self {
+        match capability {
+            contract::Capability::DurableAdmission => Self::DurableAdmission,
+            contract::Capability::FencedLaunch => Self::FencedLaunch,
+            contract::Capability::PerResourceEvidence => Self::PerResourceEvidence,
+            contract::Capability::StaticControlReservations => Self::StaticControlReservations,
+            contract::Capability::MacosCooperative => Self::MacosCooperative,
+            contract::Capability::LinuxCgroupV2 => Self::LinuxCgroupV2,
+            contract::Capability::ParentLease => Self::ParentLease,
+            contract::Capability::UpgradeDrain => Self::UpgradeDrain,
+        }
+    }
+}
+
+/// The session role DevGuard granted the consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Workload,
+    ControlService,
+    Administrator,
+}
+
+impl Role {
+    pub const ALL: [Self; 3] = [Self::Workload, Self::ControlService, Self::Administrator];
+
+    /// The role's name on DevGuard's wire.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Workload => "workload",
+            Self::ControlService => "control_service",
+            Self::Administrator => "administrator",
+        }
+    }
+}
+
+impl From<SessionRole> for Role {
+    fn from(role: SessionRole) -> Self {
+        match role {
+            SessionRole::Workload => Self::Workload,
+            SessionRole::ControlService => Self::ControlService,
+            SessionRole::Administrator => Self::Administrator,
+        }
+    }
+}
+
 /// The authority's own report, present when the state is [`State::Available`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     pub protocol: u32,
-    /// DevGuard's capability names, as on its wire.
-    pub capabilities: Vec<&'static str>,
-    /// The session role DevGuard granted the consumer, as on its wire.
-    pub role: &'static str,
+    pub capabilities: Vec<Capability>,
+    pub role: Role,
     pub storage_validated: bool,
     pub registration_ready: bool,
     pub execution_ready: bool,
-    /// DevGuard's own explanation of its readiness.
-    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub state: State,
-    /// DevGuard's code for the step that failed, as on its wire; its message is not kept.
-    /// `None` when available, and when the credential could not be used locally.
-    pub error_code: Option<&'static str>,
+    /// DevGuard's code for the step that failed; its message is not kept. `None` when
+    /// available, and when the credential could not be used locally.
+    pub error_code: Option<ErrorCode>,
     pub report: Option<Report>,
 }
 
@@ -131,13 +283,12 @@ fn probe_with(settings: &Settings, authority_uid: u32, compatibility: Compatibil
                 .capabilities
                 .iter()
                 .copied()
-                .map(capability_name)
+                .map(Capability::from)
                 .collect(),
-            role: role_name(role),
+            role: role.into(),
             storage_validated: status.storage_validated,
             registration_ready: status.registration_ready,
             execution_ready: status.execution_ready,
-            reason: status.reason,
         }),
     }
 }
@@ -145,26 +296,26 @@ fn probe_with(settings: &Settings, authority_uid: u32, compatibility: Compatibil
 fn failed(step: Step, error: &Error) -> Status {
     Status {
         state: classify(step, error.code),
-        error_code: (step != Step::Credential).then(|| code_name(error.code)),
+        error_code: (step != Step::Credential).then(|| error.code.into()),
         report: None,
     }
 }
 
 /// The step and DevGuard's code decide the state; the message never does.
-fn classify(step: Step, code: ErrorCode) -> State {
+fn classify(step: Step, code: contract::ErrorCode) -> State {
     match (step, code) {
         (Step::Credential, _) => State::CredentialUnavailable,
         // The client refuses a peer UID, a declared identity or protocol bounds that differ.
-        (Step::Connect, ErrorCode::Unauthorized) => State::UntrustedAuthority,
-        (Step::Connect, ErrorCode::ResourcePolicyUnsupported) => State::Incompatible,
-        (Step::Authenticate, ErrorCode::Unauthorized) => State::CredentialRefused,
+        (Step::Connect, contract::ErrorCode::Unauthorized) => State::UntrustedAuthority,
+        (Step::Connect, contract::ErrorCode::ResourcePolicyUnsupported) => State::Incompatible,
+        (Step::Authenticate, contract::ErrorCode::Unauthorized) => State::CredentialRefused,
         _ => State::Unavailable,
     }
 }
 
 fn credential(settings: &Settings) -> Result<CallerCredential, Error> {
-    devguard_contract::validate_id(&settings.consumer)?;
-    devguard_contract::validate_id(&settings.generation)?;
+    contract::validate_id(&settings.consumer)?;
+    contract::validate_id(&settings.generation)?;
     Ok(CallerCredential::Consumer {
         consumer_id: settings.consumer.clone(),
         generation: settings.generation.clone(),
@@ -174,7 +325,40 @@ fn credential(settings: &Settings) -> Result<CallerCredential, Error> {
 
 /// DevGuard's reader takes exactly 64 bytes within its deadline and closes the descriptor.
 fn read_secret(path: &Path) -> Result<Secret, Error> {
+    secure_directories(path)?;
     devguard_client::credential::read_owned(open_private(path)?)
+}
+
+/// Only this user or root can change which file the path names, as DevGuard requires of its
+/// own credential directory. The path is absolute, without `..`. Every directory on it is a
+/// real directory, owned by this user or root and not writable by group or others, except a
+/// root-owned sticky `/tmp`; the file's own directory belongs to this user.
+fn secure_directories(path: &Path) -> Result<(), Error> {
+    let (true, Some(parent), Some(_)) = (path.is_absolute(), path.parent(), path.file_name())
+    else {
+        return Err(not_private());
+    };
+    let uid = effective_uid();
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            Component::RootDir => current.push("/"),
+            Component::Normal(name) => current.push(name),
+            _ => return Err(not_private()),
+        }
+        let meta = std::fs::symlink_metadata(&current).map_err(|_| not_private())?;
+        let shared_tmp = matches!(current.to_str(), Some("/tmp" | "/private/tmp"))
+            && meta.uid() == 0
+            && meta.mode() & 0o1000 != 0;
+        if !meta.is_dir()
+            || (meta.uid() != uid && meta.uid() != 0)
+            || (!shared_tmp && meta.mode() & 0o022 != 0)
+            || (current == parent && meta.uid() != uid)
+        {
+            return Err(not_private());
+        }
+    }
+    Ok(())
 }
 
 /// Open a private regular file of this user with one link, without following a link and
@@ -198,7 +382,7 @@ fn open_private(path: &Path) -> Result<OwnedFd, Error> {
 
 fn not_private() -> Error {
     Error::new(
-        ErrorCode::InvalidRequest,
+        contract::ErrorCode::InvalidRequest,
         "the credential file is not a private file of this user",
     )
 }
@@ -206,42 +390,6 @@ fn not_private() -> Error {
 fn effective_uid() -> u32 {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() }
-}
-
-fn code_name(code: ErrorCode) -> &'static str {
-    match code {
-        ErrorCode::Unauthorized => "unauthorized",
-        ErrorCode::InvalidRequest => "invalid_request",
-        ErrorCode::AttemptConflict => "attempt_conflict",
-        ErrorCode::ResourceUnavailable => "resource_unavailable",
-        ErrorCode::ResourceControlUnavailable => "resource_control_unavailable",
-        ErrorCode::ResourcePolicyUnsupported => "resource_policy_unsupported",
-        ErrorCode::InvalidTransition => "invalid_transition",
-        ErrorCode::NotFound => "not_found",
-        ErrorCode::ReconciliationRequired => "reconciliation_required",
-        ErrorCode::JournalInvalid => "journal_invalid",
-    }
-}
-
-fn capability_name(capability: Capability) -> &'static str {
-    match capability {
-        Capability::DurableAdmission => "durable_admission",
-        Capability::FencedLaunch => "fenced_launch",
-        Capability::PerResourceEvidence => "per_resource_evidence",
-        Capability::StaticControlReservations => "static_control_reservations",
-        Capability::MacosCooperative => "macos_cooperative",
-        Capability::LinuxCgroupV2 => "linux_cgroup_v2",
-        Capability::ParentLease => "parent_lease",
-        Capability::UpgradeDrain => "upgrade_drain",
-    }
-}
-
-fn role_name(role: SessionRole) -> &'static str {
-    match role {
-        SessionRole::Workload => "workload",
-        SessionRole::ControlService => "control_service",
-        SessionRole::Administrator => "administrator",
-    }
 }
 
 #[cfg(test)]
@@ -261,17 +409,33 @@ mod tests {
     use std::thread::JoinHandle;
     use std::time::{Duration, Instant};
 
-    const CODES: [ErrorCode; 10] = [
-        ErrorCode::Unauthorized,
-        ErrorCode::InvalidRequest,
-        ErrorCode::AttemptConflict,
-        ErrorCode::ResourceUnavailable,
-        ErrorCode::ResourceControlUnavailable,
-        ErrorCode::ResourcePolicyUnsupported,
-        ErrorCode::InvalidTransition,
-        ErrorCode::NotFound,
-        ErrorCode::ReconciliationRequired,
-        ErrorCode::JournalInvalid,
+    /// DevGuard's own codes, capabilities and roles at the pin.
+    const CODES: [contract::ErrorCode; 10] = [
+        contract::ErrorCode::Unauthorized,
+        contract::ErrorCode::InvalidRequest,
+        contract::ErrorCode::AttemptConflict,
+        contract::ErrorCode::ResourceUnavailable,
+        contract::ErrorCode::ResourceControlUnavailable,
+        contract::ErrorCode::ResourcePolicyUnsupported,
+        contract::ErrorCode::InvalidTransition,
+        contract::ErrorCode::NotFound,
+        contract::ErrorCode::ReconciliationRequired,
+        contract::ErrorCode::JournalInvalid,
+    ];
+    const CAPABILITIES: [contract::Capability; 8] = [
+        contract::Capability::DurableAdmission,
+        contract::Capability::FencedLaunch,
+        contract::Capability::PerResourceEvidence,
+        contract::Capability::StaticControlReservations,
+        contract::Capability::MacosCooperative,
+        contract::Capability::LinuxCgroupV2,
+        contract::Capability::ParentLease,
+        contract::Capability::UpgradeDrain,
+    ];
+    const ROLES: [SessionRole; 3] = [
+        SessionRole::Workload,
+        SessionRole::ControlService,
+        SessionRole::Administrator,
     ];
 
     /// A DevGuard authority on fixture paths, served as DevGuard's own server tests serve
@@ -366,16 +530,18 @@ mod tests {
         );
         let report = status.report.unwrap();
         assert_eq!(report.protocol, PROTOCOL_VERSION);
-        assert_eq!(report.role, "workload");
+        assert_eq!(report.role, Role::Workload);
         assert!(report.storage_validated);
-        assert!(!report.reason.is_empty());
         // Registration and execution open only with native host evidence.
         let native = cfg!(target_os = "macos");
         assert_eq!(
             (report.registration_ready, report.execution_ready),
             (native, native)
         );
-        assert_eq!(report.capabilities.contains(&"durable_admission"), native);
+        assert_eq!(
+            report.capabilities.contains(&Capability::DurableAdmission),
+            native
+        );
         assert_eq!(report.capabilities.is_empty(), !native);
     }
 
@@ -392,7 +558,7 @@ mod tests {
                 (status.state, status.error_code, status.report),
                 (
                     State::Unavailable,
-                    Some("resource_control_unavailable"),
+                    Some(ErrorCode::ResourceControlUnavailable),
                     None
                 ),
                 "{settings:?}"
@@ -426,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             (status.state, status.error_code),
-            (State::UntrustedAuthority, Some("unauthorized"))
+            (State::UntrustedAuthority, Some(ErrorCode::Unauthorized))
         );
     }
 
@@ -439,14 +605,17 @@ mod tests {
             required: BTreeSet::new(),
         };
         let capability = Compatibility {
-            required: BTreeSet::from([Capability::LinuxCgroupV2]),
+            required: BTreeSet::from([contract::Capability::LinuxCgroupV2]),
             ..status_only()
         };
         for compatibility in [protocol, capability] {
             let status = probe_with(&authority.settings(), effective_uid(), compatibility);
             assert_eq!(
                 (status.state, status.error_code),
-                (State::Incompatible, Some("resource_policy_unsupported"))
+                (
+                    State::Incompatible,
+                    Some(ErrorCode::ResourcePolicyUnsupported)
+                )
             );
         }
     }
@@ -466,7 +635,7 @@ mod tests {
             let status = probe(&settings);
             assert_eq!(
                 (status.state, status.error_code),
-                (State::CredentialRefused, Some("unauthorized")),
+                (State::CredentialRefused, Some(ErrorCode::Unauthorized)),
                 "{settings:?}"
             );
         }
@@ -492,6 +661,19 @@ mod tests {
         let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
         // SAFETY: mkfifo reads a valid NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        // A private file is not enough when a directory on its path lets someone else change
+        // which file the path names.
+        let directory = |name: &str, mode: u32| {
+            let path = dir.join(name);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            private_file(&path, "consumer.secret", secret.as_bytes())
+        };
+        let group_writable = directory("group", 0o770);
+        let other_writable = directory("other", 0o703);
+        let sticky = directory("sticky", 0o1777);
+        let real = directory("real", 0o700);
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
         let files = [
             dir.join("missing.secret"),
             shared,
@@ -502,7 +684,15 @@ mod tests {
             private_file(dir, "short.secret", &secret.as_bytes()[..63]),
             private_file(dir, "newline.secret", format!("{secret}\n").as_bytes()),
             private_file(dir, "upper.secret", secret.to_uppercase().as_bytes()),
+            group_writable,
+            other_writable,
+            sticky,
+            dir.join("alias/consumer.secret"),
+            dir.join("real/../real/consumer.secret"),
+            PathBuf::from("consumer.secret"),
         ];
+        // The same file through a sound path is accepted.
+        assert!(read_secret(&real).is_ok());
         let mut cases: Vec<Settings> = files
             .into_iter()
             .map(|file| Settings {
@@ -587,13 +777,13 @@ mod tests {
                 State::CredentialUnavailable
             );
             let connect = match code {
-                ErrorCode::Unauthorized => State::UntrustedAuthority,
-                ErrorCode::ResourcePolicyUnsupported => State::Incompatible,
+                contract::ErrorCode::Unauthorized => State::UntrustedAuthority,
+                contract::ErrorCode::ResourcePolicyUnsupported => State::Incompatible,
                 _ => State::Unavailable,
             };
             assert_eq!(classify(Step::Connect, code), connect);
             let authenticate = match code {
-                ErrorCode::Unauthorized => State::CredentialRefused,
+                contract::ErrorCode::Unauthorized => State::CredentialRefused,
                 _ => State::Unavailable,
             };
             assert_eq!(classify(Step::Authenticate, code), authenticate);
@@ -602,38 +792,38 @@ mod tests {
             assert_eq!(failed(Step::Credential, &error).error_code, None);
             assert_eq!(
                 failed(Step::Status, &error).error_code,
-                Some(code_name(code))
+                Some(ErrorCode::from(code))
             );
         }
     }
 
     #[test]
-    fn names_are_devguard_wire_names() {
+    fn every_devguard_value_maps_to_one_value_with_its_wire_name() {
         let wire = |value: serde_json::Value| value.as_str().unwrap().to_owned();
+        let codes: Vec<ErrorCode> = CODES.into_iter().map(ErrorCode::from).collect();
+        assert_eq!(codes, ErrorCode::ALL);
         for code in CODES {
-            assert_eq!(wire(serde_json::to_value(code).unwrap()), code_name(code));
-        }
-        for capability in [
-            Capability::DurableAdmission,
-            Capability::FencedLaunch,
-            Capability::PerResourceEvidence,
-            Capability::StaticControlReservations,
-            Capability::MacosCooperative,
-            Capability::LinuxCgroupV2,
-            Capability::ParentLease,
-            Capability::UpgradeDrain,
-        ] {
             assert_eq!(
-                wire(serde_json::to_value(capability).unwrap()),
-                capability_name(capability)
+                wire(serde_json::to_value(code).unwrap()),
+                ErrorCode::from(code).wire_name()
             );
         }
-        for role in [
-            SessionRole::Workload,
-            SessionRole::ControlService,
-            SessionRole::Administrator,
-        ] {
-            assert_eq!(wire(serde_json::to_value(role).unwrap()), role_name(role));
+        let capabilities: Vec<Capability> =
+            CAPABILITIES.into_iter().map(Capability::from).collect();
+        assert_eq!(capabilities, Capability::ALL);
+        for capability in CAPABILITIES {
+            assert_eq!(
+                wire(serde_json::to_value(capability).unwrap()),
+                Capability::from(capability).wire_name()
+            );
+        }
+        let roles: Vec<Role> = ROLES.into_iter().map(Role::from).collect();
+        assert_eq!(roles, Role::ALL);
+        for role in ROLES {
+            assert_eq!(
+                wire(serde_json::to_value(role).unwrap()),
+                Role::from(role).wire_name()
+            );
         }
     }
 }

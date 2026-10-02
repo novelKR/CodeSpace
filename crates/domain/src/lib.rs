@@ -51,7 +51,9 @@ pub use process::{
 pub use profile::Profile;
 #[cfg(feature = "devguard")]
 pub use resource_authority::{
-    ResourceAuthorityInfo, ResourceAuthorityReport, ResourceAuthorityState, ResourceParticipation,
+    ResourceAuthorityCapability, ResourceAuthorityErrorCode, ResourceAuthorityInfo,
+    ResourceAuthorityProvider, ResourceAuthorityReport, ResourceAuthorityRole,
+    ResourceAuthorityState, ResourceParticipation,
 };
 pub use tools::{
     LIVE_TOOLS, SERVER_NAME, SERVER_VERSION, TOOL_APPLY_PATCH, TOOL_APPROVAL_CREATE,

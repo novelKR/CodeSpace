@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
     let registry = load_registry(&cli)?;
     let store = load_store(&cli)?;
     let started = start_runner(&cli, store.clone()).await?;
-    let handler = handler(&cli, registry, store, started.runner.clone());
+    let handler = CodeSpace::from_cli(&cli, registry, store, started.runner.clone());
     let result = match cli.mode() {
         TransportMode::Stdio => stdio::serve_handler(handler).await,
         TransportMode::Http => {
@@ -31,27 +31,6 @@ async fn main() -> Result<()> {
     };
     drop(started);
     result
-}
-
-/// One handler, cloned by every session.
-fn handler(cli: &Cli, registry: Registry, store: Arc<Store>, runner: RuntimeBackend) -> CodeSpace {
-    let handler = CodeSpace::with_store_and_runner(registry, store, runner);
-    #[cfg(feature = "devguard")]
-    let handler = match cli.devguard.settings() {
-        Some(settings) => {
-            tracing::info!(
-                participation = "status",
-                "DevGuard status connection enabled; it governs no execution"
-            );
-            handler.with_resource_authority(codespace_server::devguard::ResourceAuthority::new(
-                settings,
-            ))
-        }
-        None => handler,
-    };
-    #[cfg(not(feature = "devguard"))]
-    let _ = cli;
-    handler
 }
 
 struct StartedRunner {
