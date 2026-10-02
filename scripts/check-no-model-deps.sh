@@ -95,6 +95,7 @@ scan_pty=0
 scan_fs=0
 scan_linux_sandbox=0
 scan_protocol=0
+scan_devguard=0
 scan_all=0
 
 is_zero_sha() {
@@ -125,6 +126,9 @@ want_all() {
   fi
   if [[ -d crates/linux-sandbox-protocol ]]; then
     scan_protocol=1
+  fi
+  if [[ -d crates/devguard ]]; then
+    scan_devguard=1
   fi
 }
 
@@ -185,6 +189,11 @@ else
             scan_protocol=1
           fi
           ;;
+        crates/devguard|crates/devguard/*)
+          if [[ -d crates/devguard ]]; then
+            scan_devguard=1
+          fi
+          ;;
       esac
     done < <(git diff --name-only "$merge_base"...HEAD)
   else
@@ -205,7 +214,8 @@ if [[ "$scan_all" -eq 0 &&
       "$scan_pty" -eq 0 &&
       "$scan_fs" -eq 0 &&
       "$scan_linux_sandbox" -eq 0 &&
-      "$scan_protocol" -eq 0 ]]; then
+      "$scan_protocol" -eq 0 &&
+      "$scan_devguard" -eq 0 ]]; then
   echo "policy-scan skipped (no core crate or adapter changes)"
   exit 0
 fi
@@ -217,7 +227,7 @@ selected=()
 [[ "$scan_store" -eq 1 ]] && selected+=("store")
 [[ "$scan_server" -eq 1 ]] && selected+=("server")
 
-echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime pty=$scan_pty fs=$scan_fs linux-sandbox=$scan_linux_sandbox protocol=$scan_protocol"
+echo "policy-scan: crates=${selected[*]:-none} tests=$scan_tests root-manifest=$scan_root_manifest patch=$scan_patch runtime=$scan_runtime pty=$scan_pty fs=$scan_fs linux-sandbox=$scan_linux_sandbox protocol=$scan_protocol devguard=$scan_devguard"
 
 scan_manifest() {
   local file="$1"
@@ -380,6 +390,16 @@ fi
 if [[ "$scan_protocol" -eq 1 ]]; then
   launch scan_manifest crates/linux-sandbox-protocol/Cargo.toml
   launch scan_no_helper_lib crates/linux-sandbox-protocol/Cargo.toml
+fi
+
+# The DevGuard status adapter takes no Codex key, like core (CSRG-U1).
+if [[ "$scan_devguard" -eq 1 ]]; then
+  launch scan_manifest crates/devguard/Cargo.toml
+  for spec in "${SOURCE_PATTERNS[@]}"; do
+    pattern="${spec%%::*}"
+    label="${spec#*::}"
+    launch scan_source crates/devguard "$pattern" "$label"
+  done
 fi
 
 for pid in "${pids[@]+"${pids[@]}"}"; do

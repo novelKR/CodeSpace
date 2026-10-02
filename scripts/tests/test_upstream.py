@@ -15,9 +15,13 @@ validation = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validation)
 
 
-def fixture(names, edges):
-    return {'packages': [{'id': n, 'name': n, 'version': '1', 'source': None,
-                           'manifest_path': str(deps.ROOT / 'crates' / n / 'Cargo.toml')} for n in names],
+def fixture(names, edges, sources=None):
+    """Codex packages sit in the gitlink, others in `crates/`, unless `sources` names another."""
+    def manifest(n):
+        parent = deps.ROOT / 'third_party/codex/codex-rs' if n.startswith('codex-') else deps.ROOT / 'crates'
+        return str(parent / n / 'Cargo.toml')
+    return {'packages': [{'id': n, 'name': n, 'version': '1', 'source': (sources or {}).get(n),
+                           'manifest_path': manifest(n)} for n in names],
             'resolve': {'nodes': [{'id': n, 'deps': [
                 {'name': 'renamed_alias', 'pkg': child, 'dep_kinds': [{'kind': kind, 'target': None}]}
                 for parent, child, kind in edges if parent == n]} for n in names]}}
@@ -44,6 +48,45 @@ class GraphTests(unittest.TestCase):
             deps.graph(data, ['absent'])
         with self.assertRaises(ValueError):
             deps.graph(data, [])
+
+    def test_devguard_and_codex_each_have_one_source(self):
+        pinned = {'devguard-client': deps.DEVGUARD_SOURCE}
+        moved = {'devguard-client': deps.DEVGUARD_SOURCE.replace('f1f9084', 'e0e0e0e')}
+        edges = [('codespace-server', 'devguard-client', None)]
+        self.assertFalse(deps.graph(fixture(['codespace-server', 'devguard-client'], edges, pinned),
+                                    ['codespace-server'], devguard=True)['violations'])
+        self.assertEqual(deps.graph(fixture(['codespace-server', 'devguard-client'], edges, moved),
+                                    ['codespace-server'], devguard=True)['violations'],
+                         ['codespace-server -> devguard-client: not the reviewed DevGuard pin'])
+        registry = {'codex-utils-pty': 'registry+https://github.com/rust-lang/crates.io-index'}
+        data = fixture(['codespace-pty', 'codex-utils-pty'], [('codespace-pty', 'codex-utils-pty', None)], registry)
+        self.assertEqual(deps.graph(data, ['codespace-pty'])['violations'],
+                         ['codespace-pty -> codex-utils-pty: not the Codex gitlink'])
+
+    def test_devguard_only_with_the_feature(self):
+        data = fixture(['codespace-server', 'codespace-devguard', 'devguard-client'],
+                       [('codespace-server', 'codespace-devguard', None), ('codespace-devguard', 'devguard-client', None)],
+                       {'devguard-client': deps.DEVGUARD_SOURCE})
+        self.assertEqual(deps.graph(data, ['codespace-server'])['violations'], [
+            'codespace-server -> codespace-devguard -> devguard-client: DevGuard outside the devguard feature',
+            'codespace-server -> codespace-devguard: DevGuard outside the devguard feature'])
+        self.assertFalse(deps.graph(data, ['codespace-server'], devguard=True)['violations'])
+
+    def test_devguard_brings_no_codespace_or_codex(self):
+        names = ['codespace-devguard', 'devguard-client', 'serde', 'codex-protocol', 'codespace-domain']
+        edges = [('codespace-devguard', 'devguard-client', None), ('devguard-client', 'serde', None),
+                 ('serde', 'codex-protocol', None), ('codespace-devguard', 'codespace-domain', None)]
+        data = fixture(names, edges, {'devguard-client': deps.DEVGUARD_SOURCE, 'serde': 'registry'})
+        # The adapter may use CodeSpace's own crates; DevGuard's crates may not reach Codex or CodeSpace.
+        self.assertEqual(deps.graph(data, ['codespace-devguard'], devguard=True)['violations'],
+                         ['devguard-client -> serde -> codex-protocol: brought in by DevGuard'])
+
+    def test_features_forwarded(self):
+        with patch.object(deps.subprocess, 'check_output', return_value=b'{}') as call:
+            deps.metadata(Path('Cargo.toml'), 'target', deps.DEVGUARD_FEATURE)
+            self.assertEqual(call.call_args.args[0][-2:], ['--features', 'codespace-server/devguard'])
+            deps.metadata(Path('Cargo.toml'), 'target')
+            self.assertNotIn('--features', call.call_args.args[0])
 
     def test_target_forwarded_and_failure(self):
         for target in ('x86_64-unknown-linux-gnu', 'aarch64-apple-darwin'):
