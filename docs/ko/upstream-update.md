@@ -86,7 +86,7 @@ SHA와 패치 테스트만 확인하며 전체 검증 명령을 대체하지 않
 
 ## 향후 crate와 백엔드의 경계
 
-> **상태: 구현 지시로서 효력 중지.** CS-RG 통합 경계 재검증이 끝날 때까지 아래에서 언급한 CS-RG의 새 실행 backend 계획을 구현하지 않습니다. 대체 구조는 승인되지 않았습니다. 이 절의 의존성과 CI 규칙은 그대로입니다.
+> **상태: 구현 지시로서 효력 중지.** CS-RG 통합 경계 재검증이 끝날 때까지 아래에서 언급한 CS-RG의 새 실행 backend 계획을 구현하지 않습니다. 대체 구조는 승인되지 않았습니다. 이 절의 의존성과 CI 규칙은 그대로입니다. 다만 이 절 끝에 2026-09-30 날짜로 추가한 항목은 DevGuard binding의 Codex 정체성에 대한 DevGuard 설계 개정 2의 규칙을 기록합니다.
 
 CS-RG는 DevGuard 자원 client crate와 새 실행 백엔드를 계획합니다
 ([CS-RG 작업 패키지](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/planning/milestones/CS-RG.md)의
@@ -127,3 +127,11 @@ lockfile, `PRODUCTS`(분리된 workspace이면 `ADAPTERS`도), 직접 Codex 키�
 `FORBIDDEN`, `RUNNER_FORBIDDEN`, 전체 그래프 검증이나 다른 검사를 제거하거나 좁히지
 않습니다. 계획된 자원 client는 간접 Codex 의존성을 가져오면 안 되며, DevGuard
 client 타입은 공개 MCP 타입에 들어가지 않습니다.
+
+*2026-09-30 추가,
+[DevGuard 설계 개정 2](https://github.com/novelKR/DevGuard/blob/9d223bbd3529d6996fb8ebabeedae5458d31f498/docs/ko/design-revision-2.md#33-실행-파일-정체성)에서:*
+CodeSpace 실행 파일에 링크되는 DevGuard binding은 이 저장소의 gitlink를 통해 Codex를
+소비하므로, 그 실행 파일은 검토된 Codex 소스 정체성을 하나만 유지합니다. 제품 root
+안에서 각 `codex-*` package를 gitlink 경로에서만 받아들이는 실행 파일 단일 정체성
+검사는 DevGuard crate를 CodeSpace graph에 처음 넣는 PR에서 추가됩니다. 그때까지 이
+규칙은 실행 가능한 검사가 아니라 문서 정책입니다.
