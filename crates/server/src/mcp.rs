@@ -44,6 +44,9 @@ pub struct CodeSpace {
     pub(crate) registry: Registry,
     pub(crate) store: Arc<Store>,
     pub(crate) runner: RuntimeBackend,
+    /// The resource authority whose status `workspace_info` reports (CSRG-U1).
+    #[cfg(feature = "devguard")]
+    pub(crate) resource_authority: Option<Arc<crate::devguard::ResourceAuthority>>,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -168,6 +171,8 @@ impl CodeSpace {
             registry,
             store,
             runner,
+            #[cfg(feature = "devguard")]
+            resource_authority: None,
         }
     }
 
@@ -179,9 +184,10 @@ impl CodeSpace {
         &self,
         Parameters(params): Parameters<WorkspaceInfoParams>,
     ) -> Result<Json<WorkspaceInfo>, String> {
-        lookup(&self.registry, params.workspace_id)
-            .map(Json)
-            .map_err(err_json)
+        let info = lookup(&self.registry, params.workspace_id).map_err(err_json)?;
+        #[cfg(feature = "devguard")]
+        let info = self.with_resource_authority_status(info).await;
+        Ok(Json(info))
     }
 
     #[tool(
@@ -973,6 +979,25 @@ fn lookup(registry: &Registry, workspace_id: Option<String>) -> Result<Workspace
     Ok(info)
 }
 
+#[cfg(feature = "devguard")]
+impl CodeSpace {
+    /// Report this authority's status in `workspace_info`. It governs no execution.
+    pub fn with_resource_authority(
+        mut self,
+        authority: Arc<crate::devguard::ResourceAuthority>,
+    ) -> Self {
+        self.resource_authority = Some(authority);
+        self
+    }
+
+    async fn with_resource_authority_status(&self, mut info: WorkspaceInfo) -> WorkspaceInfo {
+        if let Some(authority) = &self.resource_authority {
+            info.resource_authority = Some(authority.status().await);
+        }
+        info
+    }
+}
+
 impl Default for CodeSpace {
     fn default() -> Self {
         Self::new(Registry::new())
@@ -1710,5 +1735,61 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::Unauthorized);
         assert!(err.operation_id.is_none());
+    }
+}
+
+#[cfg(all(test, feature = "devguard"))]
+mod devguard_tests {
+    use super::*;
+    use crate::devguard::tests::{settings, short_directory, Endpoint, SECRET};
+    use crate::devguard::ResourceAuthority;
+
+    async fn reported(handler: &CodeSpace) -> serde_json::Value {
+        let Json(info) = handler
+            .workspace_info(Parameters(WorkspaceInfoParams { workspace_id: None }))
+            .await
+            .unwrap();
+        serde_json::to_value(info).unwrap()
+    }
+
+    #[tokio::test]
+    async fn workspace_info_reports_the_authority_only_when_enabled() {
+        let off = reported(&CodeSpace::new(Registry::new())).await;
+        assert!(off.get("resource_authority").is_none());
+        let plain = serde_json::to_value(lookup(&Registry::new(), None).unwrap()).unwrap();
+        assert_eq!(off, plain);
+
+        let dir = short_directory();
+        let authority =
+            ResourceAuthority::new(settings(dir.path(), dir.path().join("absent.sock")));
+        let on =
+            reported(&CodeSpace::new(Registry::new()).with_resource_authority(authority)).await;
+        assert_eq!(
+            on["resource_authority"],
+            serde_json::json!({
+                "provider": "devguard",
+                "participation": "status",
+                "governs_execution": false,
+                "state": "unavailable",
+                "error_code": "resource_control_unavailable",
+            })
+        );
+        assert!(!on.to_string().contains(SECRET));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_workspace_is_refused_before_any_session() {
+        let dir = short_directory();
+        let socket = dir.path().join("watched.sock");
+        let endpoint = Endpoint::start(&socket, drop);
+        let handler = CodeSpace::new(Registry::new())
+            .with_resource_authority(ResourceAuthority::new(settings(dir.path(), socket)));
+        let refused = handler
+            .workspace_info(Parameters(WorkspaceInfoParams {
+                workspace_id: Some("unknown".into()),
+            }))
+            .await;
+        assert!(refused.is_err());
+        assert_eq!(endpoint.accepted(), 0);
     }
 }

@@ -31,10 +31,13 @@ pub async fn serve_with_runner(
     store: Arc<Store>,
     runner: RuntimeBackend,
 ) -> Result<()> {
+    serve_handler(CodeSpace::with_store_and_runner(registry, store, runner)).await
+}
+
+/// Serve a handler built by the caller, such as one that reports a resource authority.
+pub async fn serve_handler(handler: CodeSpace) -> Result<()> {
     tracing::info!(transport = "stdio", "codespace mcp listening");
-    let service = CodeSpace::with_store_and_runner(registry, store, runner)
-        .serve(stdio())
-        .await?;
+    let service = handler.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

@@ -2,6 +2,8 @@
 
 pub mod auth;
 pub mod config;
+#[cfg(feature = "devguard")]
+pub mod devguard;
 pub mod http;
 pub mod inbox;
 pub mod logging;
