@@ -150,3 +150,10 @@ It also checks the DevGuard pin, keeps DevGuard out of every graph built without
 the feature, and rejects any CodeSpace or Codex crate that DevGuard's crates
 reach. `check-no-model-deps.sh` scans the adapter's manifest and sources as it
 scans core. Validate the adapter with the other isolated adapters.
+
+*Added 2026-10-03, CSRG-U2:* `codespace-runner` and the UDS worker
+`codespace-codex-runtime` link the adapter only with their own `devguard`
+features; the gateway's feature turns on the runner's. The worker's graph with
+its feature on (`codex-runtime+devguard`) is checked like the root's, and the
+Codex adapter legs build, lint and test the worker with it. Without the
+features every product graph is unchanged.

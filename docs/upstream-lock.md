@@ -26,7 +26,7 @@ See [connected components](codex-reuse.md) for the exact adapter responsibilitie
 
 ## DevGuard client pin
 
-The gateway's opt-in `devguard` feature ([CSRG-U1](devguard-integration.md#devguard-status-connection)) links DevGuard's generic client from one reviewed, immutable commit.
+The opt-in `devguard` features of the gateway ([CSRG-U1](devguard-integration.md#devguard-status-connection)) and the UDS worker ([CSRG-U2](devguard-integration.md#devguard-owner-registration)) link DevGuard's generic client from one reviewed, immutable commit.
 
 | Field | Value |
 | --- | --- |
@@ -35,10 +35,10 @@ The gateway's opt-in `devguard` feature ([CSRG-U1](devguard-integration.md#devgu
 | Commit | `f1f908429abea962d62d6b53c56a26c17250179b`, DevGuard `main` after [DevGuard PR #21](https://github.com/novelKR/DevGuard/pull/21) |
 | Source | Cargo Git dependency at that `rev` |
 | Crates | `devguard-client` and `devguard-contract` in the product; `devguard-daemon` with `test-fixtures` only in the adapter's tests |
-| Consumer | `crates/devguard` (`codespace-devguard`), linked by `codespace-server` only with its `devguard` feature |
+| Consumer | `crates/devguard` (`codespace-devguard`), linked by `codespace-server`, `codespace-runner` and `codespace-codex-runtime` only with their `devguard` features |
 | Check | `scripts/upstream_dependencies.py` (`DEVGUARD_SOURCE`) |
 
-In every product graph, the dependency check accepts each `devguard-*` package only from this commit and each `codex-*` package only from the Codex gitlink. It admits only `devguard-client` and `devguard-contract` to a product graph, so DevGuard's test fixtures stay development dependencies. It rejects any DevGuard package in a graph built without the feature, and any CodeSpace or Codex package that DevGuard's crates reach. Change the pin through a reviewed PR that updates the adapter manifest, both lockfiles, `DEVGUARD_SOURCE` and this record together.
+In every product graph, the dependency check accepts each `devguard-*` package only from this commit and each `codex-*` package only from the Codex gitlink. It admits only `devguard-client` and `devguard-contract` to a product graph, so DevGuard's test fixtures stay development dependencies. It rejects any DevGuard package in a graph built without the features, and any CodeSpace or Codex package that DevGuard's crates reach; the root and worker graphs are checked with their features on as well as off. Change the pin through a reviewed PR that updates the adapter manifest, the three lockfiles that hold it (root, adapter and worker), `DEVGUARD_SOURCE` and this record together.
 
 <a id="why-file-copy-vendor-is-forbidden"></a>
 <a id="what-is-reused-vs-rejected"></a>
