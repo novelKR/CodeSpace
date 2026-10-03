@@ -1,0 +1,41 @@
+name: U2 descriptor check (temporary)
+
+# Temporary: on macOS, #84's gateway DevGuard tests against the process descriptor limit, with
+# the default limit and a raised one. Runs only on this branch; its runs keep the evidence.
+
+on:
+  push:
+    branches: [claude/magical-euler-nvqrxp]
+    paths: [.github/workflows/u2-fd-check.yml, .github/u2-fd-check/run.sh]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diag
+      - uses: actions/checkout@v4
+        with:
+          # #84's head.
+          ref: 4caa34c9b4f774b732e846bf7da8b96eade2e87a
+          path: src
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Host
+        run: |
+          sw_vers
+          rustc -vV
+          git -C src rev-parse HEAD
+      - name: Repeated runs
+        timeout-minutes: 110
+        run: bash diag/.github/u2-fd-check/run.sh "$PWD/src" 30
