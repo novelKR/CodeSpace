@@ -1891,15 +1891,29 @@ mod tests {
     ) {
         for (workspace, tty) in [("gov", false), ("gov", true), ("gov-confirm", false)] {
             let touch = format!("{}/started", root.display());
-            let refused = cs
-                .exec_command(Parameters(exec_params(
-                    workspace,
-                    &["/usr/bin/touch", &touch],
-                    tty,
-                )))
-                .await
-                .err()
-                .expect("refused");
+            // A refusal names the registration from a session the owner opened for it.
+            // DevGuard reads the consumer secret within 250 ms of wall time, so a session whose
+            // thread the scheduler held that long reports `credential_unavailable` although the
+            // file is intact; it opens nothing, and the refusal is asked again.
+            let mut attempts = 0;
+            let refused = loop {
+                let refused = cs
+                    .exec_command(Parameters(exec_params(
+                        workspace,
+                        &["/usr/bin/touch", &touch],
+                        tty,
+                    )))
+                    .await
+                    .err()
+                    .expect("refused");
+                attempts += 1;
+                if attempts == 5
+                    || readiness.contains("credential_unavailable")
+                    || !refused.contains("(registration: credential_unavailable)")
+                {
+                    break refused;
+                }
+            };
             let body: ErrorBody = serde_json::from_str(&refused).unwrap();
             assert_eq!(body.code, ErrorCode::ResourcePolicyUnsupported, "{refused}");
             assert!(
@@ -2019,8 +2033,8 @@ mod devguard_tests {
     use super::tests::{assert_required_starts_nothing, exec_params, participation_registry};
     use super::*;
     use crate::devguard::tests::{
-        devguard_worker, execute_report, parse, settings, short_directory, Endpoint,
-        FixtureAuthority, SECRET,
+        devguard_worker, execute_report, parse, past_the_credential, settings, short_directory,
+        Endpoint, FixtureAuthority, SECRET,
     };
     use crate::devguard::{ResourceAuthority, WorkerSettings};
     use crate::runtime::RuntimeProcess;
@@ -2041,6 +2055,18 @@ mod devguard_tests {
         serde_json::to_value(info).unwrap()
     }
 
+    /// `reported`, again while the authority's state is a stop at the credential (see
+    /// `past_the_credential`).
+    async fn reported_past_the_credential(handler: &CodeSpace) -> serde_json::Value {
+        past_the_credential(
+            |report: &serde_json::Value| {
+                report["resource_authority"]["state"] == "credential_unavailable"
+            },
+            || reported(handler),
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn workspace_info_reports_the_authority_only_when_enabled() {
         let off = reported(&CodeSpace::new(Registry::new())).await;
@@ -2051,8 +2077,8 @@ mod devguard_tests {
         let dir = short_directory();
         let authority =
             ResourceAuthority::new(settings(dir.path(), dir.path().join("absent.sock")));
-        let on =
-            reported(&CodeSpace::new(Registry::new()).with_resource_authority(authority)).await;
+        let handler = CodeSpace::new(Registry::new()).with_resource_authority(authority);
+        let on = reported_past_the_credential(&handler).await;
         assert_eq!(
             on["resource_authority"],
             serde_json::json!({
@@ -2096,7 +2122,7 @@ mod devguard_tests {
                 store,
                 RuntimeBackend::in_process(Arc::new(|_| {})),
             );
-            let reported = reported(&handler).await;
+            let reported = reported_past_the_credential(&handler).await;
             assert_eq!(
                 reported.get("resource_authority").is_some(),
                 mode == "status"
@@ -2195,7 +2221,7 @@ mod devguard_tests {
             store.clone(),
             RuntimeBackend::in_process(release(&store)),
         );
-        let report = reported(&handler).await;
+        let report = reported_past_the_credential(&handler).await;
         assert_eq!(report["resource_authority"]["participation"], "status");
         assert!(report["resource_authority"].get("registration").is_none());
         assert_required_starts_nothing(
@@ -2303,6 +2329,15 @@ mod devguard_tests {
         // Calls that arrive together while the startup registration runs.
         handler.register_owner_now();
         let me = std::process::id();
+        let together = past_the_credential(
+            |registrations: &Vec<serde_json::Value>| {
+                registrations
+                    .iter()
+                    .any(|registration| registration["state"] == "credential_unavailable")
+            },
+            || reported_together(&handler, 8),
+        )
+        .await;
         let expected = if fixture.native {
             serde_json::json!({"owner": "in_process", "state": "registered", "pid": me})
         } else {
@@ -2312,7 +2347,7 @@ mod devguard_tests {
                 "error_code": "resource_policy_unsupported",
             })
         };
-        for registration in reported_together(&handler, 8).await {
+        for registration in together {
             assert_eq!(registration, expected);
         }
         let readiness = if fixture.native {

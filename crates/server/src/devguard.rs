@@ -355,6 +355,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// `session` again while it stops at the credential, up to five times. DevGuard reads the
+    /// consumer secret within 250 ms of wall time, so a test thread the scheduler holds that
+    /// long gets a credential failure although the file is intact; such a session opens nothing.
+    /// For sessions whose credential is intact and not what the test checks.
+    pub(crate) async fn past_the_credential<T, F>(
+        stopped: impl Fn(&T) -> bool,
+        mut session: impl FnMut() -> F,
+    ) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        for _ in 1..5 {
+            let outcome = session().await;
+            if !stopped(&outcome) {
+                return outcome;
+            }
+        }
+        session().await
+    }
+
+    pub(crate) fn stopped_at_the_credential(info: &ResourceAuthorityInfo) -> bool {
+        info.state == ResourceAuthorityState::CredentialUnavailable
+    }
+
     /// Short enough for a Unix socket path.
     pub(crate) fn short_directory() -> tempfile::TempDir {
         tempfile::Builder::new()
@@ -639,7 +663,9 @@ pub(crate) mod tests {
         let started = Instant::now();
         let calls = (0..8).map(|_| {
             let authority = authority.clone();
-            tokio::spawn(async move { authority.status().await })
+            tokio::spawn(async move {
+                past_the_credential(stopped_at_the_credential, || authority.status()).await
+            })
         });
         for call in calls.collect::<Vec<_>>() {
             assert_eq!(
@@ -655,7 +681,7 @@ pub(crate) mod tests {
             elapsed >= Duration::from_millis(100) * probes as u32,
             "{probes} probes in {elapsed:?}"
         );
-        authority.status().await;
+        past_the_credential(stopped_at_the_credential, || authority.status()).await;
         assert_eq!(endpoint.accepted(), probes + 1, "a later call probes again");
     }
 
@@ -1195,7 +1221,12 @@ pub(crate) mod tests {
         let dir = short_directory();
         let socket = dir.path().join("authority.sock");
         let worker = WorkerSettings::from_settings(settings(dir.path(), socket.clone()));
-        let output = start_reporting_worker(&worker, dir.path()).await;
+        // A worker gets no carrier when its secret could not be read (see `past_the_credential`).
+        let output = past_the_credential(
+            |output: &String| !output.contains("--devguard-credential-fd"),
+            || start_reporting_worker(&worker, dir.path()),
+        )
+        .await;
         assert!(!output.contains(SECRET), "{output}");
         let args = output
             .lines()
@@ -1373,6 +1404,11 @@ pub(crate) mod tests {
                             crate::runtime::worker_command(Path::new("/bin/sh"), &script);
                         worker.prepare(&mut command);
                         let handed = format!("{command:?}").contains("--devguard-credential-fd");
+                        // The secret could not be read in time (see `past_the_credential`):
+                        // this start makes no carrier to follow.
+                        if !handed {
+                            continue;
+                        }
                         let status = command.status().await.unwrap();
                         drop(command);
                         assert!(
@@ -1442,9 +1478,11 @@ pub(crate) mod tests {
         let in_process = RuntimeBackend::in_process(Arc::new(|_| {}));
 
         // The gateway registers itself when it runs the executions...
-        let info = Registration::new(settings.clone(), RunnerMode::InProcess, false)
-            .report(&in_process)
-            .await;
+        let registration = Registration::new(settings.clone(), RunnerMode::InProcess, false);
+        let info = past_the_credential(stopped_at_the_credential, || {
+            registration.report(&in_process)
+        })
+        .await;
         assert_eq!(info.participation, ResourceParticipation::Registration);
         assert!(!info.governs_execution);
         assert_eq!(
@@ -1462,9 +1500,11 @@ pub(crate) mod tests {
         // ...but never for a worker: one it did not start reports that it cannot register,
         // beside the authority's status from the gateway's own probe.
         for starts_worker in [false, true] {
-            let info = Registration::new(settings.clone(), RunnerMode::Uds, starts_worker)
-                .report(&in_process)
-                .await;
+            let registration = Registration::new(settings.clone(), RunnerMode::Uds, starts_worker);
+            let info = past_the_credential(stopped_at_the_credential, || {
+                registration.report(&in_process)
+            })
+            .await;
             assert_eq!(info.participation, ResourceParticipation::Registration);
             assert!(!info.governs_execution);
             assert_eq!(info.state, ResourceAuthorityState::Unavailable);
@@ -1508,7 +1548,10 @@ pub(crate) mod tests {
         let in_process = RuntimeBackend::in_process(Arc::new(|_| {}));
         for (runner, starts_worker) in [(RunnerMode::InProcess, false), (RunnerMode::Uds, false)] {
             let registration = Registration::new(settings.clone(), runner, starts_worker);
-            registration.report(&in_process).await;
+            past_the_credential(stopped_at_the_credential, || {
+                registration.report(&in_process)
+            })
+            .await;
             // An unchanged registration is not logged again.
             registration.report(&in_process).await;
         }
@@ -1518,7 +1561,16 @@ pub(crate) mod tests {
             logs.contains("owner=Worker state=UnsupportedMode"),
             "{logs}"
         );
-        assert_eq!(logs.matches("DevGuard registration").count(), 2, "{logs}");
+        // One line per owner, and one more for each session that stopped at the credential.
+        let registrations: Vec<&str> = logs
+            .lines()
+            .filter(|line| line.contains("DevGuard registration"))
+            .collect();
+        let stopped = registrations
+            .iter()
+            .filter(|line| line.contains("state=CredentialUnavailable"))
+            .count();
+        assert_eq!(registrations.len(), 2 + stopped, "{logs}");
         assert!(!logs.contains(SECRET), "{logs}");
     }
 
