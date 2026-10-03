@@ -258,7 +258,7 @@ jobs:
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: macOS contracts and dependencies
-        run: python3 scripts/validate-upstream.py macos-core dependencies --output target/upstream-reports/macos
+        run: python3 scripts/validate-upstream.py macos-core macos-fork-race dependencies --output target/upstream-reports/macos
       - uses: actions/upload-artifact@v4
         if: always()
         with:

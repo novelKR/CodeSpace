@@ -48,7 +48,10 @@ SHA, Rust host, and source/lockfile hashes. A changed input invalidates the run.
 `passed` applies only to the listed stages, not to all release gates.
 On macOS, Linux isolation is explicitly `not_run` and the overall result is
 `incomplete`; Linux CI evidence is still required. macOS CI additionally checks
-PTY and filesystem contracts. Neither result alone replaces the other platform.
+PTY and filesystem contracts, and its `macos-fork-race` stage fails if any child
+of its fresh-process trials ends without an exit code
+([runner isolation](runner-isolation.md)). Neither result alone replaces the
+other platform.
 
 CI does not run every job for every change. A planning job selects the legs a
 change needs from `scripts/ci-policy.json`: a crate change runs every leg that

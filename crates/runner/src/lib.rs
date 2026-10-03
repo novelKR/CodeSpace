@@ -103,6 +103,7 @@ mod api;
 mod apply;
 mod descriptors;
 mod files;
+mod fork_handlers;
 mod linux_sandbox;
 mod patch_helper;
 mod patch_verify;
@@ -124,6 +125,7 @@ pub use api::{
 pub use codespace_domain::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT};
 pub use descriptors::exclude_unrelated;
 pub use files::VERSION_ABSENT;
+pub use fork_handlers::prepare_fork_spawns;
 pub use patch_helper::ensure_helper_for_tests;
 pub use process::{
     InProcessRunner, RetentionPolicy, ShellRelease, DEFAULT_COMPLETED_TTL, DEFAULT_MAX_COMPLETED,

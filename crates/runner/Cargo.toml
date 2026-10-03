@@ -29,3 +29,8 @@ notify = "8"
 
 [dev-dependencies]
 tempfile = "3"
+
+# A stress harness with its own `main`: one trial per process (see the file).
+[[test]]
+name = "fork_race"
+harness = false

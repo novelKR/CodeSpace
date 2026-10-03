@@ -257,7 +257,7 @@ class PolicyTests(unittest.TestCase):
         stages = [stage for spec in POLICY['legs'].values() for stage in spec['stages']]
         stages += [stage for always in POLICY['always'].values() for stage in always]
         self.assertLessEqual(set(stages), set(validation.stages()))
-        self.assertEqual(set(stages), set(validation.all_stages()) | {'macos-core'})
+        self.assertEqual(set(stages), set(validation.all_stages()) | set(validation.MACOS_ONLY))
 
     def test_compiles_matches_the_manifest_graph(self):
         for leg, spec in POLICY['legs'].items():

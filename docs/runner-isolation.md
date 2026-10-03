@@ -14,6 +14,8 @@ The gateway creates a unique 0700 directory beneath its temporary directory or `
 
 Managed process lifetime is owned by the runner instance, not the MCP connection. Streamable HTTP or MCP client disconnect keeps processes running. Gateway/worker UDS disconnect or gateway shutdown (including stdio EOF) ends the owned worker and its children; process handles are lost. Restart does not restore `process_id`.
 
+**How children start.** Pipe commands, `tty: true` commands, the patch helper, the Linux sandbox helper and the worker are started with fork and exec, because each runs a step in the child before exec: pipe, patch-helper, sandbox-helper and worker children keep only their standard descriptors ([#79](https://github.com/novelKR/CodeSpace/issues/79)), and a PTY child becomes the leader of a new session. On macOS, a child forked while another thread of the same process is initializing the system's notification library (libnotify) is killed inside `fork`, before the command runs, and is reported as having exited without an exit code. So `codespace-mcp` and `codespace-codex-runtime` complete that initialization before they start any thread, and every one of these spawns completes it before it forks. This removes that one cause; it does not make forking from a multithreaded process safe in general.
+
 <a id="macos-no-docker"></a>
 
 ## Linux command sandbox
