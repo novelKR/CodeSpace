@@ -1,9 +1,11 @@
 #!/bin/bash
 # Temporary: repeat on macOS the U2 test runs whose fork-abort isolation was removed, with #86's
 # mitigation and, as a control, with `prepare_fork_spawns` doing nothing. $1: the checkout of
-# #84's head to test. Outputs go to diag-out/ next to it.
+# #84's head to test; $2: `final` for the runs with the mitigation only, the gateway's 60 times.
+# Outputs go to diag-out/ next to it.
 set -u
 cd "$1"
+mode="${2:-full}"
 out="$(dirname "$PWD")/diag-out"
 mkdir -p "$out"
 fork_handlers=crates/runner/src/fork_handlers.rs
@@ -65,9 +67,18 @@ scenarios() { # prefix
     || { echo "$1: build failed"; tail -20 "$out/$1-build.log"; results+=("$1: build failed"); return; }
   repeat "$1-runner-filter" 40 "${runner_filter[@]}"
   repeat "$1-runner-pair" 60 "${runner_pair[@]}"
-  repeat "$1-gateway-parallel" 20 "${gateway[@]}"
+  repeat "$1-gateway-parallel" "$gateway_runs" "${gateway[@]}"
 }
 
+gateway_runs=20
+if [ "$mode" = final ]; then
+  gateway_runs=60
+  scenarios with-mitigation
+  echo
+  echo "== Results"
+  printf '%s\n' "${results[@]}"
+  exit 0
+fi
 scenarios with-mitigation
 
 # Control: the same runs with prepare_fork_spawns doing nothing (its libnotify call removed).

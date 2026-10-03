@@ -24,10 +24,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: isolation removed
-            ref: b8d16147768e21ac7657e6fcdaa654c3c6e7b47e
-          - name: isolation removed with the U1 test fixes
-            ref: 4caa34c9b4f774b732e846bf7da8b96eade2e87a
+          # Run 37118473333 tested b8d1614 (isolation removed) and 4caa34c (with the U1 test
+          # fixes), each with and without #86's mitigation. These are #84's head with D6's fix.
+          - name: final 1
+            ref: 2e127587bdd5f3d2f735c291fce29729d6dfae75
+            mode: final
+          - name: final 2
+            ref: 2e127587bdd5f3d2f735c291fce29729d6dfae75
+            mode: final
     runs-on: macos-latest
     timeout-minutes: 180
     steps:
@@ -47,7 +51,7 @@ jobs:
           git -C src rev-parse HEAD
       - name: Repeated runs
         timeout-minutes: 170
-        run: bash diag/.github/u2-isolation-check/run.sh "$PWD/src"
+        run: bash diag/.github/u2-isolation-check/run.sh "$PWD/src" "${{ matrix.mode }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
