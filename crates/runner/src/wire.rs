@@ -767,12 +767,34 @@ mod tests {
             );
             let (mut read, mut write) =
                 serve_with(Some(OwnerRegistration::new(owner, ResourceOwner::Worker)));
-            request(&mut write, "rrpc-reg", RunnerOp::Registration).await;
             // Once the session is open, process control on the same connection is answered
-            // before the session ends.
-            tokio::task::spawn_blocking(move || sessions.recv().unwrap())
+            // before the session ends. DevGuard reads the consumer secret within 250 ms of wall
+            // time, so a session whose thread the scheduler held that long stops at the
+            // credential although the file is intact: it opens nothing and is answered at once,
+            // and the registration is asked for again.
+            let mut sessions = Some(sessions);
+            for attempt in 1..=5 {
+                request(&mut write, "rrpc-reg", RunnerOp::Registration).await;
+                let waiting = sessions.take().unwrap();
+                let (opened, waiting) = tokio::task::spawn_blocking(move || {
+                    (waiting.recv_timeout(Duration::from_secs(10)), waiting)
+                })
                 .await
                 .unwrap();
+                sessions = Some(waiting);
+                if opened.is_ok() {
+                    break;
+                }
+                let reply = response(&mut read).await;
+                match reply.result {
+                    Some(RunnerOpResult::Registration(info)) => assert_eq!(
+                        info.registration.unwrap().state,
+                        codespace_domain::ResourceRegistrationState::CredentialUnavailable
+                    ),
+                    other => panic!("unexpected {other:?}"),
+                }
+                assert!(attempt < 5, "no registration session opened");
+            }
             request(
                 &mut write,
                 "rrpc-status",
@@ -862,10 +884,14 @@ mod tests {
                     let mut failed = 0usize;
                     while !stop.load(Ordering::Relaxed) {
                         let info = runner.registration().await.unwrap();
-                        assert_eq!(
-                            info.registration.unwrap().state,
-                            ResourceRegistrationState::Unavailable
-                        );
+                        let state = info.registration.unwrap().state;
+                        // DevGuard reads the consumer secret within 250 ms of wall time; a
+                        // session whose thread the scheduler held that long stops there and
+                        // opens nothing.
+                        if state == ResourceRegistrationState::CredentialUnavailable {
+                            continue;
+                        }
+                        assert_eq!(state, ResourceRegistrationState::Unavailable);
                         failed += 1;
                     }
                     failed
