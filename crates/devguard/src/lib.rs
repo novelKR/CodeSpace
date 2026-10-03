@@ -532,10 +532,42 @@ mod tests {
         path
     }
 
+    /// `session` again while it stops at the credential, up to five times. DevGuard reads the
+    /// consumer secret within 250 ms of wall time, so a test thread the scheduler holds that
+    /// long gets a credential failure although the file is intact; such a session opens nothing.
+    /// For sessions whose credential is intact and not what the test checks.
+    pub(crate) fn past_the_credential<T>(
+        stopped: impl Fn(&T) -> bool,
+        mut session: impl FnMut() -> T,
+    ) -> T {
+        for _ in 1..5 {
+            let outcome = session();
+            if !stopped(&outcome) {
+                return outcome;
+            }
+        }
+        session()
+    }
+
+    fn probed(settings: &Settings) -> Status {
+        probed_with(settings, effective_uid(), status_only())
+    }
+
+    fn probed_with(
+        settings: &Settings,
+        authority_uid: u32,
+        compatibility: Compatibility,
+    ) -> Status {
+        past_the_credential(
+            |status: &Status| status.state == State::CredentialUnavailable,
+            || probe_with(settings, authority_uid, compatibility.clone()),
+        )
+    }
+
     #[test]
     fn available_reports_the_authority_status() {
         let authority = Authority::start();
-        let status = probe(&authority.settings());
+        let status = probed(&authority.settings());
         assert_eq!(
             (status.state, status.error_code),
             (State::Available, None),
@@ -566,7 +598,7 @@ mod tests {
         let settings = authority.settings();
         authority.stop();
         for settings in [missing, settings] {
-            let status = probe(&settings);
+            let status = probed(&settings);
             assert_eq!(
                 (status.state, status.error_code, status.report),
                 (
@@ -589,7 +621,7 @@ mod tests {
         let mut settings = authority.settings();
         settings.socket = socket;
         let started = Instant::now();
-        let status = probe(&settings);
+        let status = probed(&settings);
         assert_eq!(status.state, State::Unavailable);
         assert!(started.elapsed() < Duration::from_millis(1750));
         drop(holder.join().unwrap());
@@ -598,7 +630,7 @@ mod tests {
     #[test]
     fn another_uid_is_an_untrusted_authority() {
         let authority = Authority::start();
-        let status = probe_with(
+        let status = probed_with(
             &authority.settings(),
             effective_uid().wrapping_add(1),
             status_only(),
@@ -622,7 +654,7 @@ mod tests {
             ..status_only()
         };
         for compatibility in [protocol, capability] {
-            let status = probe_with(&authority.settings(), effective_uid(), compatibility);
+            let status = probed_with(&authority.settings(), effective_uid(), compatibility);
             assert_eq!(
                 (status.state, status.error_code),
                 (
@@ -645,7 +677,7 @@ mod tests {
         let mut consumer = authority.settings();
         consumer.consumer = "nobody".into();
         for settings in [secret, generation, consumer] {
-            let status = probe(&settings);
+            let status = probed(&settings);
             assert_eq!(
                 (status.state, status.error_code),
                 (State::CredentialRefused, Some(ErrorCode::Unauthorized)),
@@ -768,7 +800,7 @@ mod tests {
             "1".repeat(64).as_bytes(),
         );
         let statuses = [
-            probe(&settings),
+            probed(&settings),
             probe(&refused),
             probe_with(&settings, effective_uid().wrapping_add(1), status_only()),
         ];

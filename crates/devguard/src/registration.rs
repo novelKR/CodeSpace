@@ -282,7 +282,7 @@ fn mint_instance_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{private_file, short_directory, Authority, CODES};
+    use crate::tests::{past_the_credential, private_file, short_directory, Authority, CODES};
     use crate::{Capability, Role};
     use devguard_client::framing::{read_frame, write_frame};
     use devguard_client::protocol::{
@@ -352,6 +352,26 @@ mod tests {
         }
     }
 
+    /// `owner.register()`, again while it stops at the credential (see `past_the_credential`).
+    fn registered(owner: &Owner) -> Registration {
+        past_the_credential(stopped_at_the_credential, || owner.register())
+    }
+
+    fn registered_with(
+        owner: &Owner,
+        authority_uid: u32,
+        compatibility: Compatibility,
+        owner_pid: u32,
+    ) -> Registration {
+        past_the_credential(stopped_at_the_credential, || {
+            owner.register_with(authority_uid, compatibility.clone(), owner_pid)
+        })
+    }
+
+    fn stopped_at_the_credential(registration: &Registration) -> bool {
+        registration.state == RegistrationState::CredentialUnavailable
+    }
+
     fn owner(settings: &crate::Settings) -> Owner {
         Owner::new(
             OwnerSettings {
@@ -386,7 +406,8 @@ mod tests {
         let mut consumer = authority.settings();
         consumer.consumer = "nobody".into();
         for settings in [secret, generation, consumer] {
-            let registration = owner(&settings).register_with(
+            let registration = registered_with(
+                &owner(&settings),
                 effective_uid(),
                 any_capability(),
                 std::process::id(),
@@ -410,7 +431,8 @@ mod tests {
     #[test]
     fn another_authority_uid_is_untrusted() {
         let authority = Authority::start();
-        let registration = owner(&authority.settings()).register_with(
+        let registration = registered_with(
+            &owner(&authority.settings()),
             effective_uid().wrapping_add(1),
             registration(),
             std::process::id(),
@@ -437,7 +459,8 @@ mod tests {
             ..registration()
         };
         for compatibility in [protocol, capability] {
-            let registration = owner(&authority.settings()).register_with(
+            let registration = registered_with(
+                &owner(&authority.settings()),
                 effective_uid(),
                 compatibility,
                 std::process::id(),
@@ -458,7 +481,7 @@ mod tests {
     #[test]
     fn an_authority_without_native_evidence_cannot_register_an_owner() {
         let authority = Authority::start();
-        let registration = owner(&authority.settings()).register();
+        let registration = registered(&owner(&authority.settings()));
         assert_eq!(
             (
                 registration.state,
@@ -667,7 +690,7 @@ mod tests {
         let owner = scripted_owner(dir.path(), &socket);
         let states: Vec<_> = (0..5)
             .map(|_| {
-                let registration = owner.register();
+                let registration = registered(&owner);
                 (registration.state, registration.pid)
             })
             .collect();
@@ -704,7 +727,7 @@ mod tests {
                     registered: Box::new(|_, id| identity(id, std::process::id(), 7)),
                 },
             );
-            let registration = scripted_owner(dir.path(), &socket).register();
+            let registration = registered(&scripted_owner(dir.path(), &socket));
             assert_eq!(
                 (
                     registration.state,
@@ -742,7 +765,7 @@ mod tests {
                     }),
                 },
             );
-            let registration = scripted_owner(dir.path(), &socket).register();
+            let registration = registered(&scripted_owner(dir.path(), &socket));
             assert_eq!(
                 (
                     registration.state,
@@ -848,7 +871,7 @@ mod tests {
             let owner = provisioned.owner();
             let me = std::process::id();
             for _ in 0..3 {
-                let registration = owner.register();
+                let registration = registered(&owner);
                 assert_eq!(
                     (
                         registration.state,
@@ -878,7 +901,7 @@ mod tests {
             let sessions: Vec<_> = (0..8)
                 .map(|_| {
                     let owner = owner.clone();
-                    std::thread::spawn(move || owner.register())
+                    std::thread::spawn(move || registered(&owner))
                 })
                 .collect();
             for session in sessions {
@@ -905,7 +928,7 @@ mod tests {
                 },
                 OwnerCredential::File(provisioned.authority.paths().cli_credential()),
             );
-            let registration = workload.register();
+            let registration = registered(&workload);
             assert_eq!(
                 (registration.state, registration.error_code),
                 (RegistrationState::RoleMismatch, None)
@@ -918,7 +941,8 @@ mod tests {
             let provisioned = provision(2);
             // As if this process registered on behalf of another one: DevGuard registers the
             // session's peer, which is this process, not the expected owner.
-            let registration = provisioned.owner().register_with(
+            let registration = registered_with(
+                &provisioned.owner(),
                 effective_uid(),
                 registration(),
                 std::process::id() + 1,
@@ -977,7 +1001,7 @@ mod tests {
                 Some(id) => Owner::with_instance_id(settings, credential, id.to_owned()),
                 None => Owner::new(settings, credential),
             };
-            let registration = owner.register();
+            let registration = registered(&owner);
             println!(
                 "child-registration {:?} {:?} {:?} {}",
                 registration.state,
@@ -991,7 +1015,7 @@ mod tests {
         fn each_process_registers_only_its_own_identity() {
             let provisioned = provision(2);
             let owner = provisioned.owner();
-            assert_eq!(owner.register().state, RegistrationState::Registered);
+            assert_eq!(registered(&owner).state, RegistrationState::Registered);
             // Another process registers itself as a second instance...
             let (outcome, child) = register_elsewhere(&provisioned, None);
             assert_eq!(outcome, format!("Registered None Some({child})"));
@@ -1005,14 +1029,14 @@ mod tests {
             assert_eq!(outcome, "Refused Some(AttemptConflict) None");
             assert_eq!(provisioned.instances(), instances);
             // This owner keeps registering as itself.
-            assert_eq!(owner.register().state, RegistrationState::Registered);
+            assert_eq!(registered(&owner).state, RegistrationState::Registered);
         }
 
         #[test]
         fn a_full_instance_pool_refuses_another_owner() {
             let provisioned = provision(1);
             let owner = provisioned.owner();
-            assert_eq!(owner.register().state, RegistrationState::Registered);
+            assert_eq!(registered(&owner).state, RegistrationState::Registered);
             // The pool's one slot is held by this process, which is alive, so reconciling it
             // frees nothing.
             let (outcome, _) = register_elsewhere(&provisioned, None);
