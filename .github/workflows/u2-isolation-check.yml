@@ -7,7 +7,7 @@ name: U2 isolation check (temporary)
 on:
   push:
     branches: [claude/magical-euler-nvqrxp]
-    paths: [.github/workflows/u2-isolation-check.yml, .github/u2-isolation-check/run.sh]
+    paths: [.github/workflows/u2-isolation-check.yml, .github/u2-isolation-check/*]
   workflow_dispatch:
 
 permissions:
@@ -25,13 +25,18 @@ jobs:
       matrix:
         include:
           # Run 37118473333 tested b8d1614 (isolation removed) and 4caa34c (with the U1 test
-          # fixes), each with and without #86's mitigation. These are #84's head with D6's fix.
+          # fixes), each with and without #86's mitigation; run 37122171681 tested 2e12758 (D6's
+          # fix). These are #84's head with the tests' sessions run again when they stop at the
+          # credential: twice as it is, once with those sessions counted.
           - name: final 1
-            ref: 2e127587bdd5f3d2f735c291fce29729d6dfae75
+            ref: 2239085b9e1e8427277ae864a60b4f4cfb200246
             mode: final
           - name: final 2
-            ref: 2e127587bdd5f3d2f735c291fce29729d6dfae75
+            ref: 2239085b9e1e8427277ae864a60b4f4cfb200246
             mode: final
+          - name: count
+            ref: 2239085b9e1e8427277ae864a60b4f4cfb200246
+            mode: count
     runs-on: macos-latest
     timeout-minutes: 180
     steps:

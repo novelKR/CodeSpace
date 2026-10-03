@@ -1,9 +1,12 @@
 #!/bin/bash
 # Temporary: repeat on macOS the U2 test runs whose fork-abort isolation was removed, with #86's
 # mitigation and, as a control, with `prepare_fork_spawns` doing nothing. $1: the checkout of
-# #84's head to test; $2: `final` for the runs with the mitigation only, the gateway's 60 times.
+# #84's head to test; $2: `final` for the runs with the mitigation only, the gateway's and the
+# DevGuard adapter's 60 times, or `count` for the same runs with each test session that stops at
+# the credential and is run again counted (a diagnostic line added to the two test helpers).
 # Outputs go to diag-out/ next to it.
 set -u
+here="$(cd "$(dirname "$0")" && pwd)"
 cd "$1"
 mode="${2:-full}"
 out="$(dirname "$PWD")/diag-out"
@@ -33,23 +36,42 @@ crash_reports() { # reports newer than $1 that name _notify_fork_child
     | while read -r f; do grep -l "_notify_fork_child" "$f" 2>/dev/null; done | wc -l | tr -d ' '
 }
 
+# Lines in $DIAG_STOPS so far: one per test session run again after stopping at the credential.
+stops_so_far() {
+  if [ -n "${DIAG_STOPS:-}" ] && [ -f "$DIAG_STOPS" ]; then
+    wc -l < "$DIAG_STOPS" | tr -d ' '
+  else
+    echo 0
+  fi
+}
+
 results=()
 # repeat NAME COUNT COMMAND...
 repeat() {
   local name="$1" count="$2"; shift 2
-  local fails=0 i
+  local fails=0 stops=0 i before after
   touch "$out/$name.start"
   echo "== $name: $count runs of $*"
   for i in $(seq 1 "$count"); do
+    before=$(stops_so_far)
     if ! "$@" > "$out/$name-$i.log" 2>&1; then
       fails=$((fails + 1))
       echo "$name run $i failed:"
       grep -E -A3 "panicked at" "$out/$name-$i.log" | grep -v "^note:" | head -12
       grep -E "^test .* FAILED" "$out/$name-$i.log" | head -6
     fi
+    after=$(stops_so_far)
+    if [ "$after" -gt "$before" ]; then
+      echo "$name run $i: $((after - before)) sessions stopped at the credential and ran again, by thread:"
+      tail -n "+$((before + 1))" "$DIAG_STOPS" | sort | uniq -c
+      stops=$((stops + after - before))
+    fi
   done
   sleep 15 # ReportCrash writes its reports a little later
   local line="$name: $fails/$count runs failed; crash reports naming _notify_fork_child: $(crash_reports "$out/$name.start")"
+  if [ -n "${DIAG_STOPS:-}" ]; then
+    line="$line; sessions run again after stopping at the credential: $stops"
+  fi
   echo "$line"
   results+=("$line")
 }
@@ -59,21 +81,37 @@ runner_pair=(cargo test --locked -p codespace-runner --features devguard --lib -
   wire::tests::registration::a_timeout_needs_no_successful_registration
   wire::tests::replay_returns_cached_response)
 gateway=(cargo test --locked -p codespace-server --features devguard --lib -- devguard)
+# The DevGuard adapter's own tests, as the macos-core stage runs them.
+adapter=(cargo test --locked --manifest-path crates/devguard/Cargo.toml)
 
 scenarios() { # prefix
-  # Build both test binaries first, so no timed run includes a build.
+  # Build the test binaries first, so no timed run includes a build.
   cargo test --locked -p codespace-runner --features devguard --lib --no-run > "$out/$1-build.log" 2>&1 \
     && cargo test --locked -p codespace-server --features devguard --lib --no-run >> "$out/$1-build.log" 2>&1 \
+    && "${adapter[@]}" --no-run >> "$out/$1-build.log" 2>&1 \
     || { echo "$1: build failed"; tail -20 "$out/$1-build.log"; results+=("$1: build failed"); return; }
+  if [ "$adapter_runs" -gt 0 ]; then
+    repeat "$1-adapter" "$adapter_runs" "${adapter[@]}"
+  fi
   repeat "$1-runner-filter" 40 "${runner_filter[@]}"
   repeat "$1-runner-pair" 60 "${runner_pair[@]}"
   repeat "$1-gateway-parallel" "$gateway_runs" "${gateway[@]}"
 }
 
 gateway_runs=20
-if [ "$mode" = final ]; then
+adapter_runs=0
+if [ "$mode" = count ]; then
+  # Each test session that stops at the credential and is run again adds a line naming its
+  # thread to $DIAG_STOPS.
+  python3 "$here/count_stops.py" crates/devguard/src/lib.rs crates/server/src/devguard.rs
+  git diff --stat
+  export DIAG_STOPS="$out/stops"
+  : > "$DIAG_STOPS"
+fi
+if [ "$mode" = final ] || [ "$mode" = count ]; then
   gateway_runs=60
-  scenarios with-mitigation
+  adapter_runs=60
+  scenarios "$mode-with-mitigation"
   echo
   echo "== Results"
   printf '%s\n' "${results[@]}"
