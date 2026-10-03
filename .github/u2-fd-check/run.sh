@@ -21,8 +21,8 @@ export CODESPACE_DEVGUARD_RUNTIME_BIN="$target/debug/codespace-codex-runtime-dev
 export CODESPACE_DEVGUARD_FIXTURE_BIN="$target/debug/examples/fixture_authority"
 export CODESPACE_REQUIRE_DEVGUARD_BINS=1
 
-# Diagnostics in D6 only: the most descriptors open while it runs, and the count and limit when
-# a probe reports anything but Unavailable.
+# Diagnostics in D6 only: the most descriptors open while it runs, and the probe's duration and
+# the count and limit when a probe reports anything but Unavailable.
 python3 - crates/server/src/devguard.rs <<'PY'
 import sys
 path = sys.argv[1]
@@ -52,9 +52,10 @@ sub("""        let children = Arc::new(Children::new());
         // Each spawner's descriptors with no session being opened.""")
 sub("""                        let status = codespace_devguard::probe(&settings);
                         assert_eq!(status.state, State::Unavailable, "{status:?}");""",
-"""                        let status = codespace_devguard::probe(&settings);
+"""                        let started = std::time::Instant::now();
+                        let status = codespace_devguard::probe(&settings);
                         if status.state != State::Unavailable {
-                            eprintln!("DIAG probe {status:?}: {} descriptors open, limit {}", diag_open(), diag_limit());
+                            eprintln!("DIAG probe {status:?} after {:?}: {} descriptors open, limit {}", started.elapsed(), diag_open(), diag_limit());
                         }
                         assert_eq!(status.state, State::Unavailable, "{status:?}");""")
 sub("""        eprintln!("{summary}");
