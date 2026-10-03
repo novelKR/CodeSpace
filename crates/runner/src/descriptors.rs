@@ -478,28 +478,30 @@ pub(crate) mod tests {
         assert_eq!(guarded, "held\nclear\n");
     }
 
-    /// Raise the soft `RLIMIT_NOFILE` as far as the system allows, up to `wanted`, and return it.
-    fn raise_soft_limit(wanted: libc::rlim_t) -> libc::rlim_t {
+    /// Raise the soft `RLIMIT_NOFILE` as far as the system allows, up to `wanted`, and return the
+    /// size of this process's descriptor table. macOS accepts a soft limit above
+    /// kern.maxfilesperproc but caps the table there; `getdtablesize` returns the capped size.
+    fn raise_descriptor_table(wanted: libc::rlim_t) -> libc::c_int {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        // SAFETY: getrlimit and setrlimit read and write one rlimit of this process.
+        // SAFETY: getrlimit, setrlimit and getdtablesize read and write this process's limit.
         unsafe {
             assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
             let mut soft = wanted.min(limit.rlim_max);
-            // macOS also refuses a limit above kern.maxfilesperproc.
+            // Linux refuses any limit while the hard limit is above fs.nr_open.
             while soft > limit.rlim_cur {
                 let raised = libc::rlimit {
                     rlim_cur: soft,
                     rlim_max: limit.rlim_max,
                 };
                 if libc::setrlimit(libc::RLIMIT_NOFILE, &raised) == 0 {
-                    return soft;
+                    break;
                 }
                 soft /= 2;
             }
-            limit.rlim_cur
+            libc::getdtablesize()
         }
     }
 
@@ -515,9 +517,9 @@ pub(crate) mod tests {
             );
             return;
         }
-        let soft = raise_soft_limit(65_536);
-        let top = libc::c_int::try_from(soft - 1).unwrap();
-        assert!(top >= 1024, "the soft limit stayed at {soft}");
+        let table = raise_descriptor_table(65_536);
+        let top = table - 1;
+        assert!(top >= 1024, "the descriptor table stayed at {table}");
         let held = inheritable_at(top);
         assert_eq!(held.as_raw_fd(), top, "the highest descriptor number");
         // The control: a plain child inherits it.

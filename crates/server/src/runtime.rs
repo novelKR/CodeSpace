@@ -217,6 +217,7 @@ mod tests {
             pub fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
             pub fn getrlimit(resource: c_int, limit: *mut Rlimit) -> c_int;
             pub fn setrlimit(resource: c_int, limit: *const Rlimit) -> c_int;
+            pub fn getdtablesize() -> c_int;
             pub fn pthread_atfork(
                 prepare: Option<unsafe extern "C" fn()>,
                 parent: Option<unsafe extern "C" fn()>,
@@ -344,13 +345,15 @@ mod tests {
             }
         };
 
-        // An inheritable descriptor at the highest number the raised limit allows.
+        // An inheritable descriptor at the highest number this process can open once its soft
+        // limit is raised. macOS accepts a soft limit above kern.maxfilesperproc but caps the
+        // table there; `getdtablesize` returns the capped size.
         let mut limit = sys::Rlimit { cur: 0, max: 0 };
-        // SAFETY: getrlimit and setrlimit read and write one rlimit of this process.
-        let soft = unsafe {
+        // SAFETY: getrlimit, setrlimit and getdtablesize read and write this process's limit.
+        let table = unsafe {
             assert_eq!(sys::getrlimit(sys::RLIMIT_NOFILE, &mut limit), 0);
             let mut soft = limit.max.min(65_536);
-            // macOS also refuses a limit above kern.maxfilesperproc.
+            // Linux refuses any limit while the hard limit is above fs.nr_open.
             while soft > limit.cur
                 && sys::setrlimit(
                     sys::RLIMIT_NOFILE,
@@ -362,10 +365,10 @@ mod tests {
             {
                 soft /= 2;
             }
-            soft.max(limit.cur)
+            sys::getdtablesize()
         };
-        let top = std::os::raw::c_int::try_from(soft - 1).unwrap();
-        assert!(top >= 1024, "the soft limit stayed at {soft}");
+        let top = table - 1;
+        assert!(top >= 1024, "the descriptor table stayed at {table}");
         let null = std::fs::File::open("/dev/null").unwrap();
         // SAFETY: F_DUPFD (0) returns a new descriptor without close-on-exec, owned below.
         let held = unsafe { sys::fcntl(null.as_raw_fd(), 0, top) };
