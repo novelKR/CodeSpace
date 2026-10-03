@@ -1,0 +1,50 @@
+name: Main gateway check (temporary)
+
+# Temporary: repeats on macOS the gateway DevGuard test command that failed in main's post-merge
+# CI run 37114872355, at main and at main before #86, and prints every failure to the job log.
+
+on:
+  push:
+    branches: [claude/magical-euler-nvqrxp]
+    paths: [.github/workflows/main-gateway-check.yml, .github/main-gateway-check/run.sh]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: main after 86
+            ref: 02cf9059c1a9e69815511e8432a6f3d28c3c6aac
+          - name: main before 86
+            ref: 32068656f58afd8d6f4b353eccb62c2bb57feb54
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diag
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          path: src
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Host
+        run: |
+          sw_vers
+          sysctl -n hw.ncpu
+          rustc -vV
+          git -C src rev-parse HEAD
+      - name: Repeated runs
+        timeout-minutes: 110
+        run: bash diag/.github/main-gateway-check/run.sh "$PWD/src" 60
