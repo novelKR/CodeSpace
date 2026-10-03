@@ -697,13 +697,21 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_child_check_sees_an_inheritable_socket_that_codespace_spawners_exclude() {
         let children = Children::new();
+        // Each spawner's descriptors before the socket exists. The worker's shell holds its own
+        // from 10 up, which the socket's number can equal, so each child must hold exactly
+        // these; one that had the socket would hold one more.
+        let spawners = [Spawner::Pipe, Spawner::Pty, Spawner::Worker];
+        let mut baseline = Vec::new();
+        for spawner in spawners {
+            baseline.push(children.report(spawner).await.descriptors);
+        }
         let (held, _peer) = inheritable_socket();
         let fd = held.as_raw_fd();
         let control = children.report(Spawner::Unguarded).await;
         assert!(control.sockets.contains(&fd), "{control:?}");
-        for spawner in [Spawner::Pipe, Spawner::Pty, Spawner::Worker] {
+        for (spawner, expected) in spawners.into_iter().zip(baseline) {
             let report = children.report(spawner).await;
-            assert!(!report.descriptors.contains(&fd), "{spawner:?}: {report:?}");
+            assert_eq!(report.descriptors, expected, "{spawner:?}: {report:?}");
         }
     }
 
