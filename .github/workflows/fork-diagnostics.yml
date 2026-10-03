@@ -10,7 +10,7 @@ on:
     inputs:
       trials:
         description: Stress trials
-        default: "100"
+        default: "400"
 
 permissions:
   contents: read
@@ -58,8 +58,23 @@ jobs:
       - name: Probes and stress
         timeout-minutes: 60
         env:
-          TRIALS: ${{ github.event.inputs.trials || '100' }}
+          TRIALS: ${{ github.event.inputs.trials || '400' }}
         run: bash .github/fork-diagnostics/run.sh
+      - name: Process-lifecycle suites
+        if: always()
+        timeout-minutes: 60
+        run: |
+          export CODESPACE_PATCH_BIN="$CARGO_TARGET_DIR/debug/codespace-patch"
+          export CODESPACE_RUNTIME_BIN="$CARGO_TARGET_DIR/debug/codespace-codex-runtime"
+          mkdir -p diag-out
+          status=0
+          for suite in "-p codespace-runner" "-p codespace-server" "--manifest-path crates/codex-runtime/Cargo.toml"; do
+            name="$(echo "$suite" | tr -c 'a-z0-9\n' '-' | tr -s '-')"
+            echo "== cargo test $suite"
+            cargo test --locked $suite > "diag-out/suite$name.log" 2>&1 || status=1
+            grep -E "^test result|FAILED|panicked" "diag-out/suite$name.log" || true
+          done
+          exit $status
       - uses: actions/upload-artifact@v4
         if: always()
         with:

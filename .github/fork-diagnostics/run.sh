@@ -43,6 +43,25 @@ wait_or_kill() {
   wait "$pid" 2>/dev/null
 }
 
+# Print the logged events of a probe with their stacks (first 30 frames).
+events() {
+  python3 - "$1" <<'PY'
+import re, sys
+block, frames = None, 0
+for line in open(sys.argv[1], errors="replace"):
+    line = line.rstrip("\n")
+    if re.match(r"(ALLOC-ONCE-FIRST|NOTIFY-CALL #[1-3] |FORK #[1-4] |POSIX-SPAWN #[1-3] |PTRACE|TRACE-OFF|probe-|Process \d+ exited)", line):
+        print(line)
+        block, frames = line, 0
+    elif line.startswith("    #") and block is not None:
+        frames += 1
+        if frames <= 30:
+            print(line)
+    else:
+        block = None
+PY
+}
+
 listener() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1
 }
@@ -56,7 +75,7 @@ process handle SIGPIPE --pass true --stop false --notify false
 process handle SIGCHLD --pass true --stop false --notify false
 breakpoint set --name _os_alloc_once --shlib libsystem_platform.dylib
 breakpoint command add --python-function lldb_probe.alloc_once_hit
-breakpoint set --func-regex ^_?notify_ --shlib libsystem_notify.dylib
+breakpoint set --func-regex ^notify_ --shlib libsystem_notify.dylib
 breakpoint command add --python-function lldb_probe.notify_hit
 breakpoint set --name fork --shlib libsystem_c.dylib
 breakpoint command add --python-function lldb_probe.fork_hit
@@ -82,7 +101,7 @@ echo "== A: harness read path (--probe-read) =="
 } > "$out/A-read.lldb"
 lldb --batch -s "$out/A-read.lldb" > "$out/A-read.log" 2>&1 &
 wait_or_kill $! 300
-grep -E "ALLOC-ONCE-FIRST|NOTIFY-CALL #1 |probe-read|FORK|POSIX-SPAWN|Process .* exited" "$out/A-read.log" | head -60
+events "$out/A-read.log"
 
 echo "== B: gateway, in-process runner =="
 {
@@ -97,7 +116,7 @@ pid="$(listener 18781)"
 [ -n "$pid" ] && kill -INT "$pid"
 wait_or_kill "$lldb_pid" 120
 cat "$out/B-driver.log"
-grep -E "ALLOC-ONCE-FIRST|NOTIFY-CALL #1 |FORK #|POSIX-SPAWN #|Process .* exited" "$out/B-gateway.log" | head -60
+events "$out/B-gateway.log"
 
 echo "== C: worker (under LLDB) behind a gateway connecting with --runner-socket =="
 sockdir="$(mktemp -d /tmp/fdsock.XXXXXX)"
@@ -119,7 +138,7 @@ kill -INT "$gw" 2>/dev/null
 wait_or_kill "$gw" 30
 wait_or_kill "$lldb_pid" 120
 cat "$out/C-driver.log"
-grep -E "PTRACE|ALLOC-ONCE-FIRST|NOTIFY-CALL #1 |FORK #|POSIX-SPAWN #|Process .* exited" "$out/C-worker.log" | head -60
+events "$out/C-worker.log"
 
 echo "== D: gateway (under LLDB) spawning its worker with --runtime-bin =="
 {
@@ -134,12 +153,18 @@ pid="$(listener 18783)"
 [ -n "$pid" ] && kill -INT "$pid"
 wait_or_kill "$lldb_pid" 120
 cat "$out/D-driver.log"
-grep -E "ALLOC-ONCE-FIRST|NOTIFY-CALL #1 |FORK #|POSIX-SPAWN #|Process .* exited" "$out/D-gateway.log" | head -60
+events "$out/D-gateway.log"
 
-echo "== E: stress, ${TRIALS:-100} trials =="
-CODESPACE_FORK_RACE_OUT="$out/stress" "$harness" --trials "${TRIALS:-100}" > "$out/E-stress.log" 2>&1
+echo "== F: one-time initializations each operation starts (fresh process each, no debugger) =="
+for operation in none watch fs-read read find pipe pty patch; do
+  "$harness" --probe-slots "$operation" 2>&1 | tee -a "$out/F-slots.log"
+done
+
+echo "== E: stress, ${TRIALS:-400} trials =="
+CODESPACE_FORK_RACE_OUT="$out/stress" "$harness" --trials "${TRIALS:-400}" > "$out/E-stress.log" 2>&1
 echo "stress exit: $?"
 tail -5 "$out/E-stress.log"
+grep -c pre_exec_death "$out/stress/trials.jsonl" || true
 
 echo "== crash reports written during this job =="
 mkdir -p "$out/diagnostic-reports"

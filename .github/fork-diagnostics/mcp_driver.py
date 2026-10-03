@@ -69,14 +69,26 @@ def wait_listening(port, seconds):
 
 
 def wait_exit(client, process_id):
+    # Exited and drained: the workspace lease is released only once the output reaches EOF.
     for _ in range(600):
         error, is_error, status = client.tool("process_status", {"process_id": process_id})
         if error or is_error:
             return "status error %s %s" % (error, status)
-        if status.get("state") == "exited":
+        if status.get("state") == "exited" and status.get("eof"):
             return json.dumps(status, sort_keys=True)
         time.sleep(0.05)
     return "still running"
+
+
+def tool_when_free(client, name, arguments):
+    # A process of an earlier step may hold the workspace lease for a moment longer.
+    for _ in range(100):
+        error, is_error, result = client.tool(name, arguments)
+        busy = is_error and isinstance(result, dict) and result.get("code") == "WORKSPACE_BUSY"
+        if not busy:
+            break
+        time.sleep(0.1)
+    return error, is_error, result
 
 
 def main():
@@ -102,14 +114,14 @@ def main():
 
     for label, tty in (("pipe", False), ("pty", True)):
         log("exec-%s-start" % label)
-        error, is_error, result = client.tool("exec_command", {"workspace_id": workspace, "command": ["/usr/bin/true"], "tty": tty})
+        error, is_error, result = tool_when_free(client, "exec_command", {"workspace_id": workspace, "command": ["/usr/bin/true"], "tty": tty})
         log("exec-%s-returned" % label, "error=%s is_error=%s result=%s" % (error, is_error, json.dumps(result)))
         if isinstance(result, dict) and result.get("process_id"):
             log("exec-%s-exited" % label, wait_exit(client, result["process_id"]))
 
     patch = "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch\n"
     log("patch-start")
-    error, is_error, result = client.tool("apply_patch", {"workspace_id": workspace, "patch": patch})
+    error, is_error, result = tool_when_free(client, "apply_patch", {"workspace_id": workspace, "patch": patch})
     log("patch-done", "error=%s is_error=%s result=%s" % (error, is_error, json.dumps(result)))
 
     log("read2-start")

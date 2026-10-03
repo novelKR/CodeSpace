@@ -7,7 +7,8 @@ the callbacks only log, with wall-clock times that the MCP driver's log shares.
   `_os_alloc_once_table`, with the stack. The first call for slot 0
   (OS_ALLOC_ONCE_KEY_LIBSYSTEM_NOTIFY) is libnotify's one-time global initialization.
 - `notify_hit`: the first calls into libsystem_notify.dylib.
-- `fork_hit` / `spawn_hit`: process creation by fork or posix_spawn.
+- `fork_hit` / `spawn_hit`: process creation by fork or posix_spawn. The first fork disables the
+  two breakpoints above: a forked child inherits their trap instructions and would die on them.
 - `ptrace_hit`: skips `ptrace(PT_DENY_ATTACH)`, which the worker calls in `main`.
 """
 
@@ -27,7 +28,7 @@ SLOT_NAMES = {
 }
 PT_DENY_ATTACH = 31
 
-_state = {"table": None, "seen": set(), "forks": 0, "spawns": 0, "notify": 0}
+_state = {"table": None, "seen": set(), "forks": 0, "spawns": 0, "notify": 0, "traced": set()}
 
 
 def _now():
@@ -71,7 +72,14 @@ def _table(target):
     return _state["table"]
 
 
+def _remember(bp_loc):
+    # Breakpoints whose code a forked child may run; disabled at the first fork, because a
+    # child inherits their trap instructions with the parent's memory and dies on them.
+    _state["traced"].add(bp_loc.GetBreakpoint().GetID())
+
+
 def alloc_once_hit(frame, bp_loc, internal_dict):
+    _remember(bp_loc)
     thread = frame.GetThread()
     table = _table(thread.GetProcess().GetTarget())
     slot = _arg0(frame)
@@ -88,6 +96,7 @@ def alloc_once_hit(frame, bp_loc, internal_dict):
 
 
 def notify_hit(frame, bp_loc, internal_dict):
+    _remember(bp_loc)
     _state["notify"] += 1
     count = _state["notify"]
     if count <= 25:
@@ -101,6 +110,12 @@ def fork_hit(frame, bp_loc, internal_dict):
     _state["forks"] += 1
     count = _state["forks"]
     thread = frame.GetThread()
+    if count == 1 and _state["traced"]:
+        target = thread.GetProcess().GetTarget()
+        for bp_id in sorted(_state["traced"]):
+            target.FindBreakpointByID(bp_id).SetEnabled(False)
+        print("TRACE-OFF t=%s breakpoints %s disabled before the first fork" % (
+            _now(), sorted(_state["traced"])), flush=True)
     if count <= 12:
         print("FORK #%d t=%s %s\n%s" % (count, _now(), _thread(thread), _stack(thread, 30)), flush=True)
     else:
