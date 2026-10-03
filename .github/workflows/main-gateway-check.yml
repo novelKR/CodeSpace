@@ -1,7 +1,7 @@
 name: Main gateway check (temporary)
 
 # Temporary: repeats on macOS the gateway DevGuard test command that failed in main's post-merge
-# CI run 37114872355, at main and at main before #86, and prints every failure to the job log.
+# CI run 37114872355 and prints every failure to the job log.
 
 on:
   push:
@@ -23,10 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: main after 86
-            ref: 02cf9059c1a9e69815511e8432a6f3d28c3c6aac
-          - name: main before 86
-            ref: 32068656f58afd8d6f4b353eccb62c2bb57feb54
+          # Run 37116156097 tested main after #86 (02cf905) and before it (3206865).
+          - name: with the test fixes 1
+            ref: ${{ github.sha }}
+          - name: with the test fixes 2
+            ref: ${{ github.sha }}
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
