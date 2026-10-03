@@ -461,17 +461,17 @@ pub(crate) mod tests {
     async fn probes_run_one_at_a_time_and_report_from_after_the_call() {
         let dir = short_directory();
         let socket = dir.path().join("slow.sock");
-        let (open, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let (opened, highest) = (open.clone(), most.clone());
-        // Hold each session, answering nothing, and record how many are open at once.
-        let endpoint = Endpoint::start(&socket, move |stream| {
-            let now = opened.fetch_add(1, Ordering::SeqCst) + 1;
-            highest.fetch_max(now, Ordering::SeqCst);
+        // Hold each session 100 ms, answering nothing. A probe ends at that close or at
+        // DevGuard's 250 ms deadline, so it lasts at least 100 ms however late the endpoint
+        // takes its session: probes that run one at a time take at least 100 ms each. Counting
+        // the sessions the endpoint holds at once would not show this, since a late endpoint
+        // can still hold a session whose probe has ended.
+        let endpoint = Endpoint::start(&socket, |stream| {
             std::thread::sleep(Duration::from_millis(100));
-            opened.fetch_sub(1, Ordering::SeqCst);
             drop(stream);
         });
         let authority = ResourceAuthority::new(settings(dir.path(), socket));
+        let started = Instant::now();
         let calls = (0..8).map(|_| {
             let authority = authority.clone();
             tokio::spawn(async move { authority.status().await })
@@ -482,16 +482,16 @@ pub(crate) mod tests {
                 ResourceAuthorityState::Unavailable
             );
         }
-        assert_eq!(most.load(Ordering::SeqCst), 1);
+        let elapsed = started.elapsed();
+        let probes = endpoint.accepted();
         // Calls that arrived together share a probe that started after they arrived.
+        assert!((1..=2).contains(&probes), "{probes}");
         assert!(
-            (1..=2).contains(&endpoint.accepted()),
-            "{}",
-            endpoint.accepted()
+            elapsed >= Duration::from_millis(100) * probes as u32,
+            "{probes} probes in {elapsed:?}"
         );
-        let before = endpoint.accepted();
         authority.status().await;
-        assert_eq!(endpoint.accepted(), before + 1, "a later call probes again");
+        assert_eq!(endpoint.accepted(), probes + 1, "a later call probes again");
     }
 
     #[tokio::test(flavor = "current_thread")]
