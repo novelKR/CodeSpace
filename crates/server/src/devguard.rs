@@ -1521,8 +1521,16 @@ pub(crate) mod tests {
         assert!(!format!("{settings:?}").contains(SECRET));
     }
 
+    /// Alone, as `logs_name_the_state_and_never_the_secret` is: other tests' threads reach the
+    /// registration log too.
+    #[test]
+    fn registration_logs_name_the_owner_and_state_never_the_secret() {
+        run_alone("devguard::tests::registration_logs_child");
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn registration_logs_name_the_owner_and_state_never_the_secret() {
+    #[ignore = "run alone in a separate process by its parent test"]
+    async fn registration_logs_child() {
         #[derive(Clone, Default)]
         struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
         impl Write for Captured {
