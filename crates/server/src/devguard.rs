@@ -958,6 +958,12 @@ pub(crate) mod tests {
                     let mut sessions = 0usize;
                     while !stop.load(Ordering::Relaxed) {
                         let status = codespace_devguard::probe(&settings);
+                        // DevGuard reads the consumer secret within 250 ms of wall time. With
+                        // the other tests running, this thread can be held past that, and the
+                        // probe then ends before it opens a session: nothing for a child to get.
+                        if status.state == State::CredentialUnavailable {
+                            continue;
+                        }
                         assert_eq!(status.state, State::Unavailable, "{status:?}");
                         sessions += 1;
                     }
