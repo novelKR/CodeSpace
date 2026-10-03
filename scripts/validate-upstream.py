@@ -55,13 +55,18 @@ def stages():
         'clippy-adapters': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('patch', 'pty', 'file-system', 'devguard')],
         'clippy-codex': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('codex-runtime', 'linux-sandbox')],
         'macos-core': [cargo(action, a, *(['--all-targets', '--', '-D', 'warnings'] if action == 'clippy' else [])) for a in ('pty', 'file-system') for action in ('clippy', 'test')]
-        # Descriptor hygiene of the runner host's spawns, whose macOS path the Linux legs cannot exercise.
-        + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'missing_executable_is_process_spawn_failed'),
+        # Descriptor hygiene of the runner host's spawns and their fork-time libnotify state, whose
+        # macOS path the Linux legs cannot exercise.
+        + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'fork_handlers', 'missing_executable_is_process_spawn_failed'),
            cargo('test', 'root', '-p', 'codespace-server', '--lib', '--', 'descriptors')]
         # The DevGuard status adapter against an authority with native host evidence, and the
         # gateway's DevGuard tests where socket creation is not atomically close-on-exec.
         + [cargo('test', 'devguard'),
            cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard')],
+        # Children killed inside fork on macOS: fresh-process trials of reads concurrent with
+        # pipe spawns (crates/runner/tests/fork_race.rs); any child without an exit code fails.
+        'macos-fork-race': [cargo('test', 'root', '-p', 'codespace-runner', '--test', 'fork_race', '--',
+                                  '--trials', FORK_RACE_TRIALS, '--require-zero')],
         'integration': [],
         'linux-isolation': [cargo('build', 'linux-sandbox', '--bin', 'codespace-linux-sandbox'), cargo('test', 'linux-sandbox', '--test', 'isolation')],
         'dependencies': [],
@@ -72,6 +77,11 @@ def stages():
     result['unit-linux-sandbox-protocol'] = [cargo('test', 'root', '-p', 'codespace-linux-sandbox-protocol')]
     return result
 
+
+# Chosen from the failure rate measured before the fix (see the fork_race harness).
+FORK_RACE_TRIALS = '400'
+# Stages that only the macOS leg runs; `all` is the Linux qualification.
+MACOS_ONLY = ('macos-core', 'macos-fork-race')
 
 HELPERS = {'patch': ('codespace-patch', 'CODESPACE_PATCH_BIN'),
            'codex-runtime': ('codespace-codex-runtime', 'CODESPACE_RUNTIME_BIN'),
@@ -129,6 +139,9 @@ def run(selected, output):
                 stage_env = env.copy()
                 if stage == 'linux-isolation':
                     stage_env['CODESPACE_REQUIRE_LINUX_SANDBOX'] = '1'
+                if stage == 'macos-fork-race':
+                    # The harness's summary, trial lines and crash reports go to the report.
+                    stage_env['CODESPACE_FORK_RACE_OUT'] = str(output / 'fork-race')
                 with (output / (stage + '.log')).open('w') as log:
                     execute(commands, stage_env, log)
                 entry['status'] = 'passed'
@@ -136,6 +149,10 @@ def run(selected, output):
                 entry['error'] = str(error)
                 failed = True
             entry['seconds'] = round(time.monotonic() - started, 2)
+            fork_race = output / 'fork-race' / 'summary.json'
+            if stage == 'macos-fork-race' and fork_race.is_file():
+                # The stage's counts for readers of the job log; the report keeps the details.
+                print('fork_race summary: ' + fork_race.read_text().strip(), flush=True)
         if fingerprint() != before:
             raise RuntimeError('source or validation inputs changed during execution')
         report['status'] = 'failed' if failed else ('incomplete' if any(s['status'] == 'not_run' for s in report['stages']) else 'passed')
@@ -151,7 +168,7 @@ def run(selected, output):
 
 
 def all_stages():
-    return [s for s in stages() if s != 'macos-core']
+    return [s for s in stages() if s not in MACOS_ONLY]
 
 
 def main():

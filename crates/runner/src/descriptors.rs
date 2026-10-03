@@ -30,11 +30,16 @@
 //! Installing a `pre_exec` step makes std, and Tokio through it, create these children with
 //! fork and exec instead of its `posix_spawn` fast path. Process ownership, the std and Tokio
 //! child handles, reaping, output pumps, timeouts, the PTY path and lifecycle are unchanged.
+//! Because the spawn then forks, installing the step first calls
+//! [`crate::prepare_fork_spawns`], which keeps a macOS child from copying libnotify's
+//! initialization in progress.
 
 use std::io;
 
-/// Mark every descriptor above 2 close-on-exec in the child, before exec.
+/// Mark every descriptor above 2 close-on-exec in the child, before exec. The spawn then forks,
+/// so this first calls [`crate::prepare_fork_spawns`].
 pub fn exclude_unrelated(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    crate::prepare_fork_spawns();
     // SAFETY: `mark_unrelated` runs in the forked child and is restricted as the module
     // documentation describes.
     unsafe { command.pre_exec(|| mark_unrelated(Forced::NONE)) }
@@ -45,6 +50,7 @@ pub(crate) fn exclude_unrelated_std(
     command: &mut std::process::Command,
 ) -> &mut std::process::Command {
     use std::os::unix::process::CommandExt;
+    crate::prepare_fork_spawns();
     // SAFETY: as for `exclude_unrelated`.
     unsafe { command.pre_exec(|| mark_unrelated(Forced::NONE)) }
 }
@@ -297,6 +303,7 @@ pub(crate) mod tests {
     }
 
     fn forced(command: &mut Command, forced: Forced) {
+        crate::prepare_fork_spawns();
         // SAFETY: as for `exclude_unrelated`.
         unsafe {
             command.pre_exec(move || mark_unrelated(forced));
@@ -469,5 +476,107 @@ pub(crate) mod tests {
             exclude_unrelated_std(command);
         });
         assert_eq!(guarded, "held\nclear\n");
+    }
+
+    /// Raise the soft `RLIMIT_NOFILE` as far as the system allows, up to `wanted`, and return the
+    /// size of this process's descriptor table. macOS accepts a soft limit above
+    /// kern.maxfilesperproc but caps the table there; `getdtablesize` returns the capped size.
+    fn raise_descriptor_table(wanted: libc::rlim_t) -> libc::c_int {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit, setrlimit and getdtablesize read and write this process's limit.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+            let mut soft = wanted.min(limit.rlim_max);
+            // Linux refuses any limit while the hard limit is above fs.nr_open.
+            while soft > limit.rlim_cur {
+                let raised = libc::rlimit {
+                    rlim_cur: soft,
+                    rlim_max: limit.rlim_max,
+                };
+                if libc::setrlimit(libc::RLIMIT_NOFILE, &raised) == 0 {
+                    break;
+                }
+                soft /= 2;
+            }
+            libc::getdtablesize()
+        }
+    }
+
+    /// The pipe and patch-helper spawns exclude an inheritable descriptor at the highest number
+    /// this process can open. The scenario raises the descriptor limit, so it runs in a fresh
+    /// copy of this test binary; the worker spawn is checked in the gateway crate.
+    #[test]
+    fn production_children_exclude_a_descriptor_at_the_table_end() {
+        use crate::fork_handlers::tests::{in_isolated_copy, run_isolated};
+        if !in_isolated_copy() {
+            run_isolated(
+                "descriptors::tests::production_children_exclude_a_descriptor_at_the_table_end",
+            );
+            return;
+        }
+        let table = raise_descriptor_table(65_536);
+        let top = table - 1;
+        assert!(top >= 1024, "the descriptor table stayed at {table}");
+        let held = inheritable_at(top);
+        assert_eq!(held.as_raw_fd(), top, "the highest descriptor number");
+        // The control: a plain child inherits it.
+        assert_eq!(child_report(top, |_| {}), "held\nheld\n");
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            use crate::Runner;
+            let dir = tempfile::tempdir().unwrap();
+            let ws = codespace_policy::Workspace::new(
+                codespace_domain::WorkspaceId("demo".into()),
+                dir.path().to_path_buf(),
+                codespace_domain::Profile::WorkspaceWrite,
+            );
+            let runner = crate::InProcessRunner::new(std::sync::Arc::new(|_| {}));
+            let process_id = codespace_domain::ProcessId("proc-table-end".into());
+            let request = crate::RunnerExecRequest::for_host(
+                vec!["/bin/sh".into(), "-c".into(), report_script(top)],
+                process_id.clone(),
+                codespace_domain::Profile::WorkspaceWrite,
+            );
+            runner.exec(&ws, request).await.unwrap();
+            let mut output = String::new();
+            for _ in 0..500 {
+                let read = runner
+                    .read_process(crate::RunnerReadProcess {
+                        process_id: process_id.clone(),
+                        cursor: 0,
+                    })
+                    .await
+                    .unwrap();
+                output = read.chunk;
+                if read.eof {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(output, "held\nclear\n", "pipe child");
+
+            // The patch helper's command, with a shell standing in for the helper: it reads the
+            // report script from its piped stdin.
+            let mut helper = crate::patch_helper::helper_command(std::path::Path::new("/bin/sh"))
+                .spawn()
+                .unwrap();
+            let mut stdin = helper.stdin.take().unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut stdin, report_script(top).as_bytes())
+                .await
+                .unwrap();
+            drop(stdin);
+            let output = helper.wait_with_output().await.unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                "held\nclear\n",
+                "patch helper child"
+            );
+        });
+        drop(held);
     }
 }

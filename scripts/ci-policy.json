@@ -78,7 +78,7 @@
       "compiles": ["codex-runtime", "devguard", "domain", "file-system", "linux-sandbox", "linux-sandbox-protocol", "patch", "policy", "pty", "runner", "server", "store"]
     },
     "rust-macos/single": {
-      "stages": ["macos-core", "dependencies"], "cache": "crates/file-system",
+      "stages": ["macos-core", "macos-fork-race", "dependencies"], "cache": "crates/file-system",
       "compiles": ["devguard", "domain", "file-system", "linux-sandbox-protocol", "policy", "pty", "runner", "server", "store"]
     }
   }

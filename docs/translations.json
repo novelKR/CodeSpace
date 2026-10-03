@@ -486,8 +486,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "a9a1ab3276b7d88eabc5cda340bdc56b09d24140bf341e1763f0f05d7967709e",
-      "translation_sha256": "e88efd529b27bb635ff4eba69ef08bb84bae807678582d55b12cfc466086ee97"
+      "source_sha256": "66886bbaeba442876e1b537f24eb018c1b4ca44ba9aa0fa5a37cce5f4becfca6",
+      "translation_sha256": "05f7f22336cf6be423e2b2fab6aa3b389fe5362b655e436c509c1158a901706f"
     },
     {
       "id": "error-codes",
@@ -670,8 +670,8 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "e4bdfb3f8a4ec451d492cbb3e71ead6867a0decee4dcb35c7e9003f08f746ee5",
-      "translation_sha256": "d483dc4f64d780cf50c670073bc56db68ee259ab04f3bc519e57cc751cbfa879"
+      "source_sha256": "ebf699a92d40856ee8b7e92c6df35bfc863dd235fe0e20363e8db29f042ffa9b",
+      "translation_sha256": "a7a7767aab3a0d0dbeb73b866876a2ac7f746980067036877a64a1c9f8625ea5"
     },
     {
       "id": "documentation",
