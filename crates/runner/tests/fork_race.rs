@@ -19,6 +19,10 @@
 //!   there.
 //! - `--trial`: one trial in this process.
 //! - `--probe-read`: one read through `InProcessRunner` and no spawn, for a debugger to watch.
+//! - `--probe-slots OPERATION`: run one operation in this process and list the libSystem
+//!   one-time initializations (`_os_alloc_once` slots) it started (macOS). OPERATION is `none`,
+//!   `watch` (start the workspace watcher only), `fs-read` (read through the file-system
+//!   adapter only), `read`, `find`, `pipe`, `pty` or `patch` (needs CODESPACE_PATCH_BIN).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -48,6 +52,9 @@ fn main() -> ExitCode {
     }
     if args.iter().any(|arg| arg == "--probe-read") {
         return probe_read_main();
+    }
+    if let Some(operation) = flag_value(&args, "--probe-slots") {
+        return probe_slots_main(operation);
     }
     if let Some(count) = flag_value(&args, "--trials") {
         let Ok(count) = count.parse::<usize>() else {
@@ -284,6 +291,172 @@ fn probe_read_main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("probe-read: {err}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Keys of libplatform's `_os_alloc_once_table` in Libsystem's `alloc_once_private.h`.
+const SLOT_NAMES: [&str; 23] = [
+    "LIBSYSTEM_NOTIFY",
+    "LIBXPC",
+    "LIBSYSTEM_C",
+    "LIBSYSTEM_INFO",
+    "LIBSYSTEM_NETWORK",
+    "LIBCACHE",
+    "LIBCOMMONCRYPTO",
+    "LIBDISPATCH",
+    "LIBDYLD",
+    "LIBKEYMGR",
+    "LIBLAUNCH",
+    "LIBMACHO",
+    "OS_TRACE",
+    "LIBSYSTEM_BLOCKS",
+    "LIBSYSTEM_MALLOC",
+    "LIBSYSTEM_PLATFORM",
+    "LIBSYSTEM_PTHREAD",
+    "LIBSYSTEM_STATS",
+    "LIBSECINIT",
+    "LIBSYSTEM_CORESERVICES",
+    "LIBSYSTEM_SYMPTOMS",
+    "LIBSYSTEM_PLATFORM_ASL",
+    "LIBSYSTEM_FEATUREFLAGS",
+];
+
+/// Slots of `_os_alloc_once_table` (`OS_ALLOC_ONCE_KEY_MAX` = 100) whose initialization has
+/// started, for reporting only.
+#[cfg(target_os = "macos")]
+fn started_slots() -> BTreeSet<usize> {
+    // SAFETY: as in `notify_slot`; the table has 100 (once, pointer) pairs.
+    let table = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"_os_alloc_once_table".as_ptr()) };
+    if table.is_null() {
+        return BTreeSet::new();
+    }
+    let words = table as *const usize;
+    (0..100)
+        // SAFETY: slot `n` starts at word `2 * n` of the table.
+        .filter(|n| unsafe { std::ptr::read_volatile(words.add(2 * n)) } != 0)
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn started_slots() -> BTreeSet<usize> {
+    BTreeSet::new()
+}
+
+fn slot_names(slots: &BTreeSet<usize>) -> String {
+    let names: Vec<String> = slots
+        .iter()
+        .map(|&n| format!("{n} {}", SLOT_NAMES.get(n).copied().unwrap_or("?")))
+        .collect();
+    format!("[{}]", names.join(", "))
+}
+
+fn probe_slots_main(operation: &str) -> ExitCode {
+    let at_start = started_slots();
+    println!(
+        "probe-slots {operation}: started before the runtime: {}",
+        slot_names(&at_start)
+    );
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("probe-slots: runtime: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    let outcome: Result<(), String> = runtime.block_on(async {
+        let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
+        std::fs::write(dir.path().join("probe.txt"), b"probe").map_err(|err| err.to_string())?;
+        let ws = workspace(dir.path());
+        let runner = runner();
+        let before = started_slots();
+        println!(
+            "probe-slots {operation}: started before the operation: {}",
+            slot_names(&before.difference(&at_start).copied().collect())
+        );
+        let spawn = |tty: bool| {
+            let runner = runner.clone();
+            let ws = ws.clone();
+            async move {
+                let id = ProcessId(format!("probe-{tty}"));
+                let mut request = RunnerExecRequest::for_host(
+                    vec![CHILD.into()],
+                    id.clone(),
+                    Profile::WorkspaceWrite,
+                );
+                request.tty = tty;
+                runner
+                    .exec(&ws, request)
+                    .await
+                    .map_err(|err| format!("{err:?}"))?;
+                for _ in 0..500 {
+                    let status = runner
+                        .process_status(&id)
+                        .await
+                        .map_err(|err| format!("{err:?}"))?;
+                    if status.state == ProcessState::Exited {
+                        return Ok(format!("exit {:?}", status.exit_code));
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err("the child did not exit".to_string())
+            }
+        };
+        let result = match operation {
+            "none" => Ok("nothing".to_string()),
+            "watch" => runner
+                .subscribe_watch(&ws)
+                .map(|_| "watching".to_string())
+                .map_err(|err| format!("{err:?}")),
+            "fs-read" => codespace_runner::PathSandbox::new(ws.clone())
+                .read_file("probe.txt")
+                .await
+                .map(|read| read.content)
+                .map_err(|err| format!("{err:?}")),
+            "read" => runner
+                .read(&ws, "probe.txt", None, None)
+                .await
+                .map(|read| read.content)
+                .map_err(|err| format!("{err:?}")),
+            "find" => runner
+                .find(&ws, None, None, None)
+                .await
+                .map(|found| format!("{:?}", found.paths))
+                .map_err(|err| format!("{err:?}")),
+            "pipe" => spawn(false).await,
+            "pty" => spawn(true).await,
+            "patch" => runner
+                .apply_patch(
+                    &ws,
+                    codespace_runner::RunnerApplyPatchRequest {
+                        patch: "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch\n"
+                            .into(),
+                        expected_versions: Default::default(),
+                        check_only: false,
+                    },
+                )
+                .await
+                .map(|applied| format!("{:?}", applied.status))
+                .map_err(|err| format!("{err:?}")),
+            other => Err(format!("unknown operation {other}")),
+        };
+        // Threads the operation started may finish their own setup a little later.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let after = started_slots();
+        println!(
+            "probe-slots {operation}: {result:?}; started by the operation: {}",
+            slot_names(&after.difference(&before).copied().collect())
+        );
+        result.map(|_| ())
+    });
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("probe-slots: {err}");
             ExitCode::from(2)
         }
     }
