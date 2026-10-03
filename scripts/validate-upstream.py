@@ -70,7 +70,9 @@ def stages():
         + [cargo('test', 'devguard'),
            cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
            cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire'),
-           cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard')],
+           # One test at a time: on macOS a child forked while another test's thread initializes
+           # libnotify (a file read in process does) is killed in libSystem's fork handler.
+           cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard', '--test-threads=1')],
         'integration': [],
         'linux-isolation': [cargo('build', 'linux-sandbox', '--bin', 'codespace-linux-sandbox'), cargo('test', 'linux-sandbox', '--test', 'isolation')],
         'dependencies': [],
