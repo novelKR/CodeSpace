@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 pub struct RuntimeProcess {
     dir: PathBuf,
     socket: PathBuf,
+    pid: Option<u32>,
     shutdown: Arc<Notify>,
     wait: Option<JoinHandle<()>>,
 }
@@ -27,12 +28,46 @@ impl RuntimeProcess {
         on_process_exit: ShellRelease,
         store: Arc<Store>,
     ) -> Result<(Self, UdsRunner)> {
+        Self::start(bin, runner_dir, on_process_exit, store, |_| {}).await
+    }
+
+    /// Spawn a worker that registers itself with DevGuard as the execution owner (CSRG-U2).
+    /// It gets the worker settings and the consumer secret through one private descriptor; a
+    /// worker that cannot register is stopped and refused.
+    #[cfg(feature = "devguard")]
+    pub async fn spawn_registered(
+        bin: &Path,
+        runner_dir: Option<&Path>,
+        on_process_exit: ShellRelease,
+        store: Arc<Store>,
+        worker: &crate::devguard::WorkerSettings,
+    ) -> Result<(Self, UdsRunner)> {
+        let (process, runner) = Self::start(bin, runner_dir, on_process_exit, store, |command| {
+            worker.prepare(command)
+        })
+        .await?;
+        // A worker that cannot register is stopped with `process`.
+        require_registration(&runner, bin)?;
+        Ok((process, runner))
+    }
+
+    async fn start(
+        bin: &Path,
+        runner_dir: Option<&Path>,
+        on_process_exit: ShellRelease,
+        store: Arc<Store>,
+        prepare: impl FnOnce(&mut Command),
+    ) -> Result<(Self, UdsRunner)> {
         let dir = allocate_private_runner_dir(runner_dir)
             .map_err(|err| anyhow!("private runner dir: {err}"))?;
         let socket = runner_socket_path(&dir);
-        let mut child = worker_command(bin, &socket)
-            .spawn()
-            .with_context(|| format!("spawn {}", bin.display()))?;
+        let mut command = worker_command(bin, &socket);
+        prepare(&mut command);
+        // The command, and with it any descriptor handed to the worker, is dropped here.
+        let spawned = command.spawn();
+        drop(command);
+        let mut child = spawned.with_context(|| format!("spawn {}", bin.display()))?;
+        let pid = child.id();
         let shutdown = Arc::new(Notify::new());
         let wait_shutdown = shutdown.clone();
         let wait_store = store.clone();
@@ -63,6 +98,7 @@ impl RuntimeProcess {
             Self {
                 dir,
                 socket,
+                pid,
                 shutdown,
                 wait: Some(wait),
             },
@@ -96,6 +132,11 @@ impl RuntimeProcess {
         &self.socket
     }
 
+    /// The worker's process ID.
+    pub fn worker_pid(&self) -> Option<u32> {
+        self.pid
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -114,6 +155,18 @@ impl Drop for RuntimeProcess {
         let _ = std::fs::remove_file(&self.socket);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A worker whose `Hello` did not state that it registers was built without DevGuard.
+#[cfg(feature = "devguard")]
+pub(crate) fn require_registration(runner: &UdsRunner, bin: &Path) -> Result<()> {
+    if runner.states_registration() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "--devguard register needs a worker built with the devguard feature; {} cannot register",
+        bin.display()
+    ))
 }
 
 /// The worker gets the socket path, a null stdin, the Gateway's stdout and stderr, and no other

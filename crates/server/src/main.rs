@@ -30,6 +30,8 @@ async fn serve() -> Result<()> {
     let store = load_store(&cli)?;
     let started = start_runner(&cli, store.clone()).await?;
     let handler = CodeSpace::from_cli(&cli, registry, store, started.runner.clone());
+    #[cfg(feature = "devguard")]
+    handler.register_owner_now();
     let result = match cli.mode() {
         TransportMode::Stdio => stdio::serve_handler(handler).await,
         TransportMode::Http => {
@@ -62,6 +64,22 @@ async fn start_runner(cli: &Cli, store: Arc<Store>) -> Result<StartedRunner> {
         }),
         RunnerMode::Uds => {
             if let Some(bin) = &cli.runtime_bin {
+                // The worker owns the executions, so it registers itself (CSRG-U2).
+                #[cfg(feature = "devguard")]
+                if let Some(worker) = cli.devguard.worker() {
+                    let (process, runner) = RuntimeProcess::spawn_registered(
+                        bin,
+                        cli.runner_dir.as_deref(),
+                        on_release,
+                        store,
+                        &worker,
+                    )
+                    .await?;
+                    return Ok(StartedRunner {
+                        runner: RuntimeBackend::Uds(runner),
+                        _process: Some(process),
+                    });
+                }
                 let (process, runner) =
                     RuntimeProcess::spawn(bin, cli.runner_dir.as_deref(), on_release, store)
                         .await?;

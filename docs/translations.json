@@ -43,8 +43,10 @@
         "design-revision-1-references",
         "devguard-integration",
         "devguard-integration-roadmap",
+        "devguard-owner-registration",
         "devguard-status-connection",
         "devguard-결합-로드맵",
+        "execution-owner-registration-csrg-u2",
         "initial-gateway-recovery-scope",
         "minimum-adoption-conditions",
         "plan-and-evidence-references",
@@ -60,11 +62,12 @@
         "선행-조건과-우선순위",
         "설계-개정-1-참조",
         "소비-경계",
+        "실행-소유자-등록csrg-u2",
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "ed7713504d72367aa2efe0139f22136f51745526ca0daa83af8400ec03e471e8",
-      "translation_sha256": "dbf1d84be0f87b4aec76cf33df7dad29be37a3cbca969288196c7634525912cd"
+      "source_sha256": "1e5cd2d452a76056fa08c6ca1eaea25e44faa07c668850a36cb920b62ce01f8c",
+      "translation_sha256": "4dfc6ecbf1004cf739ae9c6894d3296d13a5f20290759770b1d4b55f4bb66ace"
     },
     {
       "id": "overview",
@@ -634,8 +637,8 @@
         "파일-복사-벤더가-금지인-이유",
         "확인과-갱신"
       ],
-      "source_sha256": "86048104cc85ccabcf6b69a61f0f78e178278776bcbb07a17145eed6ad58bdc2",
-      "translation_sha256": "0040961c6175d7e355f6cf8be0852132bed849cf645610c463bfd5f933bc6552"
+      "source_sha256": "76f4f21b2b30bb124786a6dd71a55cd098d540a8fa79e0e3aa2948d4fa5d3281",
+      "translation_sha256": "efc5d23d076cac89fa667ceb7ed0596c37922ffad04927f59c905c6bef937fa1"
     },
     {
       "id": "upstream-update",
@@ -670,8 +673,8 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "ebf699a92d40856ee8b7e92c6df35bfc863dd235fe0e20363e8db29f042ffa9b",
-      "translation_sha256": "a7a7767aab3a0d0dbeb73b866876a2ac7f746980067036877a64a1c9f8625ea5"
+      "source_sha256": "26fd17e60a1bfcbddeba5fe7b09e163fbdcdf21fcc22e337050e911f27aae30c",
+      "translation_sha256": "9098e1859db66691422e4b941b04c8c030e221baed00120f50ce578210f28c4d"
     },
     {
       "id": "documentation",

@@ -166,6 +166,10 @@ pub enum RunnerOp {
         request_id: String,
     },
     Hello,
+    /// The execution owner's DevGuard registration (CSRG-U2). Sent only to a worker whose
+    /// `Hello` states `registration`; a worker without it would close the connection.
+    #[cfg(feature = "devguard")]
+    Registration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,8 +187,28 @@ pub enum RunnerOpResult {
     Terminate,
     WorkspaceOf(Option<String>),
     TerminateWorkspace(u32),
-    Hello { protocol: u32 },
+    Hello {
+        protocol: u32,
+        /// The worker answers `Registration` (CSRG-U2). Left out when false, so a worker built
+        /// without DevGuard says `Hello` as before.
+        #[cfg(feature = "devguard")]
+        #[serde(default, skip_serializing_if = "is_false")]
+        registration: bool,
+    },
+    #[cfg(feature = "devguard")]
+    Registration(codespace_domain::ResourceAuthorityInfo),
 }
+
+#[cfg(feature = "devguard")]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// The worker's registration, when it was started with one.
+#[cfg(feature = "devguard")]
+type Registrar = Option<Arc<crate::OwnerRegistration>>;
+#[cfg(not(feature = "devguard"))]
+type Registrar = ();
 
 /// Host worker: `InProcessRunner` plus a `ProcessExited` event stream.
 pub fn host_worker() -> (InProcessRunner, mpsc::UnboundedReceiver<RunnerEvent>) {
@@ -200,11 +224,45 @@ pub fn host_worker() -> (InProcessRunner, mpsc::UnboundedReceiver<RunnerEvent>) 
 pub async fn serve_runner_connection<S>(
     stream: S,
     runner: InProcessRunner,
-    mut events: mpsc::UnboundedReceiver<RunnerEvent>,
+    events: mpsc::UnboundedReceiver<RunnerEvent>,
 ) -> Result<(), std::io::Error>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    #[cfg(feature = "devguard")]
+    let registrar = None;
+    #[cfg(not(feature = "devguard"))]
+    let registrar = ();
+    serve(stream, runner, events, registrar).await
+}
+
+/// [`serve_runner_connection`] for a worker that owns its executions' DevGuard registration.
+/// A `Registration` request runs beside the other requests, so no process query, write,
+/// resize or termination waits for its session.
+#[cfg(feature = "devguard")]
+pub async fn serve_runner_connection_with_registration<S>(
+    stream: S,
+    runner: InProcessRunner,
+    events: mpsc::UnboundedReceiver<RunnerEvent>,
+    registration: Option<Arc<crate::OwnerRegistration>>,
+) -> Result<(), std::io::Error>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    serve(stream, runner, events, registration).await
+}
+
+async fn serve<S>(
+    stream: S,
+    runner: InProcessRunner,
+    mut events: mpsc::UnboundedReceiver<RunnerEvent>,
+    registrar: Registrar,
+) -> Result<(), std::io::Error>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    #[cfg(not(feature = "devguard"))]
+    let () = registrar;
     let (mut read, write) = tokio::io::split(stream);
     let write = Arc::new(Mutex::new(write));
     let event_write = write.clone();
@@ -254,6 +312,26 @@ where
             return Ok(());
         }
         let request_id = request.request_id.clone().unwrap_or_default();
+        #[cfg(feature = "devguard")]
+        if matches!(request.op, Some(RunnerOp::Registration)) {
+            // Not cached for replay: asking again opens a new session for the same identity.
+            let (write, registrar) = (write.clone(), registrar.clone());
+            tokio::spawn(async move {
+                let result = match registrar {
+                    Some(registration) => {
+                        Ok(RunnerOpResult::Registration(registration.report().await))
+                    }
+                    None => Err(ErrorBody::new(
+                        ErrorCode::ResourcePolicyUnsupported,
+                        "this worker was started without DevGuard settings",
+                    )),
+                };
+                let response = WireEnvelope::response(request_id, result);
+                let mut writer = write.lock().await;
+                let _ = write_frame(&mut *writer, &response).await;
+            });
+            continue;
+        }
         let response = match request.op {
             Some(RunnerOp::Replay {
                 request_id: original,
@@ -394,8 +472,12 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
             .map(RunnerOpResult::TerminateWorkspace),
         RunnerOp::Hello => Ok(RunnerOpResult::Hello {
             protocol: WIRE_PROTOCOL,
+            #[cfg(feature = "devguard")]
+            registration: true,
         }),
         RunnerOp::Replay { .. } => unreachable!("replay is handled before dispatch"),
+        #[cfg(feature = "devguard")]
+        RunnerOp::Registration => unreachable!("registration is handled before dispatch"),
     };
     result.map_err(RunnerError::into_error_body)
 }
@@ -557,6 +639,297 @@ mod tests {
         assert!(parsed.error.is_some());
     }
 
+    #[cfg(feature = "devguard")]
+    mod registration {
+        use super::*;
+        use crate::registration::{Owner, OwnerCredential, OwnerSettings};
+        use crate::OwnerRegistration;
+        use codespace_domain::ResourceOwner;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::time::Duration;
+
+        async fn request(write: &mut tokio::net::unix::OwnedWriteHalf, id: &str, op: RunnerOp) {
+            write_frame(write, &WireEnvelope::request(id.into(), op))
+                .await
+                .unwrap();
+        }
+
+        async fn response(read: &mut tokio::net::unix::OwnedReadHalf) -> WireEnvelope {
+            loop {
+                let frame = read_frame(read).await.unwrap().unwrap();
+                let envelope: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+                if envelope.kind == WireKind::Response {
+                    return envelope;
+                }
+            }
+        }
+
+        fn serve_with(
+            registration: Option<Arc<OwnerRegistration>>,
+        ) -> (
+            tokio::net::unix::OwnedReadHalf,
+            tokio::net::unix::OwnedWriteHalf,
+        ) {
+            let (client, server) = tokio::net::UnixStream::pair().unwrap();
+            let (worker, events) = host_worker();
+            tokio::spawn(async move {
+                serve_runner_connection_with_registration(server, worker, events, registration)
+                    .await
+                    .expect("serve");
+            });
+            client.into_split()
+        }
+
+        #[tokio::test]
+        async fn hello_states_registration_and_an_unconfigured_worker_says_unsupported() {
+            let (mut read, mut write) = serve_with(None);
+            request(&mut write, "rrpc-hello", RunnerOp::Hello).await;
+            match response(&mut read).await.result {
+                Some(RunnerOpResult::Hello {
+                    protocol,
+                    registration,
+                }) => assert_eq!((protocol, registration), (WIRE_PROTOCOL, true)),
+                other => panic!("unexpected {other:?}"),
+            }
+            request(&mut write, "rrpc-reg", RunnerOp::Registration).await;
+            let reply = response(&mut read).await;
+            assert_eq!(reply.request_id.as_deref(), Some("rrpc-reg"));
+            assert_eq!(reply.ok, Some(false));
+            assert_eq!(
+                reply.error.unwrap().code,
+                ErrorCode::ResourcePolicyUnsupported
+            );
+            // The connection stays open.
+            request(&mut write, "rrpc-hello-again", RunnerOp::Hello).await;
+            assert_eq!(response(&mut read).await.ok, Some(true));
+        }
+
+        #[test]
+        fn a_hello_without_registration_decodes_as_false() {
+            let old: RunnerOpResult =
+                serde_json::from_str(r#"{"type":"hello","data":{"protocol":6}}"#).unwrap();
+            assert!(matches!(
+                old,
+                RunnerOpResult::Hello {
+                    registration: false,
+                    ..
+                }
+            ));
+        }
+
+        /// A private directory on a path without symbolic links, as the credential needs.
+        fn private_directory() -> tempfile::TempDir {
+            tempfile::Builder::new()
+                .prefix("cs-wire-")
+                .tempdir_in(if cfg!(target_os = "macos") {
+                    "/private/tmp"
+                } else {
+                    "/tmp"
+                })
+                .unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn process_control_does_not_wait_for_a_registration_session() {
+            let dir = private_directory();
+            let credential = dir.path().join("consumer.secret");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&credential)
+                .unwrap()
+                .write_all("ab".repeat(32).as_bytes())
+                .unwrap();
+            // An authority that accepts each session and answers nothing, so a registration
+            // session lasts until DevGuard's 250 ms frame deadline.
+            let socket = dir.path().join("silent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let (accepted, sessions) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let _ = accepted.send(());
+                    let stream = stream.unwrap();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(2));
+                        drop(stream);
+                    });
+                }
+            });
+            let owner = Owner::new(
+                OwnerSettings {
+                    socket,
+                    consumer: "codespace".into(),
+                    generation: "g1".into(),
+                },
+                OwnerCredential::File(credential),
+            );
+            let (mut read, mut write) =
+                serve_with(Some(OwnerRegistration::new(owner, ResourceOwner::Worker)));
+            // Once the session is open, process control on the same connection is answered
+            // before the session ends. DevGuard reads the consumer secret within 250 ms of wall
+            // time, so a session whose thread the scheduler held that long stops at the
+            // credential although the file is intact: it opens nothing and is answered at once,
+            // and the registration is asked for again.
+            let mut sessions = Some(sessions);
+            for attempt in 1..=5 {
+                request(&mut write, "rrpc-reg", RunnerOp::Registration).await;
+                let waiting = sessions.take().unwrap();
+                let (opened, waiting) = tokio::task::spawn_blocking(move || {
+                    (waiting.recv_timeout(Duration::from_secs(10)), waiting)
+                })
+                .await
+                .unwrap();
+                sessions = Some(waiting);
+                if opened.is_ok() {
+                    break;
+                }
+                let reply = response(&mut read).await;
+                match reply.result {
+                    Some(RunnerOpResult::Registration(info)) => assert_eq!(
+                        info.registration.unwrap().state,
+                        codespace_domain::ResourceRegistrationState::CredentialUnavailable
+                    ),
+                    other => panic!("unexpected {other:?}"),
+                }
+                assert!(attempt < 5, "no registration session opened");
+            }
+            request(
+                &mut write,
+                "rrpc-status",
+                RunnerOp::ProcessStatus {
+                    process_id: ProcessId("proc-none".into()),
+                },
+            )
+            .await;
+            request(
+                &mut write,
+                "rrpc-terminate",
+                RunnerOp::Terminate {
+                    process_id: ProcessId("proc-none".into()),
+                },
+            )
+            .await;
+            let order: Vec<_> = [
+                response(&mut read).await,
+                response(&mut read).await,
+                response(&mut read).await,
+            ]
+            .into_iter()
+            .map(|reply| reply.request_id.unwrap())
+            .collect();
+            assert_eq!(order, ["rrpc-status", "rrpc-terminate", "rrpc-reg"]);
+        }
+
+        /// Through the gateway's client: while every registration session of the worker fails,
+        /// a running process still times out, reports its outcome and can be queried.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_timeout_needs_no_successful_registration() {
+            use crate::{Runner, RunnerExecRequest, UdsRunner};
+            use codespace_domain::{
+                ProcessState, ProcessTermination, Profile, ResourceRegistrationState,
+            };
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let dir = private_directory();
+            let credential = dir.path().join("consumer.secret");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&credential)
+                .unwrap()
+                .write_all("cd".repeat(32).as_bytes())
+                .unwrap();
+            // An authority that accepts each session and answers nothing: every registration
+            // ends unavailable at DevGuard's frame deadline.
+            let socket = dir.path().join("silent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let stream = stream.unwrap();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(2));
+                        drop(stream);
+                    });
+                }
+            });
+            let owner = Owner::new(
+                OwnerSettings {
+                    socket,
+                    consumer: "codespace".into(),
+                    generation: "g1".into(),
+                },
+                OwnerCredential::File(credential),
+            );
+            let (client, server) = tokio::net::UnixStream::pair().unwrap();
+            let (worker, events) = host_worker();
+            let registration = OwnerRegistration::new(owner, ResourceOwner::Worker);
+            tokio::spawn(async move {
+                serve_runner_connection_with_registration(
+                    server,
+                    worker,
+                    events,
+                    Some(registration),
+                )
+                .await
+                .expect("serve");
+            });
+            let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
+            runner.handshake().await.unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let registering = {
+                let (runner, stop) = (runner.clone(), stop.clone());
+                tokio::spawn(async move {
+                    let mut failed = 0usize;
+                    while !stop.load(Ordering::Relaxed) {
+                        let info = runner.registration().await.unwrap();
+                        let state = info.registration.unwrap().state;
+                        // DevGuard reads the consumer secret within 250 ms of wall time; a
+                        // session whose thread the scheduler held that long stops there and
+                        // opens nothing.
+                        if state == ResourceRegistrationState::CredentialUnavailable {
+                            continue;
+                        }
+                        assert_eq!(state, ResourceRegistrationState::Unavailable);
+                        failed += 1;
+                    }
+                    failed
+                })
+            };
+            let root = tempfile::tempdir().unwrap();
+            let workspace = Workspace::new(
+                codespace_domain::WorkspaceId("demo".into()),
+                root.path().to_path_buf(),
+                Profile::WorkspaceWrite,
+            );
+            let process_id = ProcessId("proc-timeout".into());
+            let mut request = RunnerExecRequest::for_host(
+                vec!["/bin/sleep".into(), "30".into()],
+                process_id.clone(),
+                Profile::WorkspaceWrite,
+            );
+            request.timeout_ms = 300;
+            runner.exec(&workspace, request).await.unwrap();
+            let mut status = runner.process_status(&process_id).await.unwrap();
+            for _ in 0..500 {
+                if status.state == ProcessState::Exited {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                status = runner.process_status(&process_id).await.unwrap();
+            }
+            assert_eq!(status.state, ProcessState::Exited, "{status:?}");
+            assert_eq!(
+                status.termination,
+                Some(ProcessTermination::Timeout),
+                "{status:?}"
+            );
+            stop.store(true, Ordering::Relaxed);
+            assert!(registering.await.unwrap() > 0);
+        }
+    }
+
     #[tokio::test]
     async fn hello_round_trip() {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
@@ -577,7 +950,7 @@ mod tests {
         let parsed: WireEnvelope = serde_json::from_slice(&reply).unwrap();
         assert_eq!(parsed.ok, Some(true));
         match parsed.result {
-            Some(RunnerOpResult::Hello { protocol }) => assert_eq!(protocol, WIRE_PROTOCOL),
+            Some(RunnerOpResult::Hello { protocol, .. }) => assert_eq!(protocol, WIRE_PROTOCOL),
             other => panic!("unexpected {other:?}"),
         }
     }

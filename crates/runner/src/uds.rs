@@ -42,6 +42,9 @@ struct Shared {
     pending: Mutex<HashMap<String, oneshot::Sender<Result<WireEnvelope, RunnerError>>>>,
     alive: AtomicBool,
     on_disconnect: DisconnectHook,
+    /// The worker's `Hello` stated that it answers `Registration` (CSRG-U2).
+    #[cfg(feature = "devguard")]
+    registration: AtomicBool,
 }
 
 pub struct UdsRunner {
@@ -94,6 +97,8 @@ impl UdsRunner {
             pending: Mutex::new(HashMap::new()),
             alive: AtomicBool::new(true),
             on_disconnect,
+            #[cfg(feature = "devguard")]
+            registration: AtomicBool::new(false),
         });
         let reader_shared = shared.clone();
         tokio::spawn(async move {
@@ -107,7 +112,17 @@ impl UdsRunner {
 
     pub async fn handshake(&self) -> Result<(), RunnerError> {
         match self.call(RunnerOp::Hello).await {
-            Ok(RunnerOpResult::Hello { protocol }) if protocol == WIRE_PROTOCOL => Ok(()),
+            Ok(hello @ RunnerOpResult::Hello { protocol, .. }) if protocol == WIRE_PROTOCOL => {
+                #[cfg(feature = "devguard")]
+                if let RunnerOpResult::Hello { registration, .. } = hello {
+                    self.shared
+                        .registration
+                        .store(registration, Ordering::SeqCst);
+                }
+                #[cfg(not(feature = "devguard"))]
+                let _ = hello;
+                Ok(())
+            }
             Ok(other) => {
                 self.close().await;
                 Err(RunnerError::before_dispatch(format!(
@@ -125,6 +140,32 @@ impl UdsRunner {
                 self.close().await;
                 Err(RunnerError::before_dispatch(body.message))
             }
+        }
+    }
+
+    /// Whether the worker's `Hello` stated that it answers `Registration` (CSRG-U2).
+    #[cfg(feature = "devguard")]
+    pub fn states_registration(&self) -> bool {
+        self.shared.registration.load(Ordering::SeqCst)
+    }
+
+    /// The worker's report of its own DevGuard registration (CSRG-U2), or why it could not be
+    /// had: `unsupported_mode` from a worker that cannot register, `owner_unreachable` when the
+    /// worker did not answer. A worker that did not state `registration` in its `Hello` is
+    /// never asked: it would close the connection.
+    #[cfg(feature = "devguard")]
+    pub async fn registration(
+        &self,
+    ) -> Result<codespace_domain::ResourceAuthorityInfo, codespace_domain::ResourceRegistrationState>
+    {
+        use codespace_domain::ResourceRegistrationState;
+        if !self.states_registration() {
+            return Err(ResourceRegistrationState::UnsupportedMode);
+        }
+        match self.call(RunnerOp::Registration).await {
+            Ok(RunnerOpResult::Registration(info)) => Ok(info),
+            Err(RunnerError::Execution(_)) => Err(ResourceRegistrationState::UnsupportedMode),
+            _ => Err(ResourceRegistrationState::OwnerUnreachable),
         }
     }
 

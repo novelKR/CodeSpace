@@ -772,6 +772,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codespace-devguard"
+version = "0.6.0"
+dependencies = [
+ "devguard-client",
+ "devguard-contract",
+ "libc",
+]
+
+[[package]]
 name = "codespace-domain"
 version = "0.6.0"
 dependencies = [
@@ -824,6 +833,7 @@ dependencies = [
 name = "codespace-runner"
 version = "0.6.0"
 dependencies = [
+ "codespace-devguard",
  "codespace-domain",
  "codespace-fs",
  "codespace-linux-sandbox-protocol",
@@ -1890,6 +1900,27 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "unicode-xid",
+]
+
+[[package]]
+name = "devguard-client"
+version = "0.1.0"
+source = "git+https://github.com/novelKR/DevGuard?rev=f1f908429abea962d62d6b53c56a26c17250179b#f1f908429abea962d62d6b53c56a26c17250179b"
+dependencies = [
+ "devguard-contract",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "devguard-contract"
+version = "0.1.0"
+source = "git+https://github.com/novelKR/DevGuard?rev=f1f908429abea962d62d6b53c56a26c17250179b#f1f908429abea962d62d6b53c56a26c17250179b"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

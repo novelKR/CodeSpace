@@ -149,3 +149,10 @@ graph에서 위의 실행 파일 단일 정체성 규칙을 강제합니다. 또
 도달하는 CodeSpace·Codex crate를 거부합니다. `check-no-model-deps.sh`는 어댑터의
 manifest와 소스를 core와 같은 방식으로 검사합니다. 이 어댑터도 다른 분리된 어댑터와
 함께 검증합니다.
+
+*2026-10-03 추가, CSRG-U2:* `codespace-runner`와 UDS worker인
+`codespace-codex-runtime`은 각자의 `devguard` feature를 켰을 때만 어댑터를
+링크합니다. gateway의 feature는 runner의 feature를 켭니다. feature를 켠 worker
+graph(`codex-runtime+devguard`)도 root와 같이 검사하며, Codex 어댑터 leg는 이
+feature로 worker를 빌드·lint·테스트합니다. feature가 없으면 모든 제품 graph는
+바뀌지 않습니다.

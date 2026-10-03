@@ -53,7 +53,8 @@ pub use profile::Profile;
 pub use resource_authority::{
     ResourceAuthorityCapability, ResourceAuthorityErrorCode, ResourceAuthorityInfo,
     ResourceAuthorityProvider, ResourceAuthorityReport, ResourceAuthorityRole,
-    ResourceAuthorityState, ResourceParticipation,
+    ResourceAuthorityState, ResourceOwner, ResourceParticipation, ResourceRegistrationInfo,
+    ResourceRegistrationState,
 };
 pub use tools::{
     LIVE_TOOLS, SERVER_NAME, SERVER_VERSION, TOOL_APPLY_PATCH, TOOL_APPROVAL_CREATE,

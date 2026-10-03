@@ -47,6 +47,37 @@ pub struct Workspace {
     /// Operator JSON confirmation hold. Not an MCP tool field and not a grant.
     #[serde(default)]
     pub approvals: ApprovalsMode,
+    /// Operator JSON resource participation. Not an MCP tool field. Left out when off, so a
+    /// workspace without it is encoded as before.
+    #[serde(default, skip_serializing_if = "Resources::is_off")]
+    pub resources: Resources,
+}
+
+/// Whether a workspace's executions take part in a resource authority (CSRG-U2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Participation {
+    /// Executions run as they always have, without a resource authority.
+    #[default]
+    Off,
+    /// Every new execution must be admitted and launched through the resource authority.
+    /// CodeSpace cannot do that yet, so every new execution is refused; none runs without it.
+    Required,
+}
+
+/// A workspace's `resources` settings. An unknown setting fails the load, so a setting this
+/// version does not know never leaves an execution ungoverned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resources {
+    #[serde(default)]
+    pub participation: Participation,
+}
+
+impl Resources {
+    pub fn is_off(&self) -> bool {
+        self.participation == Participation::Off
+    }
 }
 
 fn default_environment_id() -> String {
@@ -63,6 +94,7 @@ impl Workspace {
             environment_kind: EnvironmentKind::Host,
             network: NetworkAxis::Restricted,
             approvals: ApprovalsMode::Off,
+            resources: Resources::default(),
         }
     }
 
@@ -109,6 +141,8 @@ struct FileWorkspace {
     network: NetworkAxis,
     #[serde(default)]
     approvals: ApprovalsMode,
+    #[serde(default)]
+    resources: Resources,
 }
 
 impl Registry {
@@ -182,6 +216,7 @@ impl Registry {
                 environment_kind: environment.kind,
                 network: entry.network,
                 approvals: entry.approvals,
+                resources: entry.resources,
             });
         }
         Ok(registry)
@@ -298,6 +333,53 @@ mod tests {
         let ws = registry.get("demo").unwrap();
         assert_eq!(ws.approvals, ApprovalsMode::Confirm);
         assert!(allow(ws, Action::Write, &ClientClaims::default()).is_ok());
+    }
+
+    #[test]
+    fn resource_participation_is_off_unless_required() {
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo"}}}"#;
+        let registry = Registry::load_json(json).unwrap();
+        let ws = registry.get("demo").unwrap();
+        assert_eq!(ws.resources.participation, Participation::Off);
+        // Off is not encoded, so a workspace without it reaches the runner as before.
+        let encoded = serde_json::to_value(ws).unwrap();
+        assert!(encoded.get("resources").is_none(), "{encoded}");
+
+        for json in [
+            r#"{"workspaces":{"demo":{"root":"/tmp/demo","resources":{}}}}"#,
+            r#"{"workspaces":{"demo":{"root":"/tmp/demo","resources":{"participation":"off"}}}}"#,
+        ] {
+            let registry = Registry::load_json(json).unwrap();
+            assert!(registry.get("demo").unwrap().resources.is_off());
+        }
+
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","resources":{"participation":"required"}}}}"#;
+        let registry = Registry::load_json(json).unwrap();
+        let ws = registry.get("demo").unwrap();
+        assert_eq!(ws.resources.participation, Participation::Required);
+        let encoded = serde_json::to_value(ws).unwrap();
+        assert_eq!(
+            encoded["resources"],
+            serde_json::json!({"participation": "required"})
+        );
+        let decoded: Workspace = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.resources, ws.resources);
+    }
+
+    #[test]
+    fn unknown_resource_settings_fail_config_load() {
+        for resources in [
+            r#"{"participaton":"required"}"#,
+            r#"{"participation":"require"}"#,
+            r#"{"participation":"required","budget":{}}"#,
+            r#""required""#,
+            "null",
+        ] {
+            let json = format!(
+                r#"{{"workspaces":{{"demo":{{"root":"/tmp/demo","resources":{resources}}}}}}}"#
+            );
+            assert!(Registry::load_json(&json).is_err(), "{resources}");
+        }
     }
 
     #[test]

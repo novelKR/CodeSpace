@@ -53,12 +53,14 @@ class SelectionTests(unittest.TestCase):
                 'rust-unit/linux-sandbox', 'rust-linux-isolation/single', 'rust-integration/single', 'rust-macos/single'),
             'crates/patch/src/lib.rs': ['rust-clippy/adapters', 'rust-unit/patch', 'rust-integration/single'],
             'crates/codex-runtime/src/lib.rs': ['rust-clippy/codex-adapters', 'rust-unit/codex-runtime',
-                                                'rust-integration/single'],
+                                                'rust-integration/single', 'rust-macos/single'],
             'crates/file-system/src/lib.rs': [leg.replace('unit/pty', 'unit/file-system') for leg in PTY],
             'crates/linux-sandbox/src/main.rs': ['rust-clippy/codex-adapters', 'rust-unit/linux-sandbox',
                                                  'rust-linux-isolation/single', 'rust-integration/single'],
-            'crates/devguard/src/lib.rs': ['rust-clippy/root', 'rust-clippy/adapters', 'rust-unit/devguard',
-                                           'rust-integration/single', 'rust-macos/single'],
+            'crates/devguard/src/lib.rs': ordered('rust-clippy/root', 'rust-clippy/adapters',
+                                                  'rust-clippy/codex-adapters', 'rust-unit/codex-runtime',
+                                                  'rust-unit/devguard', 'rust-integration/single',
+                                                  'rust-macos/single'),
         }
         rows['deploy/Dockerfile'] = rows['crates/runner/src/lib.rs']
         rows['tests/e2e/flow.rs'] = rows['crates/server/src/main.rs']
@@ -232,10 +234,13 @@ def compiled(stage):
     root = {name.split('/')[-1] for name in re.findall(r'"([^"]+)"', members)}
     commands = validation.stages()[stage]
     if stage == 'integration':
-        commands = [validation.cargo('build', area) for area in validation.HELPERS] + [validation.cargo('test')]
-        commands += [validation.cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard')]
+        commands = validation.devguard_binaries()
+        commands += [validation.cargo('build', area) for area in validation.HELPERS] + [validation.cargo('test')]
+        commands += [validation.cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard'),
+                     validation.cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib'),
+                     validation.cargo('test', 'root', '-p', 'codespace-domain', '--features', 'devguard', '--lib')]
     crates = set()
-    for command in commands:
+    for command in (command for command in commands if command[0] == 'cargo'):
         manifest = [arg for arg in command if arg.startswith('crates/') and arg.endswith('/Cargo.toml')]
         package = command[command.index('-p') + 1] if '-p' in command else None
         if manifest:
