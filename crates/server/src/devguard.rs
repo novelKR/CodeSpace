@@ -659,8 +659,18 @@ pub(crate) mod tests {
         assert_eq!(endpoint.accepted(), probes + 1, "a later call probes again");
     }
 
+    /// tracing caches whether each log statement is wanted, and with one subscriber, this
+    /// test's, it asks the subscriber of the thread that reaches the statement first. Another
+    /// test's thread reaching the status log first would turn it off here, so the test runs
+    /// alone.
+    #[test]
+    fn logs_name_the_state_and_never_the_secret() {
+        run_alone("devguard::tests::logs_child");
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn logs_name_the_state_and_never_the_secret() {
+    #[ignore = "run alone in a separate process by its parent test"]
+    async fn logs_child() {
         #[derive(Clone, Default)]
         struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
         impl Write for Captured {
