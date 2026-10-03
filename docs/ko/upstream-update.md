@@ -51,6 +51,8 @@ CI도 같은 이름의 단계를 병렬 실행하며 목록은 `--help`로 확�
 실행 중 입력이 바뀌면 실패합니다. `passed`는 기록된 단계만의 통과를 뜻합니다.
 macOS에서는 Linux 격리를 `not_run`, 전체 결과를 `incomplete`로 표시합니다.
 Linux CI 근거가 별도로 필요하며 macOS CI는 PTY와 파일 시스템 계약도 검사합니다.
+macOS의 `macos-fork-race` 단계는 새 프로세스로 반복하는 시행에서 종료 코드 없이
+끝난 자식 프로세스가 하나라도 있으면 실패합니다([러너 격리](runner-isolation.md)).
 한 플랫폼 결과만으로 다른 플랫폼 검증을 대체하지 않습니다.
 
 CI는 변경마다 모든 job을 실행하지 않습니다. 계획 job이 `scripts/ci-policy.json`에
