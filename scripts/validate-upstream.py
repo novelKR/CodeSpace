@@ -148,6 +148,10 @@ def run(selected, output):
                 entry['error'] = str(error)
                 failed = True
             entry['seconds'] = round(time.monotonic() - started, 2)
+            fork_race = output / 'fork-race' / 'summary.json'
+            if stage == 'macos-fork-race' and fork_race.is_file():
+                # The stage's counts for readers of the job log; the report keeps the details.
+                print('fork_race summary: ' + fork_race.read_text().strip(), flush=True)
         if fingerprint() != before:
             raise RuntimeError('source or validation inputs changed during execution')
         report['status'] = 'failed' if failed else ('incomplete' if any(s['status'] == 'not_run' for s in report['stages']) else 'passed')
