@@ -418,6 +418,8 @@ impl InProcessRunner {
                 return Err(err);
             }
         };
+        // portable-pty forks: see `prepare_fork_spawns`.
+        crate::prepare_fork_spawns();
         let mut session = codespace_pty::spawn(&program, &args, &cwd, &env)
             .await
             .map_err(|err| {

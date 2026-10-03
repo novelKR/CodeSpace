@@ -12,6 +12,9 @@
 //! of `/usr/bin/true` are in flight, then waits for every child. It fails if any child ended
 //! without an exit code; nothing here kills a child.
 //!
+//! Like the gateway and the worker, `main` first calls `prepare_fork_spawns`, before any thread
+//! exists, so the trials measure the product's mitigation.
+//!
 //! An ordinary `cargo test` runs nothing. Modes:
 //! - `--trials N [--require-zero]`: N trials, each in a new process, and a summary. On macOS it
 //!   also counts the crash reports written during the run that name `_notify_fork_child`. With
@@ -46,6 +49,7 @@ const CHILD: &str = "/usr/bin/true";
 const OUT_ENV: &str = "CODESPACE_FORK_RACE_OUT";
 
 fn main() -> ExitCode {
+    codespace_runner::prepare_fork_spawns();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--trial") {
         return trial_main();

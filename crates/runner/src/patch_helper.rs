@@ -47,14 +47,7 @@ async fn invoke(
     check_only: bool,
 ) -> Result<HelperSuccess, ErrorBody> {
     let bin = helper_bin()?;
-    let mut command = Command::new(&bin);
-    command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    crate::descriptors::exclude_unrelated(&mut command);
-    let mut child = command.spawn().map_err(|err| {
+    let mut child = helper_command(&bin).spawn().map_err(|err| {
         ErrorBody::new(
             ErrorCode::InvalidPatch,
             format!("failed to spawn patch helper: {err}"),
@@ -107,6 +100,18 @@ async fn invoke(
                 .unwrap_or_else(|| "patch helper failed".into()),
         ))
     }
+}
+
+/// The helper gets piped standard descriptors and no other descriptor of this process.
+pub(crate) fn helper_command(bin: &Path) -> Command {
+    let mut command = Command::new(bin);
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    crate::descriptors::exclude_unrelated(&mut command);
+    command
 }
 
 fn helper_bin() -> Result<PathBuf, ErrorBody> {

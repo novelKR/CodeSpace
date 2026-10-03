@@ -12,8 +12,18 @@ use codespace_server::stdio;
 use codespace_server::CodeSpace;
 use codespace_store::Store;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // First, while this is the only thread: no later fork can then copy libnotify's
+    // initialization in progress (see `prepare_fork_spawns`).
+    codespace_runner::prepare_fork_spawns();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed building the Runtime")
+        .block_on(serve())
+}
+
+async fn serve() -> Result<()> {
     logging::init();
     let cli = Cli::parse();
     let registry = load_registry(&cli)?;

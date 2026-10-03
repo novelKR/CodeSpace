@@ -17,6 +17,8 @@
 
 관리 프로세스의 수명은 MCP 연결이 아니라 러너 인스턴스가 소유합니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지합니다. 게이트웨이와 worker의 UDS 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 관리 중인 worker와 자식 프로세스가 종료되고 핸들이 사라집니다. 재시작은 `process_id`를 복구하지 않습니다.
 
+**자식 프로세스를 시작하는 방식.** 파이프 명령, `tty: true` 명령, 패치 도우미, Linux 샌드박스 도우미, worker는 fork와 exec로 시작합니다. 모두 exec 전에 자식 프로세스 안에서 실행할 단계가 있기 때문입니다. 파이프, 패치 도우미, 샌드박스 도우미, worker 자식은 표준 디스크립터만 남기고([#79](https://github.com/novelKR/CodeSpace/issues/79)), PTY 자식은 새 세션의 리더가 됩니다. macOS에서는 같은 프로세스의 다른 스레드가 시스템 알림 라이브러리(libnotify)를 초기화하는 도중에 fork한 자식이 명령을 실행하기도 전에 `fork` 안에서 종료되고, 종료 코드 없이 끝난 프로세스로 보고됩니다. 그래서 `codespace-mcp`와 `codespace-codex-runtime`은 스레드를 시작하기 전에 이 초기화를 마치고, 위의 spawn은 모두 fork하기 전에 초기화를 마칩니다. 이 조치는 이 원인 하나를 없앨 뿐이며, 다중 스레드 프로세스에서 fork하는 것을 일반적으로 안전하게 만들지는 않습니다.
+
 <a id="macos-docker-없음"></a>
 <a id="macos-docker-없음"></a>
 

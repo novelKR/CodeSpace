@@ -55,8 +55,9 @@ def stages():
         'clippy-adapters': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('patch', 'pty', 'file-system', 'devguard')],
         'clippy-codex': [cargo('clippy', a, '--all-targets', '--', '-D', 'warnings') for a in ('codex-runtime', 'linux-sandbox')],
         'macos-core': [cargo(action, a, *(['--all-targets', '--', '-D', 'warnings'] if action == 'clippy' else [])) for a in ('pty', 'file-system') for action in ('clippy', 'test')]
-        # Descriptor hygiene of the runner host's spawns, whose macOS path the Linux legs cannot exercise.
-        + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'missing_executable_is_process_spawn_failed'),
+        # Descriptor hygiene of the runner host's spawns and their fork-time libnotify state, whose
+        # macOS path the Linux legs cannot exercise.
+        + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'fork_handlers', 'missing_executable_is_process_spawn_failed'),
            cargo('test', 'root', '-p', 'codespace-server', '--lib', '--', 'descriptors')]
         # The DevGuard status adapter against an authority with native host evidence, and the
         # gateway's DevGuard tests where socket creation is not atomically close-on-exec.

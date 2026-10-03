@@ -186,6 +186,243 @@ mod tests {
         assert_eq!(seen, "held\nclear\n");
     }
 
+    /// What the scenario below needs from libc, which this crate does not depend on.
+    mod sys {
+        use std::os::raw::{c_int, c_void};
+
+        pub const F_GETFD: c_int = 1;
+        pub const F_SETFD: c_int = 2;
+        pub const F_GETFL: c_int = 3;
+        pub const F_SETFL: c_int = 4;
+        pub const FD_CLOEXEC: c_int = 1;
+        #[cfg(target_os = "macos")]
+        pub const O_NONBLOCK: c_int = 0x4;
+        #[cfg(target_os = "linux")]
+        pub const O_NONBLOCK: c_int = 0o4000;
+        #[cfg(target_os = "macos")]
+        pub const RLIMIT_NOFILE: c_int = 8;
+        #[cfg(target_os = "linux")]
+        pub const RLIMIT_NOFILE: c_int = 7;
+
+        #[repr(C)]
+        pub struct Rlimit {
+            pub cur: u64,
+            pub max: u64,
+        }
+
+        extern "C" {
+            pub fn pipe(fds: *mut c_int) -> c_int;
+            pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+            pub fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+            pub fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
+            pub fn getrlimit(resource: c_int, limit: *mut Rlimit) -> c_int;
+            pub fn setrlimit(resource: c_int, limit: *const Rlimit) -> c_int;
+            pub fn pthread_atfork(
+                prepare: Option<unsafe extern "C" fn()>,
+                parent: Option<unsafe extern "C" fn()>,
+                child: Option<unsafe extern "C" fn()>,
+            ) -> c_int;
+            #[cfg(target_os = "macos")]
+            pub fn dlsym(handle: *mut c_void, symbol: *const std::os::raw::c_char) -> *mut c_void;
+        }
+
+        #[cfg(target_os = "macos")]
+        pub const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+    }
+
+    const SCENARIO: &str = "CODESPACE_ISOLATED_SCENARIO";
+    static FORK_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+    /// Address of libnotify's once word (`_os_alloc_once_table` slot 0) on macOS.
+    static NOTIFY_ONCE_WORD: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    /// The once word when this process last forked.
+    static ONCE_AT_FORK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// Runs in the forking thread just before each fork of this process.
+    unsafe extern "C" fn record_notify_at_fork() {
+        let word = NOTIFY_ONCE_WORD.load(std::sync::atomic::Ordering::SeqCst) as *const usize;
+        if !word.is_null() {
+            // SAFETY: the address of slot 0's once word, valid for the life of the process.
+            let once = unsafe { std::ptr::read_volatile(word) };
+            ONCE_AT_FORK.store(once, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Runs in every child that this process forks: one byte per fork. posix_spawn runs no
+    /// atfork handler.
+    unsafe extern "C" fn note_fork_in_child() {
+        let fd = FORK_PIPE.load(std::sync::atomic::Ordering::Relaxed);
+        if fd >= 0 {
+            // SAFETY: write(2) is async-signal-safe; it writes one static byte to the pipe.
+            unsafe { sys::write(fd, b"f".as_ptr().cast(), 1) };
+        }
+    }
+
+    fn set_flag(
+        fd: std::os::raw::c_int,
+        get: std::os::raw::c_int,
+        set: std::os::raw::c_int,
+        flag: std::os::raw::c_int,
+    ) {
+        // SAFETY: fcntl reads and sets flags of a descriptor this test owns.
+        unsafe {
+            let flags = sys::fcntl(fd, get);
+            assert!(flags >= 0, "fcntl");
+            assert_eq!(sys::fcntl(fd, set, flags | flag), 0);
+        }
+    }
+
+    /// The UDS worker's command, at the highest descriptor number this process can open: it
+    /// forks, and on macOS it does so only once libnotify's initialization is complete
+    /// (`prepare_fork_spawns`); the worker keeps only its standard descriptors. The scenario
+    /// registers process-wide atfork handlers and raises the descriptor limit, so it runs alone
+    /// in a fresh copy of this test binary.
+    #[test]
+    fn worker_command_forks_and_excludes_descriptors_up_to_the_table_end() {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        if std::env::var_os(SCENARIO).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::worker_command_forks_and_excludes_descriptors_up_to_the_table_end",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(SCENARIO, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "scenario failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        // The fork detector: a pipe whose write end every forked child writes to.
+        let mut fds = [-1; 2];
+        // SAFETY: pipe stores two new descriptors in `fds`.
+        assert_eq!(unsafe { sys::pipe(fds.as_mut_ptr()) }, 0);
+        for fd in fds {
+            set_flag(fd, sys::F_GETFD, sys::F_SETFD, sys::FD_CLOEXEC);
+        }
+        set_flag(fds[0], sys::F_GETFL, sys::F_SETFL, sys::O_NONBLOCK);
+        FORK_PIPE.store(fds[1], std::sync::atomic::Ordering::SeqCst);
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: dlsym looks up the table that libsystem_platform exports for its inline
+            // `os_alloc_once`; slot 0 (libnotify's) starts with its once word.
+            let table = unsafe { sys::dlsym(sys::RTLD_DEFAULT, c"_os_alloc_once_table".as_ptr()) };
+            assert!(!table.is_null(), "_os_alloc_once_table");
+            // SAFETY: as above.
+            let once = unsafe { std::ptr::read_volatile(table.cast::<usize>()) };
+            assert_eq!(once, 0, "libnotify was initialized before the spawn");
+            NOTIFY_ONCE_WORD.store(table as usize, std::sync::atomic::Ordering::SeqCst);
+        }
+        // SAFETY: the handlers only load and store atomics, read one word and write to a pipe.
+        assert_eq!(
+            unsafe {
+                sys::pthread_atfork(Some(record_notify_at_fork), None, Some(note_fork_in_child))
+            },
+            0
+        );
+        // SAFETY: pipe returned this descriptor, owned here from now on.
+        let forks = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        let drain = || {
+            let mut total = 0;
+            let mut buf = [0u8; 64];
+            loop {
+                // SAFETY: read into a stack buffer from the non-blocking read end.
+                let n = unsafe { sys::read(forks.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                if n <= 0 {
+                    return total;
+                }
+                total += n as usize;
+            }
+        };
+
+        // An inheritable descriptor at the highest number the raised limit allows.
+        let mut limit = sys::Rlimit { cur: 0, max: 0 };
+        // SAFETY: getrlimit and setrlimit read and write one rlimit of this process.
+        let soft = unsafe {
+            assert_eq!(sys::getrlimit(sys::RLIMIT_NOFILE, &mut limit), 0);
+            let mut soft = limit.max.min(65_536);
+            // macOS also refuses a limit above kern.maxfilesperproc.
+            while soft > limit.cur
+                && sys::setrlimit(
+                    sys::RLIMIT_NOFILE,
+                    &sys::Rlimit {
+                        cur: soft,
+                        max: limit.max,
+                    },
+                ) != 0
+            {
+                soft /= 2;
+            }
+            soft.max(limit.cur)
+        };
+        let top = std::os::raw::c_int::try_from(soft - 1).unwrap();
+        assert!(top >= 1024, "the soft limit stayed at {soft}");
+        let null = std::fs::File::open("/dev/null").unwrap();
+        // SAFETY: F_DUPFD (0) returns a new descriptor without close-on-exec, owned below.
+        let held = unsafe { sys::fcntl(null.as_raw_fd(), 0, top) };
+        assert_eq!(held, top, "the highest descriptor number");
+        // SAFETY: as above.
+        let held = unsafe { OwnedFd::from_raw_fd(held) };
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = |report: &Path| {
+            let path = report.with_extension("sh");
+            std::fs::write(
+                &path,
+                format!(
+                    "for n in 1 {top}; do if [ -e /dev/fd/$n ]; then echo held; else echo clear; fi; done > '{}'\n",
+                    report.display()
+                ),
+            )
+            .unwrap();
+            path
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // The control: a plain command spawns without forking and passes the descriptor on.
+        let report = dir.path().join("plain");
+        let plain = script(&report);
+        drain();
+        // tokio's `status` spawns when called, so call it inside the runtime.
+        let status = runtime
+            .block_on(async { Command::new("/bin/sh").arg(&plain).status().await })
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(drain(), 0, "a plain command does not fork");
+        assert_eq!(std::fs::read_to_string(&report).unwrap(), "held\nheld\n");
+
+        // The worker's command forks, and the worker holds no descriptor above 2.
+        let report = dir.path().join("worker");
+        let worker = script(&report);
+        drain();
+        let status = runtime
+            .block_on(async { worker_command(Path::new("/bin/sh"), &worker).status().await })
+            .unwrap();
+        assert!(status.success());
+        assert!(drain() > 0, "the worker's command forks");
+        assert_eq!(std::fs::read_to_string(&report).unwrap(), "held\nclear\n");
+        #[cfg(target_os = "macos")]
+        {
+            // Done (all bits set) or arm64's quiescing generation (low bits 01): the
+            // initializer had returned when the worker's command forked.
+            let once = ONCE_AT_FORK.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                once == usize::MAX || once & 3 == 1,
+                "the worker's command forked during libnotify's initialization: {once:#x}"
+            );
+        }
+        drop(held);
+    }
+
     #[tokio::test]
     async fn spawn_hello_then_drop_kills_worker() {
         let Some(bin) = runtime_bin() else {

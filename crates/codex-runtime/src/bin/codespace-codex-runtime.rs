@@ -11,8 +11,18 @@ use codespace_runner::{
     serve_runner_connection,
 };
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // First, while this is the only thread: no later fork can then copy libnotify's
+    // initialization in progress (see `prepare_fork_spawns`).
+    codespace_runner::prepare_fork_spawns();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed building the Runtime")
+        .block_on(serve());
+}
+
+async fn serve() {
     codex_process_hardening::pre_main_hardening();
     let socket = match std::env::args().nth(1) {
         Some(path) => PathBuf::from(path),
