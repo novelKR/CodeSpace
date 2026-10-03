@@ -15,10 +15,11 @@
 //! up in this process's registration table. Once complete, the initialization never runs again,
 //! so no later fork copies it in progress:
 //! - The gateway and the worker call it first in `main`, before any thread exists.
-//! - Every spawn that forks calls it first: [`crate::exclude_unrelated`] for the pipe, patch
-//!   helper, sandbox helper and worker spawns, and the PTY spawn itself. In a process whose
-//!   `main` does not call it, such as a test binary, such a spawn waits for an initialization
-//!   that another thread has in progress, instead of forking during it.
+//! - The spawns that fork call it before they fork: [`crate::exclude_unrelated`] and its std
+//!   counterpart do for the pipe, patch-helper, sandbox-helper and worker spawns, and the PTY
+//!   spawn calls it itself. In a process whose `main` does not call it, such as a test binary,
+//!   such a spawn waits for an initialization that another thread has in progress, instead of
+//!   forking during it.
 //!
 //! This closes that window only. Forks by code that does not call it, before it is called, may
 //! still copy the initialization in progress, and other lazily initialized libSystem state that
