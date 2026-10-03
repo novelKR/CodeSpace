@@ -155,6 +155,18 @@ wait_or_kill "$lldb_pid" 120
 cat "$out/D-driver.log"
 events "$out/D-gateway.log"
 
+echo "== A2: harness PTY spawn (--probe-slots pty) and patch under LLDB =="
+for operation in pty patch; do
+  {
+    echo "target create \"$harness\""
+    breakpoints
+    echo "process launch -i /dev/null -- --probe-slots $operation"
+  } > "$out/A2-$operation.lldb"
+  lldb --batch -s "$out/A2-$operation.lldb" > "$out/A2-$operation.log" 2>&1 &
+  wait_or_kill $! 300
+  events "$out/A2-$operation.log"
+done
+
 echo "== F: one-time initializations each operation starts (fresh process each, no debugger) =="
 for operation in none watch fs-read read find pipe pty patch; do
   "$harness" --probe-slots "$operation" 2>&1 | tee -a "$out/F-slots.log"

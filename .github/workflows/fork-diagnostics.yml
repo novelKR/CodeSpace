@@ -71,8 +71,8 @@ jobs:
           for suite in "-p codespace-runner" "-p codespace-server" "--manifest-path crates/codex-runtime/Cargo.toml"; do
             name="$(echo "$suite" | tr -c 'a-z0-9\n' '-' | tr -s '-')"
             echo "== cargo test $suite"
-            cargo test --locked $suite > "diag-out/suite$name.log" 2>&1 || status=1
-            grep -E "^test result|FAILED|panicked" "diag-out/suite$name.log" || true
+            cargo test --locked --no-fail-fast $suite > "diag-out/suite$name.log" 2>&1 || status=1
+            grep -E "Running |^test result|FAILED|panicked" "diag-out/suite$name.log" || true
           done
           exit $status
       - uses: actions/upload-artifact@v4
