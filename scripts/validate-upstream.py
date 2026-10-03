@@ -62,6 +62,10 @@ def stages():
         # gateway's DevGuard tests where socket creation is not atomically close-on-exec.
         + [cargo('test', 'devguard'),
            cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard')],
+        # Children killed inside fork on macOS: fresh-process trials of reads concurrent with
+        # pipe spawns (crates/runner/tests/fork_race.rs); any child without an exit code fails.
+        'macos-fork-race': [cargo('test', 'root', '-p', 'codespace-runner', '--test', 'fork_race', '--',
+                                  '--trials', FORK_RACE_TRIALS, '--require-zero')],
         'integration': [],
         'linux-isolation': [cargo('build', 'linux-sandbox', '--bin', 'codespace-linux-sandbox'), cargo('test', 'linux-sandbox', '--test', 'isolation')],
         'dependencies': [],
@@ -72,6 +76,11 @@ def stages():
     result['unit-linux-sandbox-protocol'] = [cargo('test', 'root', '-p', 'codespace-linux-sandbox-protocol')]
     return result
 
+
+# Chosen from the failure rate measured before the fix (see the fork_race harness).
+FORK_RACE_TRIALS = '400'
+# Stages that only the macOS leg runs; `all` is the Linux qualification.
+MACOS_ONLY = ('macos-core', 'macos-fork-race')
 
 HELPERS = {'patch': ('codespace-patch', 'CODESPACE_PATCH_BIN'),
            'codex-runtime': ('codespace-codex-runtime', 'CODESPACE_RUNTIME_BIN'),
@@ -129,6 +138,9 @@ def run(selected, output):
                 stage_env = env.copy()
                 if stage == 'linux-isolation':
                     stage_env['CODESPACE_REQUIRE_LINUX_SANDBOX'] = '1'
+                if stage == 'macos-fork-race':
+                    # The harness's summary, trial lines and crash reports go to the report.
+                    stage_env['CODESPACE_FORK_RACE_OUT'] = str(output / 'fork-race')
                 with (output / (stage + '.log')).open('w') as log:
                     execute(commands, stage_env, log)
                 entry['status'] = 'passed'
@@ -151,7 +163,7 @@ def run(selected, output):
 
 
 def all_stages():
-    return [s for s in stages() if s != 'macos-core']
+    return [s for s in stages() if s not in MACOS_ONLY]
 
 
 def main():
