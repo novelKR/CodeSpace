@@ -802,36 +802,8 @@ mod tests {
 
         /// Through the gateway's client: while every registration session of the worker fails,
         /// a running process still times out, reports its outcome and can be queried.
-        ///
-        /// It runs alone, in a new process of this test binary. On macOS, a child forked while
-        /// another thread of the same process is initializing libnotify is killed in libSystem's
-        /// fork handler before it runs (`_notify_fork_child`), and the reaped SIGKILL then reads
-        /// as an exit, not a timeout. A file read in a concurrent test of this binary, such as
-        /// `replay_returns_cached_response`, can be that other thread.
-        #[test]
-        fn a_timeout_needs_no_successful_registration() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "wire::tests::registration::timeout_child",
-                    "--ignored",
-                    "--nocapture",
-                    "--test-threads=1",
-                ])
-                .output()
-                .unwrap();
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(output.status.success(), "{text}");
-            assert!(text.contains("1 passed"), "{text}");
-        }
-
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        #[ignore = "run alone in a separate process by its parent test"]
-        async fn timeout_child() {
+        async fn a_timeout_needs_no_successful_registration() {
             use crate::{Runner, RunnerExecRequest, UdsRunner};
             use codespace_domain::{
                 ProcessState, ProcessTermination, Profile, ResourceRegistrationState,
