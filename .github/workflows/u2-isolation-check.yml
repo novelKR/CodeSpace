@@ -1,0 +1,56 @@
+name: U2 isolation check (temporary)
+
+# Temporary: repeats on macOS the U2 test runs whose fork-abort isolation was removed, with and
+# without #86's mitigation, at #84's heads named below. Runs only on this branch; its runs keep
+# the evidence.
+
+on:
+  push:
+    branches: [claude/magical-euler-nvqrxp]
+    paths: [.github/workflows/u2-isolation-check.yml, .github/u2-isolation-check/run.sh]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: isolation removed
+            ref: b8d16147768e21ac7657e6fcdaa654c3c6e7b47e
+          - name: isolation removed with the U1 test fixes
+            ref: 4caa34c9b4f774b732e846bf7da8b96eade2e87a
+    runs-on: macos-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diag
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          path: src
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Host
+        run: |
+          sw_vers
+          rustc -vV
+          git -C src rev-parse HEAD
+      - name: Repeated runs
+        timeout-minutes: 170
+        run: bash diag/.github/u2-isolation-check/run.sh "$PWD/src"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: u2-isolation-check-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: diag-out/
+          if-no-files-found: warn
