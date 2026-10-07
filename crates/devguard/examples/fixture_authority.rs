@@ -6,9 +6,11 @@
 //! Without native host evidence (Linux before DG-LINUX) DevGuard's fixture cannot register,
 //! so it serves the authority without evidence and its bootstrap `dev-cli` consumer instead.
 //!
-//! It prints one JSON line with the settings (none is a secret: the secret stays in its file),
-//! then answers each `instances` line on standard input with a JSON line listing the
-//! consumer's registered instances, and stops at the end of its input. Built only as an
+//! It prints one JSON line with the settings (none is a secret: the secret stays in its file)
+//! once the authority admits, then answers each `instances` line on standard input with a JSON
+//! line listing the consumer's registered instances, and each `charged` line with one listing
+//! the attempts that still hold resources and the budget they hold (CSRG-U3). It stops at the
+//! end of its input. Built only as an
 //! example, from this crate's development dependencies; no product links it.
 
 use std::io::{BufRead, Write};
@@ -38,6 +40,7 @@ fn main() {
     for line in std::io::stdin().lock().lines() {
         match line.unwrap().trim() {
             "instances" => writeln!(out, "{}", fixture.instances()).unwrap(),
+            "charged" => writeln!(out, "{}", fixture.charged()).unwrap(),
             other => panic!("unknown command {other:?}"),
         }
         out.flush().unwrap();
@@ -71,6 +74,10 @@ impl Fixture {
             host.consumers.insert("codespace".into(), consumer);
         })
         .unwrap();
+        // Its synthetic host readings open admission after two samples.
+        authority
+            .wait_until_admitting(std::time::Duration::from_secs(10))
+            .unwrap();
         Self {
             settings: json!({
                 "socket": authority.socket(),
@@ -121,6 +128,24 @@ impl Fixture {
         #[cfg(not(target_os = "macos"))]
         let instances: Vec<serde_json::Value> = Vec::new();
         json!(instances)
+    }
+
+    /// The attempts that still hold resources, and the budget they hold.
+    fn charged(&self) -> serde_json::Value {
+        #[cfg(target_os = "macos")]
+        {
+            let attempts: Vec<_> = self
+                .authority
+                .attempts()
+                .unwrap()
+                .into_iter()
+                .map(|record| json!({"attempt_id": record.key.attempt_id, "phase": record.phase}))
+                .collect();
+            let committed = self.authority.committed().unwrap();
+            json!({"attempts": attempts, "committed": committed})
+        }
+        #[cfg(not(target_os = "macos"))]
+        json!({"attempts": [], "committed": {"cpu_milli": 0, "memory_bytes": 0, "tasks": 0}})
     }
 
     fn stop(self) {

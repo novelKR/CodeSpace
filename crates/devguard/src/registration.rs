@@ -128,6 +128,32 @@ impl Owner {
         &self.instance_id
     }
 
+    pub(crate) fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// The consumer this owner registers as.
+    pub fn consumer(&self) -> &str {
+        &self.settings.consumer
+    }
+
+    /// The consumer's generation.
+    pub fn generation(&self) -> &str {
+        &self.settings.generation
+    }
+
+    pub(crate) fn settings(&self) -> &OwnerSettings {
+        &self.settings
+    }
+
+    /// The identity DevGuard registered for this owner, once it has.
+    pub(crate) fn registered_identity(&self) -> Option<InstanceIdentity> {
+        self.registered
+            .lock()
+            .ok()
+            .and_then(|registered| registered.clone())
+    }
+
     /// One bounded registration session.
     pub fn register(&self) -> Registration {
         self.register_with(effective_uid(), registration(), self.pid)
@@ -139,23 +165,36 @@ impl Owner {
         compatibility: Compatibility,
         owner_pid: u32,
     ) -> Registration {
+        match self.open_with(authority_uid, compatibility, owner_pid) {
+            Ok((_, registration)) | Err(registration) => registration,
+        }
+    }
+
+    /// A registered session, still open for one more request, or the registration that
+    /// stopped before it. Only a [`RegistrationState::Registered`] outcome comes with a client.
+    pub(crate) fn open_with(
+        &self,
+        authority_uid: u32,
+        compatibility: Compatibility,
+        owner_pid: u32,
+    ) -> Result<(Client, Registration), Registration> {
         // The credential is read first, so a local problem opens no session.
         let credential = match self.caller_credential() {
             Ok(credential) => credential,
-            Err(error) => return failed(Step::Credential, &error),
+            Err(error) => return Err(failed(Step::Credential, &error)),
         };
         let mut client = match Client::connect(&self.settings.socket, authority_uid, compatibility)
         {
             Ok(client) => client,
-            Err(error) => return failed(Step::Connect, &error),
+            Err(error) => return Err(failed(Step::Connect, &error)),
         };
         let role = match client.authenticate(credential) {
             Ok(role) => role,
-            Err(error) => return failed(Step::Authenticate, &error),
+            Err(error) => return Err(failed(Step::Authenticate, &error)),
         };
         let service = match client.status() {
             Ok(status) => status,
-            Err(error) => return failed(Step::Status, &error),
+            Err(error) => return Err(failed(Step::Status, &error)),
         };
         let registration_ready = service.registration_ready;
         let status = Status {
@@ -170,36 +209,38 @@ impl Owner {
             pid,
         };
         if role != SessionRole::ControlService {
-            return outcome(RegistrationState::RoleMismatch, None, None);
+            return Err(outcome(RegistrationState::RoleMismatch, None, None));
         }
         if !registration_ready {
-            return outcome(RegistrationState::NotReady, None, None);
+            return Err(outcome(RegistrationState::NotReady, None, None));
         }
         let instance = match client.register(self.instance_id.clone()) {
             Ok(instance) => instance,
-            Err(error) => return outcome(refusal(error.code), Some(error.code.into()), None),
+            Err(error) => return Err(outcome(refusal(error.code), Some(error.code.into()), None)),
         };
         // DevGuard registers the session's peer. It must be this owner, under its own identity,
         // and every session must register the same identity.
         if instance.instance_id != self.instance_id || instance.process.pid != owner_pid {
-            return outcome(RegistrationState::OwnerMismatch, None, None);
+            return Err(outcome(RegistrationState::OwnerMismatch, None, None));
         }
         let mut registered = match self.registered.lock() {
             Ok(registered) => registered,
-            Err(_) => return outcome(RegistrationState::OwnerMismatch, None, None),
+            Err(_) => return Err(outcome(RegistrationState::OwnerMismatch, None, None)),
         };
         match registered.as_ref() {
             Some(first) if *first != instance => {
-                return outcome(RegistrationState::OwnerMismatch, None, None)
+                return Err(outcome(RegistrationState::OwnerMismatch, None, None))
             }
             Some(_) => {}
             None => *registered = Some(instance.clone()),
         }
-        outcome(
+        drop(registered);
+        let registration = outcome(
             RegistrationState::Registered,
             None,
             Some(instance.process.pid),
-        )
+        );
+        Ok((client, registration))
     }
 
     fn caller_credential(&self) -> Result<CallerCredential, Error> {
@@ -280,7 +321,7 @@ fn mint_instance_id() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::tests::{past_the_credential, private_file, short_directory, Authority, CODES};
     use crate::{Capability, Role};
@@ -782,7 +823,7 @@ mod tests {
     // DevGuard's fixture authority with native host evidence, as on macOS.
 
     #[cfg(target_os = "macos")]
-    mod native {
+    pub(crate) mod native {
         use super::*;
         use devguard_daemon::config::ConsumerConfig;
         use devguard_daemon::fixture::TestAuthority;
@@ -794,14 +835,14 @@ mod tests {
 
         /// DevGuard's fixture authority with a `codespace` control-service consumer, as an
         /// operator provisions CodeSpace, beside its bootstrap `dev-cli` workload consumer.
-        pub(super) struct Provisioned {
+        pub(crate) struct Provisioned {
             _directory: tempfile::TempDir,
-            pub(super) authority: TestAuthority,
-            pub(super) settings: OwnerSettings,
-            pub(super) credential: PathBuf,
+            pub(crate) authority: TestAuthority,
+            pub(crate) settings: OwnerSettings,
+            pub(crate) credential: PathBuf,
         }
 
-        pub(super) fn provision(max_instances: u32) -> Provisioned {
+        pub(crate) fn provision(max_instances: u32) -> Provisioned {
             let directory = short_directory();
             let paths = AuthorityPaths::fixture(directory.path());
             let credential = paths.credentials().join("codespace.secret");
@@ -841,7 +882,7 @@ mod tests {
         }
 
         impl Provisioned {
-            pub(super) fn owner(&self) -> Owner {
+            pub(crate) fn owner(&self) -> Owner {
                 Owner::new(
                     self.settings.clone(),
                     OwnerCredential::File(self.credential.clone()),

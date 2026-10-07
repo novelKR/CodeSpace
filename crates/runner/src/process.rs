@@ -4,7 +4,7 @@
 //! `codespace-pty` adapter. When the Linux helper probe succeeds, both wrap
 //! the same helper argv. UDS dispatch lives in `UdsRunner`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -64,9 +64,43 @@ fn max_processes() -> usize {
 #[derive(Clone)]
 pub struct InProcessRunner {
     inner: Arc<Mutex<HashMap<String, Slot>>>,
+    /// Slots taken for processes not yet created. Locked after `inner`, never before it.
+    reserved: Arc<Mutex<HashSet<String>>>,
+    /// The live process limit, when set here instead of by `CODESPACE_MAX_PROCESSES`.
+    max_processes: Option<usize>,
     on_release: ShellRelease,
     retention: RetentionPolicy,
     pub(crate) watches: crate::watch::WatchSet,
+}
+
+/// A process slot, taken before the process is created (CSRG-U3). A slot counts against the
+/// live process limit from the moment it is taken, so no process is created without one. It
+/// is freed when it is dropped unfilled; once a created process fills it, the process's slot
+/// lasts until the process ends. A slot is not a process handle, an admission or a workspace
+/// lease.
+pub struct SlotReservation {
+    reserved: Arc<Mutex<HashSet<String>>>,
+    process_id: String,
+}
+
+impl SlotReservation {
+    pub fn process_id(&self) -> &str {
+        &self.process_id
+    }
+
+    /// Hand the slot to the created process, under the runner's lock. The reservation is
+    /// dropped only after the process holds the slot.
+    fn fill(self, map: &mut HashMap<String, Slot>, slot: Slot) {
+        map.insert(self.process_id.clone(), slot);
+    }
+}
+
+impl Drop for SlotReservation {
+    fn drop(&mut self) {
+        if let Ok(mut reserved) = self.reserved.lock() {
+            reserved.remove(&self.process_id);
+        }
+    }
 }
 
 struct Slot {
@@ -217,10 +251,56 @@ impl InProcessRunner {
     pub fn with_retention(on_release: ShellRelease, retention: RetentionPolicy) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            reserved: Arc::new(Mutex::new(HashSet::new())),
+            max_processes: None,
             on_release,
             retention,
             watches: crate::watch::WatchSet::default(),
         }
+    }
+
+    /// This runner's live process limit, instead of `CODESPACE_MAX_PROCESSES`.
+    pub fn with_max_processes(mut self, limit: usize) -> Self {
+        self.max_processes = Some(limit.max(1));
+        self
+    }
+
+    fn limit(&self) -> usize {
+        self.max_processes.unwrap_or_else(max_processes)
+    }
+
+    /// Take a process slot for `process_id` before creating anything (CSRG-U3). Live
+    /// processes and slots already taken count against the limit, so an over-limit request is
+    /// refused here, before a process exists.
+    pub fn reserve_slot(&self, process_id: &str) -> Result<SlotReservation, ErrorBody> {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        let mut reserved = self.reserved.lock().expect("slots");
+        if reserved.contains(process_id) {
+            return Err(ErrorBody::new(
+                ErrorCode::InvalidCommand,
+                format!("process_id `{process_id}` is already in use"),
+            ));
+        }
+        if live_count(&map) + reserved.len() >= self.limit() {
+            return Err(ErrorBody::new(
+                ErrorCode::WorkspaceBusy,
+                "live process limit reached",
+            ));
+        }
+        reserved.insert(process_id.to_string());
+        Ok(SlotReservation {
+            reserved: self.reserved.clone(),
+            process_id: process_id.to_string(),
+        })
+    }
+
+    /// Live processes and slots taken for processes not yet created.
+    pub fn occupied_slots(&self) -> usize {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        let reserved = self.reserved.lock().expect("slots").len();
+        live_count(&map) + reserved
     }
 
     fn evict_completed(&self, map: &mut HashMap<String, Slot>) {
@@ -261,6 +341,8 @@ impl InProcessRunner {
                 "command must be a non-empty argv (no shell)",
             ));
         }
+        // The slot first: no process is created without one.
+        let slot = self.reserve_slot(&req.process_id.0)?;
         let cap = req.output_bytes_cap.max(1) as usize;
         let timeout = Duration::from_millis(req.timeout_ms.max(1));
         let cwd = match req.cwd {
@@ -276,9 +358,9 @@ impl InProcessRunner {
             process_id: req.process_id.0.clone(),
         };
         if req.tty {
-            self.spawn_pty(ws, req, ctx).await
+            self.spawn_pty(ws, req, ctx, slot).await
         } else {
-            self.spawn_pipe(ws, req, ctx)
+            self.spawn_pipe(ws, req, ctx, slot)
         }
     }
 
@@ -287,6 +369,7 @@ impl InProcessRunner {
         ws: &Workspace,
         req: RunnerExecRequest,
         ctx: SpawnCtx,
+        reservation: SlotReservation,
     ) -> Result<RunnerExecResult, ErrorBody> {
         let SpawnCtx {
             cwd,
@@ -335,14 +418,7 @@ impl InProcessRunner {
         {
             let mut map = self.inner.lock().expect("runner");
             self.evict_completed(&mut map);
-            if live_count(&map) >= max_processes() {
-                let _ = child.lock().expect("child").start_kill();
-                return Err(ErrorBody::new(
-                    ErrorCode::WorkspaceBusy,
-                    "live process limit reached",
-                ));
-            }
-            map.insert(process_id.clone(), slot);
+            reservation.fill(&mut map, slot);
         }
 
         let out_handle = stdout.map(|out| {
@@ -413,6 +489,7 @@ impl InProcessRunner {
         ws: &Workspace,
         req: RunnerExecRequest,
         ctx: SpawnCtx,
+        reservation: SlotReservation,
     ) -> Result<RunnerExecResult, ErrorBody> {
         let SpawnCtx {
             cwd,
@@ -467,14 +544,7 @@ impl InProcessRunner {
         {
             let mut map = self.inner.lock().expect("runner");
             self.evict_completed(&mut map);
-            if live_count(&map) >= max_processes() {
-                session.kill();
-                return Err(ErrorBody::new(
-                    ErrorCode::WorkspaceBusy,
-                    "live process limit reached",
-                ));
-            }
-            map.insert(process_id.clone(), slot);
+            reservation.fill(&mut map, slot);
         }
 
         let out_handle = {
@@ -904,7 +974,11 @@ fn sandbox_network(network: NetworkAxis) -> SandboxNetwork {
     }
 }
 
-fn spawn_env(cwd: &Path, req: &RunnerExecRequest, sandboxed: bool) -> HashMap<String, String> {
+pub(crate) fn spawn_env(
+    cwd: &Path,
+    req: &RunnerExecRequest,
+    sandboxed: bool,
+) -> HashMap<String, String> {
     let mut env = HashMap::new();
     if req.env.use_runner_defaults {
         let defaults = if sandboxed {
@@ -986,6 +1060,108 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("process did not exit: {}", process_id.0)
+    }
+
+    /// The marker file `n`'s command would create, and that command.
+    fn marker(root: &std::path::Path, n: usize) -> (std::path::PathBuf, RunnerExecRequest) {
+        let path = root.join(format!("started-{n}"));
+        let req = RunnerExecRequest::for_host(
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("touch '{}'; sleep 30", path.display()),
+            ],
+            ProcessId(format!("proc-limit-{n}")),
+            Profile::WorkspaceWrite,
+        );
+        (path, req)
+    }
+
+    /// Whether `path` appears within half a second.
+    async fn appears(path: &std::path::Path) -> bool {
+        for _ in 0..50 {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn a_request_over_the_limit_creates_no_child() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {})).with_max_processes(8);
+        for n in 0..8 {
+            let (path, req) = marker(dir.path(), n);
+            runner.spawn_host(&ws, req).await.unwrap();
+            assert!(appears(&path).await, "process {n} did not start");
+        }
+        // The ninth is refused before anything is created: it never runs, even briefly.
+        let (ninth, req) = marker(dir.path(), 8);
+        let refused = runner.spawn_host(&ws, req).await.unwrap_err();
+        assert_eq!(
+            (refused.code, refused.message.as_str()),
+            (ErrorCode::WorkspaceBusy, "live process limit reached")
+        );
+        assert!(
+            !appears(&ninth).await,
+            "the refused request created a child"
+        );
+        assert!(runner.host_workspace_of("proc-limit-8").is_none());
+        assert_eq!(runner.occupied_slots(), 8);
+        // A slot held for a process not yet created counts too.
+        runner.kill_host_workspace("demo").unwrap();
+        for _ in 0..200 {
+            if runner.occupied_slots() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let small = InProcessRunner::new(Arc::new(|_| {})).with_max_processes(1);
+        let held = small.reserve_slot("proc-held").unwrap();
+        let (blocked, req) = marker(dir.path(), 9);
+        assert_eq!(
+            small.spawn_host(&ws, req).await.unwrap_err().code,
+            ErrorCode::WorkspaceBusy
+        );
+        assert!(!appears(&blocked).await);
+        // A slot dropped unfilled frees itself.
+        drop(held);
+        assert_eq!(small.occupied_slots(), 0);
+        let (freed, req) = marker(dir.path(), 10);
+        small.spawn_host(&ws, req).await.unwrap();
+        assert!(appears(&freed).await);
+        small.kill_host_workspace("demo").unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_requests_over_the_limit_create_only_the_children_allowed() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {})).with_max_processes(3);
+        let spawns: Vec<_> = (0..12)
+            .map(|n| {
+                let (runner, ws) = (runner.clone(), ws.clone());
+                let (_, req) = marker(dir.path(), n);
+                tokio::spawn(async move { runner.spawn_host(&ws, req).await })
+            })
+            .collect();
+        let mut started = 0;
+        for spawn in spawns {
+            match spawn.await.unwrap() {
+                Ok(_) => started += 1,
+                Err(err) => assert_eq!(err.code, ErrorCode::WorkspaceBusy),
+            }
+        }
+        assert_eq!(started, 3);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let created = (0..12)
+            .filter(|n| dir.path().join(format!("started-{n}")).exists())
+            .count();
+        assert_eq!(created, 3, "a refused request created a child");
+        runner.kill_host_workspace("demo").unwrap();
     }
 
     fn workspace(root: &std::path::Path) -> Workspace {

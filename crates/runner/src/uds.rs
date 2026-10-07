@@ -45,6 +45,9 @@ struct Shared {
     /// The worker's `Hello` stated that it answers `Registration` (CSRG-U2).
     #[cfg(feature = "devguard")]
     registration: AtomicBool,
+    /// The worker's `Hello` stated that it answers `Prepare` (CSRG-U3).
+    #[cfg(feature = "devguard")]
+    admission: AtomicBool,
 }
 
 pub struct UdsRunner {
@@ -99,6 +102,8 @@ impl UdsRunner {
             on_disconnect,
             #[cfg(feature = "devguard")]
             registration: AtomicBool::new(false),
+            #[cfg(feature = "devguard")]
+            admission: AtomicBool::new(false),
         });
         let reader_shared = shared.clone();
         tokio::spawn(async move {
@@ -114,10 +119,16 @@ impl UdsRunner {
         match self.call(RunnerOp::Hello).await {
             Ok(hello @ RunnerOpResult::Hello { protocol, .. }) if protocol == WIRE_PROTOCOL => {
                 #[cfg(feature = "devguard")]
-                if let RunnerOpResult::Hello { registration, .. } = hello {
+                if let RunnerOpResult::Hello {
+                    registration,
+                    admission,
+                    ..
+                } = hello
+                {
                     self.shared
                         .registration
                         .store(registration, Ordering::SeqCst);
+                    self.shared.admission.store(admission, Ordering::SeqCst);
                 }
                 #[cfg(not(feature = "devguard"))]
                 let _ = hello;
@@ -166,6 +177,64 @@ impl UdsRunner {
             Ok(RunnerOpResult::Registration(info)) => Ok(info),
             Err(RunnerError::Execution(_)) => Err(ResourceRegistrationState::UnsupportedMode),
             _ => Err(ResourceRegistrationState::OwnerUnreachable),
+        }
+    }
+
+    /// Whether the worker's `Hello` stated that it answers `Prepare` (CSRG-U3).
+    #[cfg(feature = "devguard")]
+    pub fn states_admission(&self) -> bool {
+        self.shared.admission.load(Ordering::SeqCst)
+    }
+
+    /// Have the worker prepare a governed execution under its own registration (CSRG-U3). The
+    /// worker reports how the preparation ended; it never starts the command. A worker that did
+    /// not state `admission` is never asked. When no report comes back the worker may have
+    /// asked for admission, so the attempt is unknown; when the request never left, nothing
+    /// was asked.
+    #[cfg(feature = "devguard")]
+    pub async fn prepare(
+        &self,
+        ws: &Workspace,
+        request: RunnerExecRequest,
+        attempt_id: String,
+    ) -> Result<crate::admission::ManagedPreparation, RunnerError> {
+        use crate::admission::{AttemptState, ManagedPreparation, PreparationOutcome};
+        use codespace_domain::ResourceRegistrationState;
+        if !self.states_admission() {
+            return Err(RunnerError::execution(ErrorBody::new(
+                ErrorCode::ResourcePolicyUnsupported,
+                "this worker cannot prepare governed executions",
+            )));
+        }
+        let unanswered = |outcome, attempt| ManagedPreparation {
+            attempt_id: attempt_id.clone(),
+            process_id: request.process_id.clone(),
+            outcome,
+            attempt,
+            account: None,
+        };
+        match self
+            .call(RunnerOp::Prepare {
+                workspace: ws.clone(),
+                request: request.clone(),
+                attempt_id: attempt_id.clone(),
+            })
+            .await
+        {
+            Ok(RunnerOpResult::Prepared(report)) => Ok(report),
+            Ok(other) => Err(unexpected(other)),
+            Err(RunnerError::TransportBeforeDispatch { .. }) => Ok(unanswered(
+                PreparationOutcome::AuthorityUnavailable {
+                    registration: ResourceRegistrationState::OwnerUnreachable,
+                    error_code: None,
+                },
+                AttemptState::NotAsked,
+            )),
+            Err(RunnerError::TransportAmbiguous { .. }) => Ok(unanswered(
+                PreparationOutcome::Unknown,
+                AttemptState::Unknown,
+            )),
+            Err(err) => Err(err),
         }
     }
 

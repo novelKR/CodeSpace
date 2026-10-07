@@ -26,6 +26,7 @@ use codespace_domain::{
     ResourceAuthorityInfo, ResourceOwner, ResourceParticipation, ResourceRegistrationInfo,
     ResourceRegistrationState,
 };
+use codespace_runner::admission::{ManagedPreparation, Preparer};
 use codespace_runner::registration::{
     handoff, status_info, Owner, OwnerCredential, OwnerRegistration, OwnerSettings,
 };
@@ -228,6 +229,53 @@ impl Registration {
 
     pub fn owner(&self) -> ResourceOwner {
         self.owner.kind()
+    }
+
+    /// Whether this gateway's execution owner can prepare governed executions with `runner`
+    /// (CSRG-U3): the gateway itself in InProcess mode, or the worker it started when that
+    /// worker states it.
+    pub(crate) fn prepares(&self, runner: &RuntimeBackend) -> bool {
+        match (&self.owner, runner) {
+            (ExecutionOwner::InProcess(_), RuntimeBackend::InProcess(_)) => true,
+            (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => worker.states_admission(),
+            _ => false,
+        }
+    }
+
+    /// Have the execution owner prepare `request` as attempt `attempt_id` and report how it
+    /// ended (CSRG-U3). Nothing is started. Only for an owner that [`Self::prepares`].
+    pub(crate) async fn prepare(
+        &self,
+        runner: &RuntimeBackend,
+        ws: &codespace_policy::Workspace,
+        request: codespace_runner::RunnerExecRequest,
+        attempt_id: String,
+    ) -> Result<ManagedPreparation, codespace_domain::ErrorBody> {
+        let report = match (&self.owner, runner) {
+            (ExecutionOwner::InProcess(registration), RuntimeBackend::InProcess(runner)) => {
+                Preparer::new(registration.owner(), runner.clone())
+                    .prepare_and_dispose(ws.clone(), request, attempt_id)
+                    .await
+            }
+            (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => worker
+                .prepare(ws, request, attempt_id)
+                .await
+                .map_err(codespace_runner::RunnerError::into_error_body)?,
+            _ => {
+                return Err(codespace_domain::ErrorBody::new(
+                    codespace_domain::ErrorCode::ResourcePolicyUnsupported,
+                    "this runner mode cannot prepare governed executions",
+                ))
+            }
+        };
+        tracing::info!(
+            attempt_id = %report.attempt_id,
+            process_id = %report.process_id.0,
+            outcome = ?report.outcome,
+            attempt = ?report.attempt,
+            "DevGuard preparation; nothing was started"
+        );
+        Ok(report)
     }
 
     /// The report of a registration session the owner started after this call arrived, or why
@@ -1142,6 +1190,24 @@ pub(crate) mod tests {
             instances.sort();
             instances
         }
+
+        /// The attempts that still hold resources, and the tasks they hold.
+        pub(crate) fn charged(&mut self) -> (Vec<String>, u64) {
+            use std::io::BufRead;
+            let stdin = self.stdin.as_mut().unwrap();
+            stdin.write_all(b"charged\n").unwrap();
+            stdin.flush().unwrap();
+            let mut line = String::new();
+            self.stdout.read_line(&mut line).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let attempts = value["attempts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|attempt| attempt["attempt_id"].as_str().unwrap().to_owned())
+                .collect();
+            (attempts, value["committed"]["tasks"].as_u64().unwrap())
+        }
     }
 
     impl Drop for FixtureAuthority {
@@ -1597,6 +1663,7 @@ pub(crate) mod tests {
                 let hello = RunnerOpResult::Hello {
                     protocol: WIRE_PROTOCOL,
                     registration,
+                    admission: registration,
                 };
                 let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
                 write_frame(&mut server, &reply).await.unwrap();

@@ -170,6 +170,16 @@ pub enum RunnerOp {
     /// `Hello` states `registration`; a worker without it would close the connection.
     #[cfg(feature = "devguard")]
     Registration,
+    /// Prepare a governed execution under the worker's own registration (CSRG-U3): its slot,
+    /// its admission and, as managed launch is not available yet, the cancellation of the
+    /// unstarted attempt. Sent only to a worker whose `Hello` states `admission`. The worker
+    /// never starts the command.
+    #[cfg(feature = "devguard")]
+    Prepare {
+        workspace: Workspace,
+        request: RunnerExecRequest,
+        attempt_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,9 +204,15 @@ pub enum RunnerOpResult {
         #[cfg(feature = "devguard")]
         #[serde(default, skip_serializing_if = "is_false")]
         registration: bool,
+        /// The worker answers `Prepare` (CSRG-U3). Left out when false, as `registration`.
+        #[cfg(feature = "devguard")]
+        #[serde(default, skip_serializing_if = "is_false")]
+        admission: bool,
     },
     #[cfg(feature = "devguard")]
     Registration(codespace_domain::ResourceAuthorityInfo),
+    #[cfg(feature = "devguard")]
+    Prepared(crate::admission::ManagedPreparation),
 }
 
 #[cfg(feature = "devguard")]
@@ -321,6 +337,33 @@ where
                     Some(registration) => {
                         Ok(RunnerOpResult::Registration(registration.report().await))
                     }
+                    None => Err(ErrorBody::new(
+                        ErrorCode::ResourcePolicyUnsupported,
+                        "this worker was started without DevGuard settings",
+                    )),
+                };
+                let response = WireEnvelope::response(request_id, result);
+                let mut writer = write.lock().await;
+                let _ = write_frame(&mut *writer, &response).await;
+            });
+            continue;
+        }
+        #[cfg(feature = "devguard")]
+        if let Some(RunnerOp::Prepare {
+            workspace,
+            request: exec,
+            attempt_id,
+        }) = request.op
+        {
+            // Beside the other requests, and never cached: a preparation is not replayed.
+            let (write, registrar, runner) = (write.clone(), registrar.clone(), runner.clone());
+            tokio::spawn(async move {
+                let result = match registrar {
+                    Some(registration) => Ok(RunnerOpResult::Prepared(
+                        crate::admission::Preparer::new(registration.owner(), runner)
+                            .prepare_and_dispose(workspace, exec, attempt_id)
+                            .await,
+                    )),
                     None => Err(ErrorBody::new(
                         ErrorCode::ResourcePolicyUnsupported,
                         "this worker was started without DevGuard settings",
@@ -474,10 +517,14 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
             protocol: WIRE_PROTOCOL,
             #[cfg(feature = "devguard")]
             registration: true,
+            #[cfg(feature = "devguard")]
+            admission: true,
         }),
         RunnerOp::Replay { .. } => unreachable!("replay is handled before dispatch"),
         #[cfg(feature = "devguard")]
         RunnerOp::Registration => unreachable!("registration is handled before dispatch"),
+        #[cfg(feature = "devguard")]
+        RunnerOp::Prepare { .. } => unreachable!("preparation is handled before dispatch"),
     };
     result.map_err(RunnerError::into_error_body)
 }
@@ -717,9 +764,43 @@ mod tests {
                 Some(RunnerOpResult::Hello {
                     protocol,
                     registration,
-                }) => assert_eq!((protocol, registration), (WIRE_PROTOCOL, true)),
+                    admission,
+                }) => assert_eq!(
+                    (protocol, registration, admission),
+                    (WIRE_PROTOCOL, true, true)
+                ),
                 other => panic!("unexpected {other:?}"),
             }
+            // Nor can it prepare a governed execution; it starts nothing for one.
+            let dir = tempfile::tempdir().unwrap();
+            let mut workspace = Workspace::new(
+                codespace_domain::WorkspaceId("gov".into()),
+                dir.path().to_path_buf(),
+                codespace_domain::Profile::WorkspaceWrite,
+            );
+            workspace.resources.participation = codespace_policy::Participation::Required;
+            let touch = dir.path().join("started").display().to_string();
+            request(
+                &mut write,
+                "rrpc-prepare",
+                RunnerOp::Prepare {
+                    workspace,
+                    request: RunnerExecRequest::for_host(
+                        vec!["/usr/bin/touch".into(), touch],
+                        ProcessId("proc-gov".into()),
+                        codespace_domain::Profile::WorkspaceWrite,
+                    ),
+                    attempt_id: "cs-attempt-1".into(),
+                },
+            )
+            .await;
+            let reply = response(&mut read).await;
+            assert_eq!(reply.request_id.as_deref(), Some("rrpc-prepare"));
+            assert_eq!(
+                reply.error.unwrap().code,
+                ErrorCode::ResourcePolicyUnsupported
+            );
+            assert!(!dir.path().join("started").exists());
             request(&mut write, "rrpc-reg", RunnerOp::Registration).await;
             let reply = response(&mut read).await;
             assert_eq!(reply.request_id.as_deref(), Some("rrpc-reg"));
@@ -741,6 +822,7 @@ mod tests {
                 old,
                 RunnerOpResult::Hello {
                     registration: false,
+                    admission: false,
                     ..
                 }
             ));

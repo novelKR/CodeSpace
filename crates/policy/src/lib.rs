@@ -61,7 +61,8 @@ pub enum Participation {
     #[default]
     Off,
     /// Every new execution must be admitted and launched through the resource authority.
-    /// CodeSpace cannot do that yet, so every new execution is refused; none runs without it.
+    /// CodeSpace admits it (CSRG-U3) but cannot launch it there yet, so none runs; none runs
+    /// without the authority either.
     Required,
 }
 
@@ -72,11 +73,76 @@ pub enum Participation {
 pub struct Resources {
     #[serde(default)]
     pub participation: Participation,
+    /// What each execution asks the authority for, with `required`. Left out, it is
+    /// [`ResourceRequest::default`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<ResourceRequest>,
 }
 
 impl Resources {
     pub fn is_off(&self) -> bool {
-        self.participation == Participation::Off
+        self.participation == Participation::Off && self.request.is_none()
+    }
+
+    /// The request each execution makes.
+    pub fn request(&self) -> ResourceRequest {
+        self.request.unwrap_or_default()
+    }
+}
+
+/// How strongly the authority controls a resource, weakest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementLevel {
+    /// Counted against the authority's capacity.
+    Accounted,
+    /// Steered by priority and QoS.
+    Cooperative,
+    /// Limited by the kernel.
+    Kernel,
+}
+
+/// The weakest control an execution accepts for each resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceMinimum {
+    pub cpu: EnforcementLevel,
+    pub memory: EnforcementLevel,
+    pub pids: EnforcementLevel,
+}
+
+impl Default for ResourceMinimum {
+    fn default() -> Self {
+        Self {
+            cpu: EnforcementLevel::Accounted,
+            memory: EnforcementLevel::Accounted,
+            pids: EnforcementLevel::Accounted,
+        }
+    }
+}
+
+/// The quantities one execution asks the authority to reserve, and the weakest control it
+/// accepts. Every quantity is positive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceRequest {
+    pub cpu_milli: u64,
+    pub memory_bytes: u64,
+    pub tasks: u64,
+    #[serde(default)]
+    pub minimum: ResourceMinimum,
+}
+
+impl Default for ResourceRequest {
+    /// A quarter CPU, 256 MiB and 32 tasks, each at least accounted: small enough for DevGuard
+    /// to admit on a small host, whose work capacity can be under half a CPU.
+    fn default() -> Self {
+        Self {
+            cpu_milli: 250,
+            memory_bytes: 256 << 20,
+            tasks: 32,
+            minimum: ResourceMinimum::default(),
+        }
     }
 }
 
@@ -205,6 +271,13 @@ impl Registry {
             let environment_id = entry
                 .environment
                 .unwrap_or_else(|| DEFAULT_ENVIRONMENT_ID.to_string());
+            if let Some(request) = entry.resources.request {
+                if request.cpu_milli == 0 || request.memory_bytes == 0 || request.tasks == 0 {
+                    return Err(format!(
+                        "workspace `{id}` resources.request quantities must be positive"
+                    ));
+                }
+            }
             let environment = registry.environments.get(&environment_id).ok_or_else(|| {
                 format!("workspace `{id}` references unknown environment `{environment_id}`")
             })?;
@@ -364,6 +437,41 @@ mod tests {
         );
         let decoded: Workspace = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.resources, ws.resources);
+    }
+
+    #[test]
+    fn a_resource_request_is_operator_config_with_positive_quantities() {
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","resources":{"participation":"required"}}}}"#;
+        let registry = Registry::load_json(json).unwrap();
+        assert_eq!(
+            registry.get("demo").unwrap().resources.request(),
+            ResourceRequest::default()
+        );
+        let json = r#"{"workspaces":{"demo":{"root":"/tmp/demo","resources":{"participation":"required","request":{"cpu_milli":250,"memory_bytes":1048576,"tasks":4,"minimum":{"cpu":"cooperative","memory":"accounted","pids":"kernel"}}}}}}"#;
+        let registry = Registry::load_json(json).unwrap();
+        let ws = registry.get("demo").unwrap();
+        let request = ws.resources.request();
+        assert_eq!(
+            (request.cpu_milli, request.memory_bytes, request.tasks),
+            (250, 1 << 20, 4)
+        );
+        assert_eq!(request.minimum.cpu, EnforcementLevel::Cooperative);
+        assert_eq!(request.minimum.pids, EnforcementLevel::Kernel);
+        let decoded: Workspace = serde_json::from_value(serde_json::to_value(ws).unwrap()).unwrap();
+        assert_eq!(decoded.resources, ws.resources);
+        for request in [
+            r#"{"cpu_milli":0,"memory_bytes":1,"tasks":1}"#,
+            r#"{"cpu_milli":1,"memory_bytes":0,"tasks":1}"#,
+            r#"{"cpu_milli":1,"memory_bytes":1,"tasks":0}"#,
+            r#"{"cpu_milli":1,"memory_bytes":1}"#,
+            r#"{"cpu_milli":1,"memory_bytes":1,"tasks":1,"minimum":{"cpu":"strict","memory":"accounted","pids":"accounted"}}"#,
+            r#"{"cpu_milli":1,"memory_bytes":1,"tasks":1,"burst":1}"#,
+        ] {
+            let json = format!(
+                r#"{{"workspaces":{{"demo":{{"root":"/tmp/demo","resources":{{"participation":"required","request":{request}}}}}}}}}"#
+            );
+            assert!(Registry::load_json(&json).is_err(), "{request}");
+        }
     }
 
     #[test]

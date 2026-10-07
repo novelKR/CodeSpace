@@ -65,12 +65,13 @@ def stages():
         + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'fork_handlers', 'missing_executable_is_process_spawn_failed'),
            cargo('test', 'root', '-p', 'codespace-server', '--lib', '--', 'descriptors')]
         # The DevGuard adapter against an authority with native host evidence, and the DevGuard
-        # tests of the runner, the worker and the gateway where socket creation is not atomically
+        # tests of the runner (registration, its wire and the preparation of governed executions,
+        # CSRG-U3), the worker and the gateway where socket creation is not atomically
         # close-on-exec, the gateway's against the worker and the fixture authority built here.
         + devguard_binaries()
         + [cargo('test', 'devguard'),
            cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
-           cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire'),
+           cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire', 'admission'),
            cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard')],
         # Children killed inside fork on macOS: fresh-process trials of reads concurrent with
         # pipe spawns (crates/runner/tests/fork_race.rs); any child without an exit code fails.

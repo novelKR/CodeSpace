@@ -47,6 +47,11 @@ impl OwnerRegistration {
         self.owner.instance_id()
     }
 
+    /// The owner, which admits, looks up and cancels its attempts (CSRG-U3).
+    pub fn owner(&self) -> Arc<devguard::Owner> {
+        self.owner.clone()
+    }
+
     /// The report of a registration session that started after this call arrived.
     pub async fn report(&self) -> ResourceAuthorityInfo {
         let arrived = Instant::now();
@@ -139,7 +144,7 @@ fn authority_info(
     }
 }
 
-fn registration_state(state: devguard::RegistrationState) -> ResourceRegistrationState {
+pub(crate) fn registration_state(state: devguard::RegistrationState) -> ResourceRegistrationState {
     match state {
         devguard::RegistrationState::Registered => ResourceRegistrationState::Registered,
         devguard::RegistrationState::Unavailable => ResourceRegistrationState::Unavailable,
@@ -160,7 +165,7 @@ fn registration_state(state: devguard::RegistrationState) -> ResourceRegistratio
     }
 }
 
-fn error_code(code: devguard::ErrorCode) -> ResourceAuthorityErrorCode {
+pub(crate) fn error_code(code: devguard::ErrorCode) -> ResourceAuthorityErrorCode {
     match code {
         devguard::ErrorCode::Unauthorized => ResourceAuthorityErrorCode::Unauthorized,
         devguard::ErrorCode::InvalidRequest => ResourceAuthorityErrorCode::InvalidRequest,
