@@ -85,7 +85,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-결과에는 `chunk`, `cursor`, `eof`, `output_lost`, `retained_from`이 있습니다. stdout/stderr는 구분 없이 합쳐집니다. EOF는 출력 수집이 끝났다는 뜻이며 성공 종료를 나타내지 않습니다. 종료는 `process_status`로 판정합니다. `state`는 `running` 또는 `exited`입니다. 종료 후 `termination`은 `exited`·`timeout`·`terminated`·`unknown` 중 하나입니다. `exit_code`는 `termination`이 `exited`일 때만 있을 수 있습니다. `timeout`·`terminated`·`unknown`은 `eof`가 참이어도 성공이 아닙니다. 마지막 256 KiB만 보관합니다. `output_lost`가 참이면 보관 창이 전체 로그가 아닙니다. EOF나 불완전한 로그만으로 빌드·테스트 성공을 선언하지 마세요. 신뢰할 수 있는 작업별 결과로 성공을 확인할 수 없다면 미검증으로 보고해야 합니다.
+결과에는 `chunk`, `cursor`, `eof`, `output_lost`, `retained_from`이 있습니다. stdout/stderr는 구분 없이 합쳐집니다. EOF는 출력 수집이 끝났다는 뜻이며 성공 종료를 나타내지 않습니다. 종료는 `process_status`로 판정합니다. `state`는 `running` 또는 `exited`입니다. 종료 후 `termination`은 `exited`·`signaled`·`timeout`·`terminated`·`unknown` 중 하나입니다. `exit_code`는 `termination`이 `exited`일 때만 있을 수 있습니다. `signaled`는 CodeSpace가 보내지 않은 신호로 프로세스가 끝났다는 뜻입니다. 크래시나 다른 프로세스가 보낸 kill이 여기에 해당합니다. 이때 `signal`에는 신호 번호 `number`와, 알 수 있는 경우 `SIGKILL` 같은 이름 `name`이 들어갑니다. 신호 번호는 운영체제마다 다릅니다. CodeSpace가 요청한 kill은 `signaled`가 아니라 `timeout`이나 `terminated`로 보고됩니다. `exited`라고 해서 신호로 끝나지 않았다는 뜻은 아닙니다. `tty: true` 프로세스는 신호로 끝나도 `exited`와 `exit_code` 1로 보고되어 상태 1로 실패한 명령과 구별되지 않고, Linux 명령 샌드박스에서는 샌드박스 도우미의 종료 상태가 보고됩니다([러너 격리](runner-isolation.md)). `signaled`·`timeout`·`terminated`·`unknown`은 `eof`가 참이어도 성공이 아닙니다. 마지막 256 KiB만 보관합니다. `output_lost`가 참이면 보관 창이 전체 로그가 아닙니다. EOF나 불완전한 로그만으로 빌드·테스트 성공을 선언하지 마세요. 신뢰할 수 있는 작업별 결과로 성공을 확인할 수 없다면 미검증으로 보고해야 합니다.
 
 ```json
 {

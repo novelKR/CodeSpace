@@ -143,8 +143,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "0788376edef3e4fb7675bf5847df96c3cd97070b77a4b4c331065aeaded82e43",
-      "translation_sha256": "65bee059368ba91115db048be556d38d7f94c945e0d18c64f160f1db15b5091e"
+      "source_sha256": "5c89ffabca2002b3473a5c45dc52ea6bae522da36ca4cfbf8db657bf997ba96f",
+      "translation_sha256": "0d3c33de0a8bbdaffc87970ce8ab243871df9d284f9cb1d4de5b953dc6dd6e6e"
     },
     {
       "id": "operations",
@@ -492,8 +492,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "66886bbaeba442876e1b537f24eb018c1b4ca44ba9aa0fa5a37cce5f4becfca6",
-      "translation_sha256": "05f7f22336cf6be423e2b2fab6aa3b389fe5362b655e436c509c1158a901706f"
+      "source_sha256": "008e7c73e34c649962d3c61e6e59be0cd869199c8cf318ccc064b277b96c831e",
+      "translation_sha256": "931a196e8d75240874bad68981d3e75cd3a4d812a3740e2e2187e53891b729f7"
     },
     {
       "id": "error-codes",
@@ -603,8 +603,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "d7f313bf569e680832371c35790f591495a2b33d781bb1f6e789477267132b2d",
-      "translation_sha256": "a94df107ad3e3d5be1a6f146ab282af0d46ac6b85e03bf0701ef6770998a70a2"
+      "source_sha256": "53902d864401da1900b58086d0b92b5d437f843caacfd846f0ac7009a6406983",
+      "translation_sha256": "ff9eaae8c6b46111c2459a20d2707b01f396e5d15cac1b12ee68688ba123f3af"
     },
     {
       "id": "upstream-lock",

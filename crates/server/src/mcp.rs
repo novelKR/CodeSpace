@@ -117,10 +117,13 @@ unknown means the process did not start.
 
 process_id is a lifecycle handle after spawn. exec_command returns dispatch \
 identity only. Use process_status to observe state running or exited. \
-termination is present only after exit and is one of exited, timeout, \
-terminated, or unknown. exit_code is present only when termination is exited. \
-EOF from read_process is not a successful exit. timeout, terminated, and \
-unknown are not success even when eof is true.
+termination is present only after exit and is one of exited, signaled, \
+timeout, terminated, or unknown. exit_code is present only when termination \
+is exited. signaled means a signal CodeSpace did not send ended the process, \
+and signal then gives its number and, when known, its name. A tty process \
+reports such a death as exited with exit_code 1. EOF from read_process is not \
+a successful exit. signaled, timeout, terminated, and unknown are not success \
+even when eof is true.
 
 read_process results include output_lost and retained_from. If output_lost is \
 true, the retained window is not the complete log.
@@ -354,7 +357,7 @@ impl CodeSpace {
 
     #[tool(
         name = "process_status",
-        description = "Observe a managed process lifecycle. state is running or exited. termination is present only after exit (exited, timeout, terminated, or unknown). exit_code is present only when termination is exited. EOF is not success. Unknown process_id is rejected."
+        description = "Observe a managed process lifecycle. state is running or exited. termination is present only after exit (exited, signaled, timeout, terminated, or unknown). exit_code is present only when termination is exited; signal only when it is signaled, a signal CodeSpace did not send. A tty process reports a signal death as exited with exit_code 1. EOF is not success. Unknown process_id is rejected."
     )]
     async fn process_status(
         &self,
@@ -370,6 +373,7 @@ impl CodeSpace {
             state: result.state,
             exit_code: result.exit_code,
             termination: result.termination,
+            signal: result.signal,
             output_total: result.output_total,
             output_retained_from: result.output_retained_from,
             eof: result.eof,
@@ -1330,6 +1334,10 @@ mod tests {
         assert!(text.contains("uncertain attempt"), "{text}");
         assert!(text.contains("backend remains reachable"), "{text}");
         assert!(text.contains("process_status"), "{text}");
+        assert!(
+            text.contains("signaled means a signal CodeSpace did not send"),
+            "{text}"
+        );
         assert!(text.contains("output_lost"), "{text}");
         assert!(
             text.contains("EOF from read_process is not a successful exit"),
