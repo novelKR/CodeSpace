@@ -134,12 +134,13 @@ pub struct ResourceRequest {
 }
 
 impl Default for ResourceRequest {
-    /// One CPU, 512 MiB and 64 tasks, each at least accounted.
+    /// A quarter CPU, 256 MiB and 32 tasks, each at least accounted: small enough for DevGuard
+    /// to admit on a small host, whose work capacity can be under half a CPU.
     fn default() -> Self {
         Self {
-            cpu_milli: 1_000,
-            memory_bytes: 512 << 20,
-            tasks: 64,
+            cpu_milli: 250,
+            memory_bytes: 256 << 20,
+            tasks: 32,
             minimum: ResourceMinimum::default(),
         }
     }

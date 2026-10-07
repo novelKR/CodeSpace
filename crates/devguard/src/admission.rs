@@ -412,10 +412,12 @@ mod tests {
 
     pub(crate) fn request() -> ResourceRequest {
         ResourceRequest {
+            // Small enough for the work capacity of a small host (under 500 m CPU on a
+            // three-core CI runner).
             requested: Quantities {
-                cpu_milli: 500,
+                cpu_milli: 100,
                 memory_bytes: 64 << 20,
-                tasks: 16,
+                tasks: 8,
             },
             minimum: Levels {
                 cpu: Level::Accounted,

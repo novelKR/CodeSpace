@@ -138,7 +138,7 @@ CSRG-U3은 `required`를 실행 직전까지 동작하게 한다. 실행 소유�
 
 ```json
 {"resources": {"participation": "required",
-               "request": {"cpu_milli": 1000, "memory_bytes": 536870912, "tasks": 64,
+               "request": {"cpu_milli": 250, "memory_bytes": 268435456, "tasks": 32,
                            "minimum": {"cpu": "accounted", "memory": "accounted", "pids": "accounted"}}}}
 ```
 

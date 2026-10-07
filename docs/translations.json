@@ -69,8 +69,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "d08947901b5fe14ce3498ee1c9e3bfdc3c37918406613744a70b99a2777349ca",
-      "translation_sha256": "b4bd848cd1c2ede79d67ecdec26d6af69b0a65df8e31017947b85a12640d293b"
+      "source_sha256": "5728c2db61d3ec202e501bac1486723520a9531164c3d44d31dbee8803ec3e1a",
+      "translation_sha256": "1e7e586f22939d2bd6fbc8fe1ac76dc4db8874417b68d4d2b8c224132e085169"
     },
     {
       "id": "overview",

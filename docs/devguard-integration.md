@@ -138,7 +138,7 @@ The owner is the gateway in `in-process` mode and the worker the gateway started
 
 ```json
 {"resources": {"participation": "required",
-               "request": {"cpu_milli": 1000, "memory_bytes": 536870912, "tasks": 64,
+               "request": {"cpu_milli": 250, "memory_bytes": 268435456, "tasks": 32,
                            "minimum": {"cpu": "accounted", "memory": "accounted", "pids": "accounted"}}}}
 ```
 

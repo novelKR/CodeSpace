@@ -857,9 +857,9 @@ mod tests {
             }),
             reservation: prepared.then_some(dg::Reservation {
                 quantities: dg::Quantities {
-                    cpu_milli: 1_000,
-                    memory_bytes: 512 << 20,
-                    tasks: 64,
+                    cpu_milli: 250,
+                    memory_bytes: 256 << 20,
+                    tasks: 32,
                 },
                 prepared_ttl_ms: 5_000,
             }),
@@ -949,7 +949,7 @@ mod tests {
             account.supported.unwrap().cpu.method,
             ControlMethod::QosAndPriority
         );
-        assert_eq!(account.reserved.unwrap().quantities.tasks, 64);
+        assert_eq!(account.reserved.unwrap().quantities.tasks, 32);
         assert_eq!(account.applied, Applied::NotLaunched);
         // It holds a slot, which is not a process.
         assert_eq!(runner.occupied_slots(), 1);
