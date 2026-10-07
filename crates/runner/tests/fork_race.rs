@@ -236,9 +236,10 @@ async fn trial() -> Result<Trial, String> {
             if status.state == ProcessState::Exited {
                 match status.exit_code {
                     Some(0) => trial.exited_zero += 1,
-                    None => trial
-                        .no_exit_code
-                        .push(format!("{}: {:?}", id.0, status.termination)),
+                    None => trial.no_exit_code.push(format!(
+                        "{}: {:?} {:?}",
+                        id.0, status.termination, status.signal
+                    )),
                     Some(code) => trial.other.push(format!("{}: exit {code}", id.0)),
                 }
                 break;

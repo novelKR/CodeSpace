@@ -684,6 +684,10 @@ async fn exec_command_schema_has_optional_tty_and_live_tools_unchanged() {
         "process_status result schema must include termination: {status_dumped}"
     );
     assert!(
+        status_dumped.contains("signaled") && status_dumped.contains("\"signal\""),
+        "process_status result schema must include signaled and signal: {status_dumped}"
+    );
+    assert!(
         status_dumped.contains("output_total"),
         "process_status result schema must include output_total: {status_dumped}"
     );
