@@ -4,8 +4,9 @@
 //! client: connect, `Hello`, `Authenticate` as an operator-provisioned consumer, then `Status`,
 //! and closes it (CSRG-U1). [`Owner::register`] registers the process that owns CodeSpace's
 //! executions in such a session (CSRG-U2), and [`handoff`] hands the consumer secret to the UDS
-//! worker that owns them. Nothing here admits or launches anything. Every outcome is a
-//! [`Status`] or a [`Registration`], never an error for the caller.
+//! worker that owns them. [`admission`] admits, looks up and cancels one attempt of that owner
+//! (CSRG-U3). Nothing here launches anything. Every outcome is a [`Status`], a [`Registration`]
+//! or an [`admission::Answer`], never an error for the caller.
 //!
 //! DevGuard's transport bounds the session: connecting and each frame read or write have a
 //! 250 ms deadline, so a probe ends within about 1.75 s and a registration within about 2.25 s.
@@ -21,6 +22,7 @@
 //! from DevGuard's `connect_timeout`, which macOS cannot create close-on-exec atomically;
 //! CodeSpace's spawners keep it out of their children (#79).
 
+pub mod admission;
 pub mod handoff;
 mod registration;
 

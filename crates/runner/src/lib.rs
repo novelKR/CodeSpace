@@ -99,6 +99,8 @@ fn reject_symlink_ancestors(root: &Path, dest: &Path) -> Result<(), ErrorBody> {
     Ok(())
 }
 
+#[cfg(feature = "devguard")]
+pub mod admission;
 mod api;
 mod apply;
 mod descriptors;
@@ -128,8 +130,8 @@ pub use files::VERSION_ABSENT;
 pub use fork_handlers::prepare_fork_spawns;
 pub use patch_helper::ensure_helper_for_tests;
 pub use process::{
-    InProcessRunner, RetentionPolicy, ShellRelease, DEFAULT_COMPLETED_TTL, DEFAULT_MAX_COMPLETED,
-    DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT,
+    InProcessRunner, RetentionPolicy, ShellRelease, SlotReservation, DEFAULT_COMPLETED_TTL,
+    DEFAULT_MAX_COMPLETED, DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT,
 };
 
 /// True when this process probed a working Linux sandbox helper.

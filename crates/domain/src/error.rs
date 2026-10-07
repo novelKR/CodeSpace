@@ -45,6 +45,19 @@ pub enum ErrorCode {
     /// The workspace requires resource participation that this CodeSpace cannot provide, so
     /// nothing was started. Not occupancy; an operator setting or support decision changes it.
     ResourcePolicyUnsupported,
+    /// The resource authority admitted the execution, but CodeSpace cannot launch it under the
+    /// authority yet, so the unstarted attempt was cancelled and nothing was started (CSRG-U3).
+    ManagedLaunchUnavailable,
+    /// The resource authority denied the execution for lack of resources, or its admission
+    /// expired before launch; nothing was started. A later request may be admitted.
+    ResourceUnavailable,
+    /// The resource authority could not be asked, or refused the request, so the execution was
+    /// not admitted and nothing was started.
+    ResourceAuthorityUnavailable,
+    /// The admission request may have reached the resource authority and no answer came back,
+    /// so whether it reserved resources is not known. Nothing was started; do not assume the
+    /// attempt does not exist.
+    AdmissionUnknown,
     /// Scheduler or store invariant failed. Not occupancy; do not retry as busy.
     Internal,
 }
@@ -134,6 +147,20 @@ mod tests {
         assert_eq!(json, "\"INTENT_ALREADY_CLAIMED\"");
         let json = serde_json::to_string(&ErrorCode::WorkClosed).unwrap();
         assert_eq!(json, "\"WORK_CLOSED\"");
+        for (code, name) in [
+            (
+                ErrorCode::ManagedLaunchUnavailable,
+                "MANAGED_LAUNCH_UNAVAILABLE",
+            ),
+            (ErrorCode::ResourceUnavailable, "RESOURCE_UNAVAILABLE"),
+            (
+                ErrorCode::ResourceAuthorityUnavailable,
+                "RESOURCE_AUTHORITY_UNAVAILABLE",
+            ),
+            (ErrorCode::AdmissionUnknown, "ADMISSION_UNKNOWN"),
+        ] {
+            assert_eq!(serde_json::to_string(&code).unwrap(), format!("\"{name}\""));
+        }
         let json = serde_json::to_string(&ErrorCode::ApprovalRequired).unwrap();
         assert_eq!(json, "\"APPROVAL_REQUIRED\"");
         let json = serde_json::to_string(&ErrorCode::ApprovalNotFound).unwrap();
