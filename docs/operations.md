@@ -119,7 +119,7 @@ The worker runs on the same host and is not a container. The gateway creates a p
 | `RUST_LOG` | stderr tracing level; default `info` |
 | `CODESPACE_OPERATIONS_DB` unset | In-memory patch operations and instruction queue; lost on restart |
 | `CODESPACE_PROCESS_TIMEOUT_SECS` | Positive integer; default 30 seconds; set in the runner environment |
-| `CODESPACE_MAX_PROCESSES` | Default 8 live processes across the runner; workspace occupancy still applies |
+| `CODESPACE_MAX_PROCESSES` | Default 8 live processes across the runner; a request over it is refused before any process is created; workspace occupancy still applies |
 | Process output | Last 256 KiB retained; stdout/stderr combined; `read_process` reports `output_lost` and `retained_from`; `process_status` reports termination; `process_resize` resizes a running PTY |
 | Completed handles | Default retention up to 15 minutes and 64 completed entries; not durable |
 

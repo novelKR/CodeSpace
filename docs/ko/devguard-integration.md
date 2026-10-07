@@ -2,13 +2,13 @@
 
 # DevGuard 결합 로드맵
 
-> **상태: 구현 지시로서 효력 중지.** 이 페이지의 ‘CS-RG 작업 순서’, ‘소비 경계’, ‘설계 개정 1 참조’ 절은 적힌 대로 구현하지 않습니다. 현재 상태와 선행 조건은 영향이 없습니다. CodeSpace 통합 계획에 대해 소유자가 지시한 검토인 CS-RG 통합 경계 재검증(작업 단위가 아닙니다)이 끝날 때까지 적용됩니다. 대체 구조는 승인되지 않았으며, 소유자가 재검증 결과를 검토한 뒤 결정합니다. 이 표기는 지시의 효력만 중지하며 어떤 안전 요구도 완화하지 않습니다. 아래 내용은 이력 추적을 위해 바꾸지 않고 남깁니다. 다만 현재 상태, 소유자가 2026-10-02에 이 효력 중지와 별도로 승인한 CSRG-U1의 [상태 전용 연결](#devguard-status-connection), 소유자가 2026-10-03에 지시한 CSRG-U2의 [실행 소유자 등록](#devguard-owner-registration)은 예외입니다.
+> **상태: 구현 지시로서 효력 중지.** 이 페이지의 ‘CS-RG 작업 순서’, ‘소비 경계’, ‘설계 개정 1 참조’ 절은 적힌 대로 구현하지 않습니다. 현재 상태와 선행 조건은 영향이 없습니다. CodeSpace 통합 계획에 대해 소유자가 지시한 검토인 CS-RG 통합 경계 재검증(작업 단위가 아닙니다)이 끝날 때까지 적용됩니다. 대체 구조는 승인되지 않았으며, 소유자가 재검증 결과를 검토한 뒤 결정합니다. 이 표기는 지시의 효력만 중지하며 어떤 안전 요구도 완화하지 않습니다. 아래 내용은 이력 추적을 위해 바꾸지 않고 남깁니다. 다만 현재 상태, 소유자가 2026-10-02에 이 효력 중지와 별도로 승인한 CSRG-U1의 [상태 전용 연결](#devguard-status-connection), 소유자가 2026-10-03에 지시한 CSRG-U2의 [실행 소유자 등록](#devguard-owner-registration), 소유자가 2026-10-07에 지시한 CSRG-U3의 [실행 허용과 spawn 전 준비](#devguard-admission)는 예외입니다.
 
 [English](../devguard-integration.md) | [한국어](devguard-integration.md)
 
 [DevGuard](https://github.com/novelKR/DevGuard)는 개발 작업의 자원을 중앙에서 관리하는 독립 시스템이며 CodeSpace와 동일한 Apache-2.0 라이선스를 적용한다. 승인된 결합 경로에 따라 실행 허용과 자원 회계를 공통 계층에 맡기고, CodeSpace는 프로세스 소유권, PTY, 입출력, 권한, 승인 hold와 workspace 조정을 계속 담당한다.
 
-**현재 상태:** DevGuard는 독립 저장소에서 DG-1을 완료했다([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). DG-0 계약 위에 macOS 실제 호스트 증거, 현재 사용자의 LaunchAgent로 설치하는 인증 daemon, fenced launch helper와 대조, Cargo adapter를 갖춘 `devguard` 명령행 owner, 후보 시험용 parent lease, upgrade와 repair를 제공한다. 측정한 호스트와 정책에서 release `0.1.0-5daee5d-b3fa569e`(Git tag가 아닌 release ID)의 macOS SLO qualification을 마쳤으며 Linux 강제 보호는 qualification하지 않았다. CodeSpace 소비(CS-RG)는 진행 중이며 qualification을 마치지 않았다. CSRG-U1은 opt-in 상태 전용 연결을 추가했다. `devguard` feature로 빌드하고 `--devguard status`로 시작한 gateway는 [`f1f9084`](upstream-lock.md#devguard-client-pin)에 고정한 DevGuard client로 DevGuard의 상태를 `workspace_info`에 보고한다. CSRG-U2부터는 CodeSpace의 실행을 소유한 프로세스가 스스로를 DevGuard에 등록하며(`--devguard register`), workspace의 `resources` 설정으로 자원 참여를 필수로 지정할 수 있다. 필수로 지정한 workspace는 관리형 실행 허용과 실행이 생길 때까지 새 실행을 모두 거부한다. 아무것도 허용하거나 실행하지 않으므로 DevGuard 서비스가 실행 중이어도 CodeSpace 실행을 관리하지 않는다. qualification을 마친 release는 실행에 쓸 후보로 남으며 선택된 pin이 아니다. client pin은 client crate의 소스 pin이다.
+**현재 상태:** DevGuard는 독립 저장소에서 DG-1을 완료했다([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). DG-0 계약 위에 macOS 실제 호스트 증거, 현재 사용자의 LaunchAgent로 설치하는 인증 daemon, fenced launch helper와 대조, Cargo adapter를 갖춘 `devguard` 명령행 owner, 후보 시험용 parent lease, upgrade와 repair를 제공한다. 측정한 호스트와 정책에서 release `0.1.0-5daee5d-b3fa569e`(Git tag가 아닌 release ID)의 macOS SLO qualification을 마쳤으며 Linux 강제 보호는 qualification하지 않았다. CodeSpace 소비(CS-RG)는 진행 중이며 qualification을 마치지 않았다. CSRG-U1은 opt-in 상태 전용 연결을 추가했다. `devguard` feature로 빌드하고 `--devguard status`로 시작한 gateway는 [`f1f9084`](upstream-lock.md#devguard-client-pin)에 고정한 DevGuard client로 DevGuard의 상태를 `workspace_info`에 보고한다. CSRG-U2부터는 CodeSpace의 실행을 소유한 프로세스가 스스로를 DevGuard에 등록하며(`--devguard register`), workspace의 `resources` 설정으로 자원 참여를 필수로 지정할 수 있다. CSRG-U3부터 그 소유자는 이런 실행마다 무엇을 만들기 전에 프로세스 slot을 잡고 DevGuard의 실행 허용을 받는다. 관리형 실행(CSRG-U4)이 아직 없으므로 그다음 시작하지 않은 attempt를 취소하고 실행을 거부한다. DevGuard를 통해 실행하는 것도, DevGuard 없이 실행하는 것도 없으므로 DevGuard 서비스가 실행 중이어도 아직 실행 중인 CodeSpace 프로세스를 관리하지 않는다. qualification을 마친 release는 실행에 쓸 후보로 남으며 선택된 pin이 아니다. client pin은 client crate의 소스 pin이다.
 
 DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)은 [DevGuard PR #8](https://github.com/novelKR/DevGuard/pull/8)의 병합 `d4981b4c241cff42687f5c2c681b583c7847776e`로 반영되었으며 CS-RG의 실행 계층과 작업 순서를 개정했다. 이 개정은 계획과 이후 구현을 구속하는 설계 결정을 바꾼다. 현재 CodeSpace 동작이나 구현·qualification 상태는 바꾸지 않는다.
 
@@ -85,7 +85,7 @@ CSRG-U2는 CodeSpace의 실행을 소유한 프로세스가 DevGuard에 등록�
 
 DevGuard는 등록할 프로세스를 세션의 peer에서 얻으므로 프로세스는 자신만 등록할 수 있고, gateway가 worker를 대신해 등록하는 일은 없다. 소유자는 DevGuard가 등록한 정체성이 자기 프로세스이며 세션마다 같은지도 확인한다.
 
-**세션.** 등록 한 번은 소유자가 열고 닫는 상한 있는 세션 하나다. 연결하고, protocol 1과 capability `static_control_reservations`를 요구하는 `Hello`, `control_service`를 부여해야 하는 `Authenticate`, 등록 준비를 보고해야 하는 `Status`를 거쳐 소유자의 instance 정체성으로 `Register`한다. DevGuard의 frame당 250 ms 기한 때문에 세션은 약 2.25초 안에 끝난다. instance 정체성(`codespace-`와 무작위 16진수 32자리)은 소유자 프로세스마다 한 번 만들고 모든 세션이 다시 등록하므로, DevGuard에는 소유자마다 instance가 하나만 있다. 세션 동안에는 active이고 세션이 끝나면 suspect가 된다. 다시 시작한 소유자는 새 프로세스이므로 새 정체성을 쓴다. 소유자는 시작할 때, 그리고 `workspace_info` 호출과 거부되는 `required` 실행마다 등록한다. 세션이 진행 중일 때 들어온 호출은 기다렸다가 다음 세션 결과를 함께 쓴다.
+**세션.** 등록 한 번은 소유자가 열고 닫는 상한 있는 세션 하나다. 연결하고, protocol 1과 capability `static_control_reservations`를 요구하는 `Hello`, `control_service`를 부여해야 하는 `Authenticate`, 등록 준비를 보고해야 하는 `Status`를 거쳐 소유자의 instance 정체성으로 `Register`한다. DevGuard의 frame당 250 ms 기한 때문에 세션은 약 2.25초 안에 끝난다. instance 정체성(`codespace-`와 무작위 16진수 32자리)은 소유자 프로세스마다 한 번 만들고 모든 세션이 다시 등록하므로, DevGuard에는 소유자마다 instance가 하나만 있다. 세션 동안에는 active이고 세션이 끝나면 suspect가 된다. 다시 시작한 소유자는 새 프로세스이므로 새 정체성을 쓴다. 소유자는 시작할 때와 `workspace_info` 호출마다 등록한다. 세션이 진행 중일 때 들어온 호출은 기다렸다가 다음 세션 결과를 함께 쓴다. CSRG-U3의 실행 허용, 조회, 취소는 각각 먼저 등록하는 별도 세션이다.
 
 **보고하는 내용.** `register`이면 `workspace_info.resource_authority`는 소유자의 세션에서 나온다. `participation: registration`, `governs_execution: false`, 상태 연결과 같은 authority의 `state`, `error_code`, `report`, 그리고 `registration`:
 
@@ -105,7 +105,7 @@ DevGuard는 등록할 프로세스를 세션의 peer에서 얻으므로 프로�
                          "resources": {"participation": "required"}}}}
 ```
 
-기본값 `off`와 설정이 없는 경우는 실행을 이전과 같게 둔다. `required`이면 `exec_command`나 재개한 승인으로 들어온 새 실행을 승인, lease, 프로세스가 생기기 전에 `RESOURCE_POLICY_UNSUPPORTED`로 모두 거부한다. CodeSpace는 아직 DevGuard를 통해 실행을 허용하거나 실행하지 않기 때문이다(CSRG-U3과 U4). 메시지는 실행 소유자가 등록되었는지 알려 준다. feature 없이 빌드했거나 `--devguard register` 없이 시작한 경우도 포함해 모든 빌드가 같게 거부하며, `required`가 자원 관리 없이 실행하는 쪽으로 물러서는 일은 없다. 알 수 없는 `resources` 설정은 registry 로드를 실패시킨다. 읽기, 찾기, 패치와 실행 중인 프로세스의 제어는 영향을 받지 않는다.
+기본값 `off`와 설정이 없는 경우는 실행을 이전과 같게 둔다. `required`이고 `--devguard register`로 시작했으면 새 실행은 모두 소유자의 [준비](#devguard-admission)로 간다(CSRG-U3). feature 없이 빌드했거나 `--devguard register` 없이 시작했거나 소유자가 준비할 수 없으면(gateway가 시작하지 않은 worker) `exec_command`나 재개한 승인으로 들어온 새 실행을 승인, lease, 프로세스가 생기기 전에 `RESOURCE_POLICY_UNSUPPORTED`로 모두 거부한다. 메시지는 실행 소유자가 등록되었는지 알려 준다. `required`가 자원 관리 없이 실행하는 쪽으로 물러서는 일은 없다. 알 수 없는 `resources` 설정은 registry 로드를 실패시킨다. 읽기, 찾기, 패치와 실행 중인 프로세스의 제어는 영향을 받지 않는다.
 
 **프로세스 제어.** `process_status`, `read_process`, `write_stdin`, `process_resize`, `terminate_process`와 timeout은 DevGuard에 묻지 않는다. UDS 모드의 worker는 등록 요청을 다른 요청과 나란히 처리하므로 등록 세션이 이들을 지연시키지 않는다.
 
@@ -115,7 +115,57 @@ DevGuard는 등록할 프로세스를 세션의 peer에서 얻으므로 프로�
 
 **플랫폼.** macOS에서는 실제 호스트 증거를 가진 DevGuard 서비스가 소유자를 등록한다. 실제 증거가 없으면(DG-LINUX 전의 Linux) DevGuard가 capability를 하나도 밝히지 않으므로 등록은 `incompatible`이다.
 
-**하지 않는 일.** 실행 허용, 실행, permit, carrier, launch helper는 없다. spawn, PTY, 출력, timeout, 종료, reap, lifecycle은 CodeSpace에 남으며 DevGuard는 CodeSpace 실행을 관리하지 않는다.
+**하지 않는 일.** 실행, permit, carrier, launch helper는 없다. spawn, PTY, 출력, timeout, 종료, reap, lifecycle은 CodeSpace에 남는다.
+
+<a id="devguard-admission"></a>
+
+## 실행 허용과 spawn 전 준비(CSRG-U3)
+
+CSRG-U3은 `required`를 실행 직전까지 동작하게 한다. 실행 소유자는 관리 대상 실행마다 DevGuard의 실행 허용을 받고 그 실행의 일회용 준비를 보유한다. 여전히 아무것도 시작하지 않는다. 관리형 실행(`BeginLaunch`, 그 permit과 carrier, launch helper)은 CSRG-U4다.
+
+**순서.** `--devguard register`로 시작한 gateway에서 `required` workspace의 새 실행은 다음을 거친다.
+
+1. gateway의 **권한과 workspace 준비**: 정책, `approvals: confirm`의 승인 hold, 그다음 workspace의 변경 lease.
+2. 무엇을 만들기 전에 실행 소유자의 runner에서 잡는 **프로세스 slot**. 실행 중 프로세스 상한(`CODESPACE_MAX_PROCESSES`, 기본 8)을 넘는 요청은 여기서 `WORKSPACE_BUSY`로 거부하며 DevGuard에 묻지 않는다. 관리 대상이든 아니든 모든 실행에 적용된다. slot 없이는 프로세스를 만들지 않는다.
+3. 등록된 소유자의 상한 있는 세션 하나(`Register` 후 `Admit`)에서 받는 **실행 허용**.
+4. 명령, slot, attempt를 소유하는 **일회용 준비된 실행**.
+
+소유자는 `in-process` 모드에서는 gateway, `uds` 모드에서는 gateway가 시작한 worker다. worker는 요청을 `prepare` 요청 하나로 받아 어떻게 끝났는지 답한다.
+
+**attempt 정체성.** 실행마다 새 attempt ID(`cs-attempt-`와 16진수 32자리)를 만들며, 전송 요청 ID를 쓰지 않는다. DevGuard는 이를 소유자의 consumer와 generation으로 구분한다. attempt는 CodeSpace `process_id`, workspace, PTY 여부, 자원 요청, 실행 의미의 digest에 묶인다. digest는 DevGuard의 의미 인코딩으로, 주어진 명령, root·profile·network 정책을 포함한 workspace, 자식이 받을 정확한 환경, PTY, timeout, 자원 요청을 덮는다. DevGuard는 같은 attempt ID에 다른 digest를 거부하며, 다른 attempt, 소유자, digest에 대한 답을 이 attempt의 답으로 받아들이지 않는다.
+
+**요청.** workspace는 실행마다 무엇을 요청할지 적는다.
+
+```json
+{"resources": {"participation": "required",
+               "request": {"cpu_milli": 1000, "memory_bytes": 536870912, "tasks": 64,
+                           "minimum": {"cpu": "accounted", "memory": "accounted", "pids": "accounted"}}}}
+```
+
+`request`가 없으면 이 값을 쓴다. 수량은 모두 양수여야 한다. `minimum`은 자원별로 받아들이는 가장 약한 제어로 `accounted`, `cooperative`, `kernel` 중 하나다. 실행 허용 세션은 DevGuard의 `durable_admission`과 `static_control_reservations` capability를 요구한다.
+
+**준비.** 네 단계를 구분해 보관한다. *요청*한 양과 *필수* 최소 제어, DevGuard가 그에 대해 *지원*하는 것(scope와 자원별 level·method), *예약*한 양과 실행 없이 유지하는 기간, *적용*한 것이며 마지막은 `not_launched`로 남는다. 복제할 수 없고 실행이나 취소가 소비하므로 한 번만 쓰인다. 기한은 DevGuard의 준비 유지 기간(pin 기준 5초)이며 실행 허용을 묻기 전부터 잰다. 실행할 때 다른 명령, `process_id`, PTY 선택을 내밀면 거부하고 attempt를 취소한다. 기한이 지난 뒤에 내밀어도 같다. 정리하지 않고 버린 준비는 백그라운드에서 취소한다.
+
+**관리형 실행이 생기기 전까지.** 준비에 성공하면 소유자는 시작하지 않은 attempt를 취소하고 실행을 `MANAGED_LAUNCH_UNAVAILABLE`로 거부한다. 대신 다른 경로로 실행하는 일은 없다. 모든 결과는 아무것도 시작하지 않는 거부이며 workspace lease와 slot을 놓고, attempt ID, `process_id`, attempt에 대해 아는 것(`not_asked`, `not_recorded`, `denied`, `cancelled`, `expired`, `other`, `unknown`)을 밝힌다.
+
+| 결과 | 도구 오류 |
+| --- | --- |
+| 허용된 뒤 취소 | `MANAGED_LAUNCH_UNAVAILABLE` |
+| 프로세스 slot 없음 | `WORKSPACE_BUSY` |
+| 자원 부족으로 거부되었거나 실행 전에 허용이 만료됨 | `RESOURCE_UNAVAILABLE` |
+| DevGuard가 필수 제어를 줄 수 없어 거부됨 | `RESOURCE_POLICY_UNSUPPORTED` |
+| 소유자가 물을 수 없었거나(등록 실패) DevGuard가 요청을 거부함 | `RESOURCE_AUTHORITY_UNAVAILABLE` |
+| 답이 오지 않음 | `ADMISSION_UNKNOWN` |
+
+재개한 승인은 새 실행처럼 준비하며, 같은 승인을 다시 재개하면 DevGuard에 다시 묻지 않고 저장된 거부를 돌려준다.
+
+**불확실성.** timeout, 잃어버린 응답, EOF, 다른 것에 대한 답, DevGuard client의 전송 오류 코드는 거부로도, attempt가 없다는 증거로도 받아들이지 않는다. 이때 소유자는 attempt를 한 번 조회한다. 준비 상태로 발견하면 취소하고, 이미 정리된 상태면 그대로 보고하며, 그렇지 않으면 attempt는 `unknown`이고 DevGuard가 만료시킬 때까지 예약을 유지할 수 있다. 불확실한 attempt는 어떤 ID로도 다시 허용을 받지 않으며 준비로 재구성하지 않는다. `uds` 모드에서 worker가 받았을 수 있으나 답하지 않은 `prepare` 요청은 `ADMISSION_UNKNOWN`, 떠나지도 못한 요청은 `RESOURCE_AUTHORITY_UNAVAILABLE`(`owner_unreachable`)이다. 쓰는 정리는 취소뿐이며 그 전제가 성립할 때만 쓴다. 소유자는 DevGuard에 그 attempt의 실행을 요청한 적이 없다.
+
+**수명.** workspace lease는 gateway가 준비를 기다리는 동안, slot은 준비가 보유하는 동안 유지된다. attempt는 DevGuard의 것이며 DevGuard가 거부, 취소, 만료를 기록할 때 끝난다. CodeSpace는 아무것도 시작하지 않을 때 attempt에 대해 무엇을 알든 slot과 lease를 놓으며, 관찰하지 않은 해제를 보고하지 않는다. 보관된 출력은 프로세스의 것이고 준비는 프로세스를 만들지 않는다. 준비는 별도 task로 실행하므로 기다림을 멈춘 client가 있어도 정리를 마친다.
+
+**플랫폼.** macOS에서 실제 호스트 증거를 가진 DevGuard 서비스와 함께라면 실행을 허용받고 취소한다. 실제 증거가 없으면(DG-LINUX 전의 Linux) 소유자가 등록할 수 없으므로 관리 대상 실행은 모두 `RESOURCE_AUTHORITY_UNAVAILABLE`이다.
+
+**하지 않는 일.** `BeginLaunch`, permit, carrier, launch helper, 관찰, reap, 해제 통합과 pin 변경은 없다. spawn, PTY, 출력, timeout, 종료, reap, lifecycle은 CodeSpace에 남는다.
 
 ## CS-RG 작업 순서
 

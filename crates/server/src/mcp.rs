@@ -293,7 +293,8 @@ impl CodeSpace {
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(invalid_argv()));
         }
-        self.require_participation_off(ws).await.map_err(err_json)?;
+        // A workspace this gateway cannot govern is refused before any approval or lease.
+        self.participation(ws).await.map_err(err_json)?;
         if let Err(err) = self.maybe_hold_exec(ws, &params) {
             return Err(err_json(err));
         }
@@ -860,8 +861,8 @@ impl CodeSpace {
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(invalid_argv());
         }
-        // Also here, so an approval resumed after the registry changed starts nothing either.
-        self.require_participation_off(ws).await?;
+        // Also here, so an approval resumed after the registry changed is governed as it is now.
+        let participation = self.participation(ws).await?;
         let process_id = ProcessId(format!("proc-{}", Uuid::new_v4()));
         let mut reservation = self
             .store
@@ -870,10 +871,21 @@ impl CodeSpace {
         if let Some(id) = resume {
             self.store.mark_resuming(id)?;
         }
-        reservation.arm_dispatch();
         let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
         req.policy.network = ws.network;
         req.tty = params.tty;
+        match participation {
+            Participating::Off => {}
+            #[cfg(feature = "devguard")]
+            Participating::Managed => {
+                // The workspace lease is held while the owner prepares; nothing is started, so
+                // it is released with the answer whatever the attempt's own state.
+                let refused = self.prepare_governed(ws, req).await;
+                reservation.abort();
+                return Err(refused);
+            }
+        }
+        reservation.arm_dispatch();
         match self.runner.exec(ws, req).await {
             Ok(result) => {
                 reservation.confirm();
@@ -899,23 +911,57 @@ impl CodeSpace {
     }
 }
 
+/// How a new execution in a workspace takes part in the resource authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Participating {
+    /// Run as always, without the authority.
+    Off,
+    /// Prepare it through the execution owner's admission (CSRG-U3). It never runs outside it.
+    #[cfg(feature = "devguard")]
+    Managed,
+}
+
 impl CodeSpace {
-    /// A workspace that requires resource participation starts nothing until CodeSpace admits
-    /// and launches through the resource authority (CSRG-U3 and U4). Every build refuses its
-    /// new executions alike, and nothing falls back to running them without the authority.
-    async fn require_participation_off(&self, ws: &Workspace) -> Result<(), ErrorBody> {
+    /// How a new execution in `ws` takes part, or why this gateway refuses it. A workspace that
+    /// requires resource participation is prepared through the execution owner's admission
+    /// when the gateway was started with `--devguard register` and its owner can prepare;
+    /// otherwise it is refused. Nothing ever falls back to running it without the authority.
+    async fn participation(&self, ws: &Workspace) -> Result<Participating, ErrorBody> {
         if ws.resources.participation == Participation::Off {
-            return Ok(());
+            return Ok(Participating::Off);
+        }
+        #[cfg(feature = "devguard")]
+        if let Some(registration) = &self.registration {
+            if registration.prepares(&self.runner) {
+                return Ok(Participating::Managed);
+            }
         }
         Err(ErrorBody::new(
             ErrorCode::ResourcePolicyUnsupported,
             format!(
-                "workspace `{}` requires resource participation: {}; managed resource \
-                 admission and launch are not implemented yet, so nothing was started",
+                "workspace `{}` requires resource participation: {}; this gateway cannot \
+                 admit executions through the resource authority, so nothing was started",
                 ws.id.0,
                 self.participation_readiness().await
             ),
         ))
+    }
+
+    /// Have the execution owner prepare `req` (CSRG-U3). Managed launch is not available yet,
+    /// so every preparation ends in a refusal and nothing is started.
+    #[cfg(feature = "devguard")]
+    async fn prepare_governed(&self, ws: &Workspace, req: RunnerExecRequest) -> ErrorBody {
+        let Some(registration) = &self.registration else {
+            return ErrorBody::new(ErrorCode::Internal, "no execution owner registration");
+        };
+        let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
+        match registration
+            .prepare(&self.runner, ws, req, attempt_id)
+            .await
+        {
+            Ok(report) => report.into_error_body(&ws.id.0),
+            Err(err) => err,
+        }
     }
 
     #[cfg(not(feature = "devguard"))]
@@ -1923,8 +1969,10 @@ mod tests {
                 "{refused}"
             );
             assert!(
-                body.message
-                    .ends_with("managed resource admission and launch are not implemented yet, so nothing was started"),
+                body.message.ends_with(
+                    "this gateway cannot admit executions through the resource authority, so \
+                     nothing was started"
+                ),
                 "{refused}"
             );
             assert!(body.approval_id.is_none() && body.operation_id.is_none());
@@ -2237,7 +2285,7 @@ mod devguard_tests {
     }
 
     #[tokio::test]
-    async fn a_required_workspace_asks_the_owner_and_still_starts_nothing() {
+    async fn a_required_workspace_is_prepared_by_the_owner_and_starts_nothing() {
         let dir = short_directory();
         std::fs::write(dir.path().join("a.txt"), "kept").unwrap();
         let socket = dir.path().join("authority.sock");
@@ -2251,14 +2299,18 @@ mod devguard_tests {
             store.clone(),
             RuntimeBackend::in_process(release(&store)),
         );
-        assert_required_starts_nothing(
+        assert_governed_starts_nothing(
             &handler,
             &store,
             dir.path(),
-            "the execution owner is not registered with DevGuard (registration: unavailable)",
+            ErrorCode::ResourceAuthorityUnavailable,
+            &[
+                "the execution owner could not ask the resource authority (registration: unavailable",
+                ": not_asked; nothing was started",
+            ],
         )
         .await;
-        // Each refusal came from a session the owner opened for it.
+        // Each preparation came from a session the owner opened for it.
         assert_eq!(endpoint.accepted(), 3);
         // Existing process control never asks DevGuard.
         let started = handler
@@ -2309,6 +2361,134 @@ mod devguard_tests {
         panic!("{process_id:?} did not exit after termination");
     }
 
+    /// Every new execution in a `gov` workspace goes to the execution owner's preparation and
+    /// ends in a refusal with `code` whose message contains each of `says`: a pipe and a PTY command,
+    /// and one held for approval, granted and resumed. Nothing starts, the workspace lease is
+    /// released each time and the other tools keep working. Resuming the same approval again
+    /// returns the stored refusal, so its admission is not asked again. Returns the attempt IDs.
+    pub(crate) async fn assert_governed_starts_nothing(
+        cs: &CodeSpace,
+        store: &Store,
+        root: &std::path::Path,
+        code: ErrorCode,
+        says: &[&str],
+    ) -> Vec<String> {
+        // DevGuard reads the consumer secret within 250 ms (see `past_the_credential`): such a
+        // session opens nothing, and the call is made again.
+        let stopped = |body: &ErrorBody| {
+            code != ErrorCode::ResourceAuthorityUnavailable
+                && body
+                    .message
+                    .contains("(registration: credential_unavailable")
+        };
+        let touch = format!("{}/started", root.display());
+        let mut attempts = Vec::new();
+        let mut check = |body: &ErrorBody, raw: &str| {
+            assert_eq!(body.code, code, "{raw}");
+            for said in says {
+                assert!(body.message.contains(said), "{raw}");
+            }
+            assert!(body.message.ends_with("; nothing was started"), "{raw}");
+            let attempt = body
+                .message
+                .split("attempt `")
+                .nth(1)
+                .and_then(|rest| rest.split('`').next())
+                .unwrap_or_else(|| panic!("no attempt in {raw}"))
+                .to_owned();
+            assert!(attempt.starts_with("cs-attempt-"), "{raw}");
+            assert!(!attempts.contains(&attempt), "attempt reused: {raw}");
+            attempts.push(attempt);
+        };
+        for tty in [false, true] {
+            let mut tries = 0;
+            let (body, raw) = loop {
+                let raw = cs
+                    .exec_command(Parameters(exec_params(
+                        "gov",
+                        &["/usr/bin/touch", &touch],
+                        tty,
+                    )))
+                    .await
+                    .err()
+                    .expect("refused");
+                let body: ErrorBody = serde_json::from_str(&raw).unwrap();
+                tries += 1;
+                if tries == 5 || !stopped(&body) {
+                    break (body, raw);
+                }
+            };
+            check(&body, &raw);
+            drop(
+                store
+                    .try_acquire_write("gov")
+                    .expect("the lease is released"),
+            );
+        }
+        let mut tries = 0;
+        let (body, raw, approval_id) = loop {
+            let held = cs
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/usr/bin/touch", &touch],
+                    false,
+                )))
+                .await
+                .err()
+                .expect("held");
+            let held: ErrorBody = serde_json::from_str(&held).unwrap();
+            assert_eq!(held.code, ErrorCode::ApprovalRequired);
+            let approval_id = ApprovalId(held.approval_id.unwrap());
+            cs.approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+            let raw = cs
+                .operation_resume(Parameters(OperationResumeParams {
+                    approval_id: approval_id.clone(),
+                }))
+                .await
+                .err()
+                .expect("refused");
+            let body: ErrorBody = serde_json::from_str(&raw).unwrap();
+            tries += 1;
+            if tries == 5 || !stopped(&body) {
+                break (body, raw, approval_id);
+            }
+        };
+        check(&body, &raw);
+        let replayed = cs
+            .operation_resume(Parameters(OperationResumeParams { approval_id }))
+            .await
+            .err()
+            .expect("refused");
+        let replayed: ErrorBody = serde_json::from_str(&replayed).unwrap();
+        assert_eq!(
+            (replayed.code, replayed.message.as_str()),
+            (body.code, body.message.as_str())
+        );
+        drop(
+            store
+                .try_acquire_write("gov-confirm")
+                .expect("the lease is released"),
+        );
+        assert!(!root.join("started").exists(), "a governed command ran");
+        let read = cs
+            .read(Parameters(ReadParams {
+                workspace_id: WorkspaceId("gov".into()),
+                path: "a.txt".into(),
+                offset: None,
+                limit: None,
+                work_id: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(read.0.content, "kept");
+        attempts
+    }
+
     /// The gateway registers itself when it runs the executions (InProcess), against
     /// DevGuard's fixture authority in its own process.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2350,19 +2530,221 @@ mod devguard_tests {
         for registration in together {
             assert_eq!(registration, expected);
         }
-        let readiness = if fixture.native {
+        if fixture.native {
             // One instance across every session, and it is this process.
             let instances = fixture.instances();
             assert_eq!(instances.len(), 1, "{instances:?}");
             assert_eq!(instances[0].1, me);
-            "the execution owner is registered with DevGuard"
-        } else {
-            "the execution owner is not registered with DevGuard (registration: incompatible)"
-        };
-        assert_required_starts_nothing(&handler, &store, dir.path(), readiness).await;
+        }
+        assert_governed(&mut fixture, &handler, &store, dir.path()).await;
         if fixture.native {
             assert_eq!(fixture.instances().len(), 1);
         }
+    }
+
+    /// With native evidence DevGuard admits each governed execution and CodeSpace cancels it,
+    /// as managed launch is not available; without it the owner cannot register.
+    async fn assert_governed(
+        fixture: &mut FixtureAuthority,
+        handler: &CodeSpace,
+        store: &Store,
+        root: &std::path::Path,
+    ) {
+        let (code, says): (_, &[&str]) = if fixture.native {
+            (
+                ErrorCode::ManagedLaunchUnavailable,
+                &[
+                    "the resource authority admitted it, but managed launch is not available yet",
+                    ": cancelled; nothing was started",
+                ],
+            )
+        } else {
+            (
+                ErrorCode::ResourceAuthorityUnavailable,
+                &[
+                    "(registration: incompatible, resource_policy_unsupported)",
+                    ": not_asked; nothing was started",
+                ],
+            )
+        };
+        assert_governed_starts_nothing(handler, store, root, code, says).await;
+        // Nothing the authority admitted is still charged.
+        assert_eq!(fixture.charged(), (Vec::new(), 0));
+    }
+
+    /// The operator's request decides what DevGuard is asked for: more memory than it can
+    /// give is a shortage, kernel control it cannot give is unsupported. Neither reserves or
+    /// starts anything.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shortage_or_an_unsupported_minimum_is_refused_and_starts_nothing() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let touch = format!("{}/started", dir.path().display());
+        let request = |memory: u64, minimum: &str| {
+            serde_json::json!({
+                "root": dir.path(),
+                "profile": "workspace-write",
+                "resources": {"participation": "required", "request": {
+                    "cpu_milli": 100, "memory_bytes": memory, "tasks": 4,
+                    "minimum": {"cpu": "accounted", "memory": minimum, "pids": "accounted"},
+                }},
+            })
+        };
+        let config = serde_json::json!({"workspaces": {
+            "short": request(1 << 60, "accounted"),
+            "kernel": request(1 << 20, "kernel"),
+        }});
+        let cli = register_cli(&fixture.settings, &["--runner", "in-process"]);
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            Registry::load_json(&config.to_string()).unwrap(),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        for (workspace, code, denial) in [
+            (
+                "short",
+                ErrorCode::ResourceUnavailable,
+                "resource_unavailable",
+            ),
+            (
+                "kernel",
+                ErrorCode::ResourcePolicyUnsupported,
+                "resource_policy_unsupported",
+            ),
+        ] {
+            let body = past_the_credential(
+                |body: &ErrorBody| body.message.contains("credential_unavailable"),
+                || async {
+                    let raw = handler
+                        .exec_command(Parameters(exec_params(
+                            workspace,
+                            &["/usr/bin/touch", &touch],
+                            false,
+                        )))
+                        .await
+                        .err()
+                        .expect("refused");
+                    serde_json::from_str::<ErrorBody>(&raw).unwrap()
+                },
+            )
+            .await;
+            assert_eq!(body.code, code, "{}", body.message);
+            assert!(
+                body.message
+                    .contains(&format!("the resource authority denied it ({denial})")),
+                "{}",
+                body.message
+            );
+            assert!(body.message.ends_with(": denied; nothing was started"));
+            drop(
+                store
+                    .try_acquire_write(workspace)
+                    .expect("the lease is released"),
+            );
+        }
+        assert!(!dir.path().join("started").exists());
+        assert_eq!(fixture.charged(), (Vec::new(), 0));
+    }
+
+    /// A worker that takes a preparation and is lost before answering may have asked DevGuard
+    /// to admit it: the gateway reports the admission unknown, not refused, starts nothing and
+    /// releases the workspace.
+    #[tokio::test]
+    async fn a_preparation_lost_with_the_worker_is_unknown() {
+        use codespace_runner::{
+            read_frame, write_frame, RunnerOp, RunnerOpResult, UdsRunner, WireEnvelope,
+            WIRE_PROTOCOL,
+        };
+        let dir = short_directory();
+        std::fs::write(dir.path().join("a.txt"), "kept").unwrap();
+        let (client, mut worker) = tokio::net::UnixStream::pair().unwrap();
+        let prepared = Arc::new(AtomicBool::new(false));
+        let seen = prepared.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(frame)) = read_frame(&mut worker).await {
+                let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+                match request.op {
+                    Some(RunnerOp::Hello) => {
+                        let hello = RunnerOpResult::Hello {
+                            protocol: WIRE_PROTOCOL,
+                            registration: true,
+                            admission: true,
+                        };
+                        let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
+                        write_frame(&mut worker, &reply).await.unwrap();
+                    }
+                    // Lost with the worker before it answers.
+                    Some(RunnerOp::Prepare { .. }) => {
+                        seen.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        });
+        let store = Arc::new(Store::memory().unwrap());
+        let runner = UdsRunner::from_stream(client, release(&store));
+        runner.handshake().await.unwrap();
+        let handler = CodeSpace::with_store_and_runner(
+            participation_registry(dir.path(), "required"),
+            store.clone(),
+            RuntimeBackend::Uds(runner),
+        )
+        .with_registration(crate::devguard::Registration::new(
+            settings(dir.path(), dir.path().join("absent.sock")),
+            crate::config::RunnerMode::Uds,
+            true,
+        ));
+        let touch = format!("{}/started", dir.path().display());
+        let raw = handler
+            .exec_command(Parameters(exec_params(
+                "gov",
+                &["/usr/bin/touch", &touch],
+                false,
+            )))
+            .await
+            .err()
+            .expect("refused");
+        let body: ErrorBody = serde_json::from_str(&raw).unwrap();
+        assert!(prepared.load(Ordering::SeqCst));
+        assert_eq!(body.code, ErrorCode::AdmissionUnknown, "{raw}");
+        assert!(
+            body.message.ends_with(": unknown; nothing was started"),
+            "{raw}"
+        );
+        drop(
+            store
+                .try_acquire_write("gov")
+                .expect("the lease is released"),
+        );
+        assert!(!dir.path().join("started").exists());
+        // The connection is gone, so the next request was never sent: nothing was asked.
+        let raw = handler
+            .exec_command(Parameters(exec_params(
+                "gov",
+                &["/usr/bin/touch", &touch],
+                false,
+            )))
+            .await
+            .err()
+            .expect("refused");
+        let body: ErrorBody = serde_json::from_str(&raw).unwrap();
+        assert_eq!(body.code, ErrorCode::ResourceAuthorityUnavailable, "{raw}");
+        assert!(
+            body.message.contains("(registration: owner_unreachable)"),
+            "{raw}"
+        );
+        assert!(
+            body.message.ends_with(": not_asked; nothing was started"),
+            "{raw}"
+        );
     }
 
     /// The UDS worker registers itself and the gateway does not, against DevGuard's fixture
@@ -2408,15 +2790,12 @@ mod devguard_tests {
         for registration in reported_together(&handler, 8).await {
             assert_eq!(registration, expected);
         }
-        let readiness = if fixture.native {
+        if fixture.native {
             // One instance, the worker's; the gateway is not registered.
             let instances = fixture.instances();
             assert_eq!(instances.len(), 1, "{instances:?}");
             assert_eq!(instances[0].1, worker_pid);
-            "the execution owner is registered with DevGuard"
-        } else {
-            "the execution owner is not registered with DevGuard (registration: incompatible)"
-        };
+        }
         // The worker runs, observes and terminates processes without asking DevGuard.
         let started = handler
             .exec_command(Parameters(exec_params(
@@ -2428,7 +2807,7 @@ mod devguard_tests {
             .unwrap()
             .0;
         assert_process_control_needs_no_registration(&handler, started.process_id).await;
-        assert_required_starts_nothing(&handler, &store, dir.path(), readiness).await;
+        assert_governed(&mut fixture, &handler, &store, dir.path()).await;
         if fixture.native {
             assert_eq!(fixture.instances().len(), 1);
         }

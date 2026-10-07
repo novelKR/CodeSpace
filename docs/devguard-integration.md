@@ -2,13 +2,13 @@
 
 # DevGuard integration roadmap
 
-> **Status: suspended as an implementation directive.** The CS-RG work order, the planned consumer boundary and the design revision 1 references on this page must not be implemented as described; current status and prerequisites are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability, except the current status, the [status-only connection](#devguard-status-connection) of CSRG-U1, which the owner approved on 2026-10-02 outside this suspension, and the [execution-owner registration](#devguard-owner-registration) of CSRG-U2, which the owner directed on 2026-10-03.
+> **Status: suspended as an implementation directive.** The CS-RG work order, the planned consumer boundary and the design revision 1 references on this page must not be implemented as described; current status and prerequisites are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability, except the current status, the [status-only connection](#devguard-status-connection) of CSRG-U1, which the owner approved on 2026-10-02 outside this suspension, the [execution-owner registration](#devguard-owner-registration) of CSRG-U2, which the owner directed on 2026-10-03, and the [admission and pre-spawn preparation](#devguard-admission) of CSRG-U3, which the owner directed on 2026-10-07.
 
 [English](devguard-integration.md) | [한국어](ko/devguard-integration.md)
 
 [DevGuard](https://github.com/novelKR/DevGuard) is an independent resource authority for development workloads, licensed under Apache-2.0 like CodeSpace. Its approved integration path adds a shared admission and accounting layer while CodeSpace keeps process ownership, PTY, input/output, permissions, approval holds and workspace coordination.
 
-**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` (a release ID, not a Git tag) on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) is in progress and not qualified. CSRG-U1 added an opt-in, status-only connection: a gateway built with the `devguard` feature and started with `--devguard status` reports DevGuard's status in `workspace_info`, through DevGuard's client pinned at [`f1f9084`](upstream-lock.md#devguard-client-pin). With CSRG-U2, the process that owns CodeSpace's executions registers itself with DevGuard (`--devguard register`), and a workspace's `resources` setting can require resource participation, which refuses every new execution there until managed admission and launch exist. Nothing is admitted or launched, so a running DevGuard service does not govern CodeSpace execution. The qualified release remains a candidate for execution, not a selected pin; the client pin is a source pin of the client crates.
+**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` (a release ID, not a Git tag) on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) is in progress and not qualified. CSRG-U1 added an opt-in, status-only connection: a gateway built with the `devguard` feature and started with `--devguard status` reports DevGuard's status in `workspace_info`, through DevGuard's client pinned at [`f1f9084`](upstream-lock.md#devguard-client-pin). With CSRG-U2, the process that owns CodeSpace's executions registers itself with DevGuard (`--devguard register`), and a workspace's `resources` setting can require resource participation. With CSRG-U3, that owner takes a process slot and has DevGuard admit each such execution before anything is created; as managed launch does not exist yet (CSRG-U4), it then cancels the unstarted attempt and refuses the execution. Nothing is launched through DevGuard and nothing runs without it, so a running DevGuard service does not yet govern a running CodeSpace process. The qualified release remains a candidate for execution, not a selected pin; the client pin is a source pin of the client crates.
 
 DevGuard [design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md), merged in [DevGuard PR #8](https://github.com/novelKR/DevGuard/pull/8) as `d4981b4c241cff42687f5c2c681b583c7847776e`, revised the CS-RG execution layer and work order. It changes plans and design decisions that bind later implementation. It does not change current CodeSpace behavior or any implementation or qualification status.
 
@@ -85,7 +85,7 @@ CSRG-U2 lets the process that owns CodeSpace's executions establish and prove a 
 
 DevGuard takes the registered process from the session's peer, so a process can only register itself, and the gateway never registers on its worker's behalf. The owner also checks that the identity DevGuard registered is its own process and stays the same across sessions.
 
-**The session.** Each registration is one bounded session that the owner opens and closes: connect, `Hello` requiring protocol 1 and the capability `static_control_reservations`, `Authenticate`, which must grant `control_service`, `Status`, which must report registration ready, then `Register` with the owner's instance identity. DevGuard's 250 ms frame deadlines bound it at about 2.25 s. The instance identity, `codespace-` and 32 random hexadecimal digits, is minted once per owner process and registered again by every session, so DevGuard keeps one instance per owner: active while a session lasts, suspect after it. A restarted owner is a new process with a new identity. The owner registers at startup, then for each `workspace_info` call and each refused `required` execution; a call that arrives while a session runs waits and shares the next one.
+**The session.** Each registration is one bounded session that the owner opens and closes: connect, `Hello` requiring protocol 1 and the capability `static_control_reservations`, `Authenticate`, which must grant `control_service`, `Status`, which must report registration ready, then `Register` with the owner's instance identity. DevGuard's 250 ms frame deadlines bound it at about 2.25 s. The instance identity, `codespace-` and 32 random hexadecimal digits, is minted once per owner process and registered again by every session, so DevGuard keeps one instance per owner: active while a session lasts, suspect after it. A restarted owner is a new process with a new identity. The owner registers at startup and for each `workspace_info` call; a call that arrives while a session runs waits and shares the next one. Each admission, lookup or cancellation of CSRG-U3 is its own session that registers first.
 
 **What it reports.** With `register`, `workspace_info.resource_authority` comes from the owner's session: `participation: registration`, `governs_execution: false`, the authority's `state`, `error_code` and `report` as with status, and `registration`:
 
@@ -105,7 +105,7 @@ When the owner cannot be asked (`owner_unreachable`, `unsupported_mode`), the au
                          "resources": {"participation": "required"}}}}
 ```
 
-`off`, the default, and a missing setting leave execution as before. With `required`, every new execution, from `exec_command` or a resumed approval, is refused with `RESOURCE_POLICY_UNSUPPORTED` before an approval, a lease or a process exists, because CodeSpace does not yet admit or launch through DevGuard (CSRG-U3 and U4). The message says whether the execution owner is registered. Every build refuses alike, also without the feature or without `--devguard register`, and `required` never falls back to running without the authority. An unknown `resources` setting fails the registry load. Reads, finds, patches and the control of running processes are unaffected.
+`off`, the default, and a missing setting leave execution as before. With `required` and `--devguard register`, every new execution goes to the owner's [preparation](#devguard-admission) (CSRG-U3). Without the feature, without `--devguard register`, or with an owner that cannot prepare (a worker the gateway did not start), every new execution, from `exec_command` or a resumed approval, is refused with `RESOURCE_POLICY_UNSUPPORTED` before an approval, a lease or a process exists; the message says whether the execution owner is registered. `required` never falls back to running without the authority. An unknown `resources` setting fails the registry load. Reads, finds, patches and the control of running processes are unaffected.
 
 **Process control.** `process_status`, `read_process`, `write_stdin`, `process_resize`, `terminate_process` and timeouts never ask DevGuard. In UDS mode the worker answers registration requests beside the others, so a registration session never delays them.
 
@@ -115,7 +115,57 @@ When the owner cannot be asked (`owner_unreachable`, `unsupported_mode`), the au
 
 **Platforms.** On macOS, a DevGuard service with native host evidence registers the owner. Without native evidence, as on Linux before DG-LINUX, DevGuard states no capability, so registration is `incompatible`.
 
-**What it does not do.** No admission, launch, permit, carrier or launch helper. Spawn, PTY, output, timeout, termination, reaping and lifecycle stay with CodeSpace, and DevGuard governs no CodeSpace execution.
+**What it does not do.** No launch, permit, carrier or launch helper. Spawn, PTY, output, timeout, termination, reaping and lifecycle stay with CodeSpace.
+
+<a id="devguard-admission"></a>
+
+## Admission and pre-spawn preparation (CSRG-U3)
+
+CSRG-U3 makes `required` operational up to launch: the execution owner admits each governed execution through DevGuard and holds a one-shot preparation of it. It still starts nothing. Managed launch (`BeginLaunch`, its permit and carrier, the launch helper) is CSRG-U4.
+
+**Order.** A new execution in a `required` workspace, with `--devguard register`, goes through:
+
+1. **Authorization and workspace readiness** in the gateway: policy, the approval hold of `approvals: confirm`, then the workspace's mutation lease.
+2. **A process slot** in the execution owner's runner, taken before anything is created. A request over the live process limit (`CODESPACE_MAX_PROCESSES`, default 8) is refused with `WORKSPACE_BUSY` here, and DevGuard is not asked. This applies to every execution, governed or not: no process is created without a slot.
+3. **Admission** in one bounded session of the registered owner (`Register`, then `Admit`).
+4. **A one-shot prepared execution**, which owns the command, the slot and the attempt.
+
+The owner is the gateway in `in-process` mode and the worker the gateway started in `uds` mode, which receives the request as one `prepare` request and answers how it ended.
+
+**Attempt identity.** Each execution gets a new attempt ID, `cs-attempt-` and 32 hexadecimal digits, minted for it and never a transport request ID. DevGuard keys it by the owner's consumer and generation. The attempt is bound to its CodeSpace `process_id`, its workspace, whether it has a PTY, its resource request and the digest of its meaning: DevGuard's semantic encoding of the command as given, the workspace with its root, profile and network policy, the exact environment its child would get, its PTY, its timeout and its resource request. DevGuard refuses the same attempt ID with another digest, and an answer for another attempt, owner or digest is never taken for it.
+
+**Request.** A workspace states what each of its executions asks for:
+
+```json
+{"resources": {"participation": "required",
+               "request": {"cpu_milli": 1000, "memory_bytes": 536870912, "tasks": 64,
+                           "minimum": {"cpu": "accounted", "memory": "accounted", "pids": "accounted"}}}}
+```
+
+Without `request`, these are the values. Each quantity must be positive; `minimum` is the weakest control accepted per resource: `accounted`, `cooperative` or `kernel`. Admission sessions require DevGuard's `durable_admission` and `static_control_reservations` capabilities.
+
+**The preparation.** It keeps four stages apart: what was *requested* and the *required* minimum, what DevGuard *supports* for it (scope and, per resource, level and method), what it *reserved* and for how long it holds it unlaunched, and what was *applied*, which stays `not_launched`. It cannot be cloned; launching or cancelling consumes it, so it is used once. Its deadline is DevGuard's prepared lifetime (5 s at the pin), measured from before the admission was asked. Presenting another command, `process_id` or PTY choice for launch is refused and cancels the attempt; so does presenting it after its deadline. A preparation dropped without being settled is cancelled in the background.
+
+**Until managed launch exists.** After a successful preparation the owner cancels the unstarted attempt and the execution is refused with `MANAGED_LAUNCH_UNAVAILABLE`. Nothing ever runs through another path instead. Every outcome is a refusal that starts nothing, releases the workspace lease and the slot, and states the attempt ID, the `process_id` and what is known of the attempt (`not_asked`, `not_recorded`, `denied`, `cancelled`, `expired`, `other` or `unknown`):
+
+| Outcome | Tool error |
+| --- | --- |
+| Admitted, then cancelled | `MANAGED_LAUNCH_UNAVAILABLE` |
+| No process slot | `WORKSPACE_BUSY` |
+| Denied for a shortage, or the admission expired before launch | `RESOURCE_UNAVAILABLE` |
+| Denied because DevGuard cannot give the required control | `RESOURCE_POLICY_UNSUPPORTED` |
+| The owner could not ask (registration did not succeed), or DevGuard refused the request | `RESOURCE_AUTHORITY_UNAVAILABLE` |
+| No answer came back | `ADMISSION_UNKNOWN` |
+
+A resumed approval is prepared like a new execution, and resuming it again returns the stored refusal without asking DevGuard again.
+
+**Uncertainty.** A timeout, a lost reply, an EOF, an answer for something else, or DevGuard's client's transport code is not taken as a refusal, nor as proof that no attempt exists. The owner then looks the attempt up once: found prepared, it is cancelled; found settled, that is reported; otherwise the attempt is `unknown`, and it may hold its reservation until DevGuard expires it. An uncertain attempt is never admitted again under any ID and is never rebuilt into a preparation. In `uds` mode, a `prepare` request the worker may have received without answering is `ADMISSION_UNKNOWN`; one that never left is `RESOURCE_AUTHORITY_UNAVAILABLE` (`owner_unreachable`). Cancelling is the only settlement used, and only where its precondition holds: the owner never asked DevGuard to launch the attempt.
+
+**Lifetimes.** The workspace lease lasts while the gateway waits for the preparation. The slot lasts while the preparation holds it. The attempt is DevGuard's and ends when DevGuard records it denied, cancelled or expired; CodeSpace frees its slot and lease when it starts nothing, whatever it knows of the attempt, and never reports a release it did not observe. Retained output belongs to processes, and a preparation creates none. A preparation runs as its own task, so a client that stops waiting leaves it to settle.
+
+**Platforms.** On macOS, with a DevGuard service that has native host evidence, executions are admitted and cancelled. Without native evidence, as on Linux before DG-LINUX, the owner cannot register, so every governed execution is `RESOURCE_AUTHORITY_UNAVAILABLE`.
+
+**What it does not do.** No `BeginLaunch`, permit, carrier, launch helper, observation, reaping or release integration, and no pin change. Spawn, PTY, output, timeout, termination, reaping and lifecycle stay with CodeSpace.
 
 ## CS-RG work order
 

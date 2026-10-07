@@ -37,10 +37,12 @@
       "source": "docs/devguard-integration.md",
       "translation": "docs/ko/devguard-integration.md",
       "anchors": [
+        "admission-and-pre-spawn-preparation-csrg-u3",
         "consumer-boundary",
         "cs-rg-work-order",
         "cs-rg-작업-순서",
         "design-revision-1-references",
+        "devguard-admission",
         "devguard-integration",
         "devguard-integration-roadmap",
         "devguard-owner-registration",
@@ -63,11 +65,12 @@
         "설계-개정-1-참조",
         "소비-경계",
         "실행-소유자-등록csrg-u2",
+        "실행-허용과-spawn-전-준비csrg-u3",
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "1e5cd2d452a76056fa08c6ca1eaea25e44faa07c668850a36cb920b62ce01f8c",
-      "translation_sha256": "4dfc6ecbf1004cf739ae9c6894d3296d13a5f20290759770b1d4b55f4bb66ace"
+      "source_sha256": "d08947901b5fe14ce3498ee1c9e3bfdc3c37918406613744a70b99a2777349ca",
+      "translation_sha256": "b4bd848cd1c2ede79d67ecdec26d6af69b0a65df8e31017947b85a12640d293b"
     },
     {
       "id": "overview",
@@ -192,8 +195,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "d98494a628e5bb6a717f4ccf75836e92235764e25f448dbcc2d75d94695cc690",
-      "translation_sha256": "387686ca418ee694e316441eb2dc047d85d0d2e304aece6090ff5d5016051a40"
+      "source_sha256": "004d143763000d45ac44ee5b95cd2f62810d8b89024488bc4aebada37e00b9a5",
+      "translation_sha256": "cfabfcac93d4f9d8fe68d67c7237fc9c0555543c4ce9459f8d52e71a8a942e1f"
     },
     {
       "id": "chatgpt-connector",
