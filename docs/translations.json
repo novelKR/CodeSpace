@@ -140,8 +140,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "0788376edef3e4fb7675bf5847df96c3cd97070b77a4b4c331065aeaded82e43",
-      "translation_sha256": "65bee059368ba91115db048be556d38d7f94c945e0d18c64f160f1db15b5091e"
+      "source_sha256": "5c89ffabca2002b3473a5c45dc52ea6bae522da36ca4cfbf8db657bf997ba96f",
+      "translation_sha256": "0d3c33de0a8bbdaffc87970ce8ab243871df9d284f9cb1d4de5b953dc6dd6e6e"
     },
     {
       "id": "operations",
@@ -489,8 +489,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "66886bbaeba442876e1b537f24eb018c1b4ca44ba9aa0fa5a37cce5f4becfca6",
-      "translation_sha256": "05f7f22336cf6be423e2b2fab6aa3b389fe5362b655e436c509c1158a901706f"
+      "source_sha256": "7929746b1f00a02b41c4b272cdd9713c12741f03c18469f794b78f07c39f557f",
+      "translation_sha256": "d9f7eeb7d11fa4a7ebf405da2aa45f5574fcc316a645eda95e9c69c026f7bda2"
     },
     {
       "id": "error-codes",

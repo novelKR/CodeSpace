@@ -44,7 +44,7 @@ pub use patch::{
 };
 pub use process::{
     ExecCommandParams, ExecCommandResult, ExecDispatchStatus, ProcessResizeParams,
-    ProcessResizeResult, ProcessState, ProcessStatusParams, ProcessStatusResult,
+    ProcessResizeResult, ProcessSignal, ProcessState, ProcessStatusParams, ProcessStatusResult,
     ProcessTermination, ReadProcessParams, ReadProcessResult, TerminateProcessParams,
     WriteStdinParams,
 };

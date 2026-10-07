@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use codespace_domain::{
-    ErrorBody, ErrorCode, FileChange, PatchStatus, ProcessId, ProcessState, ProcessTermination,
-    Profile,
+    ErrorBody, ErrorCode, FileChange, PatchStatus, ProcessId, ProcessSignal, ProcessState,
+    ProcessTermination, Profile,
 };
 use codespace_policy::NetworkAxis;
 use serde::{Deserialize, Serialize};
@@ -130,6 +130,8 @@ pub struct RunnerProcessStatus {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub termination: Option<ProcessTermination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<ProcessSignal>,
     pub output_total: u64,
     pub output_retained_from: u64,
     pub eof: bool,

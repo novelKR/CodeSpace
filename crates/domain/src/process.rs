@@ -73,9 +73,23 @@ pub enum ProcessState {
 #[serde(rename_all = "snake_case")]
 pub enum ProcessTermination {
     Exited,
+    // A signal that CodeSpace did not send ended the process; `signal` names it.
+    // A plain comment keeps the schema a single string enum.
+    Signaled,
     Timeout,
     Terminated,
     Unknown,
+}
+
+/// The signal that ended a process whose termination is `signaled`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessSignal {
+    /// The signal number on the host that ran the process. Numbers differ
+    /// between operating systems.
+    pub number: i32,
+    /// The signal's name, such as `SIGKILL`, when the host knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -91,6 +105,8 @@ pub struct ProcessStatusResult {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub termination: Option<ProcessTermination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<ProcessSignal>,
     pub output_total: u64,
     pub output_retained_from: u64,
     pub eof: bool,
@@ -101,10 +117,15 @@ pub struct ProcessStatusResult {
 impl ProcessStatusResult {
     pub fn invariants_hold(&self) -> bool {
         match self.state {
-            ProcessState::Running => self.exit_code.is_none() && self.termination.is_none(),
+            ProcessState::Running => {
+                self.exit_code.is_none() && self.termination.is_none() && self.signal.is_none()
+            }
             ProcessState::Exited => match self.termination {
-                Some(ProcessTermination::Exited) => true,
-                Some(_) => self.exit_code.is_none(),
+                Some(ProcessTermination::Exited) => self.signal.is_none(),
+                Some(ProcessTermination::Signaled) => {
+                    self.exit_code.is_none() && self.signal.is_some()
+                }
+                Some(_) => self.exit_code.is_none() && self.signal.is_none(),
                 None => false,
             },
         }
@@ -218,6 +239,7 @@ mod tests {
             state: ProcessState::Running,
             exit_code: None,
             termination: None,
+            signal: None,
             output_total: 0,
             output_retained_from: 0,
             eof: false,
@@ -232,6 +254,7 @@ mod tests {
             state: ProcessState::Running,
             exit_code: None,
             termination: None,
+            signal: None,
             output_total: 0,
             output_retained_from: 0,
             eof: false,
@@ -243,6 +266,7 @@ mod tests {
             state: ProcessState::Running,
             exit_code: Some(0),
             termination: None,
+            signal: None,
             output_total: 0,
             output_retained_from: 0,
             eof: false,
@@ -262,6 +286,7 @@ mod tests {
             state: ProcessState::Exited,
             exit_code: Some(0),
             termination: Some(ProcessTermination::Exited),
+            signal: None,
             output_total: 12,
             output_retained_from: 0,
             eof: true,
@@ -280,6 +305,7 @@ mod tests {
             state: ProcessState::Exited,
             exit_code: None,
             termination: Some(ProcessTermination::Timeout),
+            signal: None,
             output_total: 0,
             output_retained_from: 0,
             eof: true,
@@ -288,6 +314,57 @@ mod tests {
         .unwrap();
         assert_eq!(json["termination"], "timeout");
         assert!(json.get("exit_code").is_none());
+        assert!(json.get("signal").is_none());
+    }
+
+    #[test]
+    fn signaled_status_names_the_signal_without_exit_code() {
+        let signaled = |exit_code, signal| ProcessStatusResult {
+            process_id: ProcessId("proc-1".into()),
+            state: ProcessState::Exited,
+            exit_code,
+            termination: Some(ProcessTermination::Signaled),
+            signal,
+            output_total: 0,
+            output_retained_from: 0,
+            eof: true,
+            coordination: None,
+        };
+        let kill = ProcessSignal {
+            number: 9,
+            name: Some("SIGKILL".into()),
+        };
+        let status = signaled(None, Some(kill.clone()));
+        assert!(status.invariants_hold());
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["termination"], "signaled");
+        assert_eq!(
+            json["signal"],
+            serde_json::json!({ "number": 9, "name": "SIGKILL" })
+        );
+        assert!(json.get("exit_code").is_none());
+        let unnamed = serde_json::to_value(ProcessSignal {
+            number: 40,
+            name: None,
+        })
+        .unwrap();
+        assert_eq!(unnamed, serde_json::json!({ "number": 40 }));
+
+        assert!(!signaled(None, None).invariants_hold());
+        assert!(!signaled(Some(137), Some(kill.clone())).invariants_hold());
+        let mut exited = signaled(Some(0), Some(kill));
+        exited.termination = Some(ProcessTermination::Exited);
+        assert!(!exited.invariants_hold());
+
+        let termination = serde_json::to_value(schemars::schema_for!(ProcessTermination)).unwrap();
+        assert_eq!(
+            termination["enum"],
+            serde_json::json!(["exited", "signaled", "timeout", "terminated", "unknown"]),
+            "{termination}"
+        );
+        let schema = serde_json::to_value(schemars::schema_for!(ProcessStatusResult)).unwrap();
+        let dumped = schema.to_string();
+        assert!(dumped.contains("\"signal\""), "{dumped}");
     }
 
     #[test]

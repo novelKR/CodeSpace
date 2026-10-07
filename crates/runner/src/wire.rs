@@ -19,7 +19,7 @@ use crate::{
     RunnerResizeResult, RunnerWriteStdin, ShellRelease,
 };
 
-pub const WIRE_PROTOCOL: u32 = 6;
+pub const WIRE_PROTOCOL: u32 = 7;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
 
@@ -493,8 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_protocol_is_v6() {
-        assert_eq!(WIRE_PROTOCOL, 6);
+    fn wire_protocol_is_v7() {
+        assert_eq!(WIRE_PROTOCOL, 7);
     }
 
     #[tokio::test]
@@ -524,6 +524,34 @@ mod tests {
         let parsed: WireEnvelope = serde_json::from_slice(&reply).unwrap();
         assert_eq!(parsed.kind, WireKind::Response);
         assert_eq!(parsed.ok, Some(true));
+    }
+
+    #[test]
+    fn a_signaled_status_crosses_the_wire() {
+        use codespace_domain::{ProcessSignal, ProcessState, ProcessTermination};
+        let status = RunnerProcessStatus {
+            process_id: ProcessId("proc-1".into()),
+            state: ProcessState::Exited,
+            exit_code: None,
+            termination: Some(ProcessTermination::Signaled),
+            signal: Some(ProcessSignal {
+                number: 9,
+                name: Some("SIGKILL".into()),
+            }),
+            output_total: 0,
+            output_retained_from: 0,
+            eof: true,
+        };
+        let envelope = WireEnvelope::response(
+            "rrpc-1".into(),
+            Ok(RunnerOpResult::ProcessStatus(status.clone())),
+        );
+        let parsed: WireEnvelope =
+            serde_json::from_slice(&serde_json::to_vec(&envelope).unwrap()).unwrap();
+        match parsed.result {
+            Some(RunnerOpResult::ProcessStatus(got)) => assert_eq!(got, status),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[tokio::test]

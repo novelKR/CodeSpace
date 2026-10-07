@@ -6,13 +6,14 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use codespace_domain::{
-    ErrorBody, ErrorCode, ProcessId, ProcessState, ProcessTermination, Profile,
+    ErrorBody, ErrorCode, ProcessId, ProcessSignal, ProcessState, ProcessTermination, Profile,
 };
 use codespace_linux_sandbox_protocol::SandboxNetwork;
 use codespace_policy::{NetworkAxis, Workspace};
@@ -111,6 +112,7 @@ struct LifecycleSnapshot {
     state: ProcessState,
     exit_code: Option<i32>,
     termination: Option<ProcessTermination>,
+    signal: Option<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -134,6 +136,7 @@ impl Lifecycle {
                 state: ProcessState::Running,
                 exit_code: None,
                 termination: None,
+                signal: None,
             },
         }
     }
@@ -144,7 +147,9 @@ impl Lifecycle {
         }
     }
 
-    fn finish_wait(&mut self, code: Option<i32>) {
+    /// Records a reaped child: its exit code, or the signal that ended it.
+    /// A kill that CodeSpace requested stays `timeout` or `terminated`.
+    fn finish_wait(&mut self, code: Option<i32>, signal: Option<i32>) {
         if self.finished {
             return;
         }
@@ -155,6 +160,7 @@ impl Lifecycle {
                     state: ProcessState::Exited,
                     exit_code: None,
                     termination: Some(ProcessTermination::Timeout),
+                    signal: None,
                 };
             }
             Some(KillIntent::Terminated) => {
@@ -162,6 +168,15 @@ impl Lifecycle {
                     state: ProcessState::Exited,
                     exit_code: None,
                     termination: Some(ProcessTermination::Terminated),
+                    signal: None,
+                };
+            }
+            None if signal.is_some() => {
+                self.snapshot = LifecycleSnapshot {
+                    state: ProcessState::Exited,
+                    exit_code: None,
+                    termination: Some(ProcessTermination::Signaled),
+                    signal,
                 };
             }
             None => {
@@ -169,6 +184,7 @@ impl Lifecycle {
                     state: ProcessState::Exited,
                     exit_code: code,
                     termination: Some(ProcessTermination::Exited),
+                    signal: None,
                 };
             }
         }
@@ -188,6 +204,7 @@ impl Lifecycle {
             state: ProcessState::Exited,
             exit_code: None,
             termination: Some(termination),
+            signal: None,
         };
     }
 }
@@ -366,7 +383,7 @@ impl InProcessRunner {
                 return;
             }
             match ch.try_wait() {
-                Ok(Some(status)) => life.finish_wait(status.code()),
+                Ok(Some(status)) => life.finish_wait(status.code(), status.signal()),
                 Ok(None) => {
                     life.note_kill(KillIntent::Timeout);
                     let _ = ch.start_kill();
@@ -472,7 +489,11 @@ impl InProcessRunner {
         let wait_process = process_id;
         tokio::spawn(async move {
             match exit.await {
-                Ok(code) => wait_life.lock().expect("lifecycle").finish_wait(Some(code)),
+                // The pinned Codex PTY reports a signal death as exit code 1.
+                Ok(code) => wait_life
+                    .lock()
+                    .expect("lifecycle")
+                    .finish_wait(Some(code), None),
                 Err(_) => wait_life.lock().expect("lifecycle").finish_lost(),
             }
             join_pump(out_handle).await;
@@ -592,6 +613,7 @@ impl InProcessRunner {
             state: snap.state,
             exit_code: snap.exit_code,
             termination: snap.termination,
+            signal: snap.signal.map(process_signal),
             output_total: buf.total,
             output_retained_from: buf.dropped,
             eof: buf.eof,
@@ -687,7 +709,7 @@ async fn reap_child(child: Arc<Mutex<Child>>, lifecycle: Arc<Mutex<Lifecycle>>) 
             }
             match ch.try_wait() {
                 Ok(Some(status)) => {
-                    life.finish_wait(status.code());
+                    life.finish_wait(status.code(), status.signal());
                     return;
                 }
                 Ok(None) => {}
@@ -717,7 +739,7 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    life.finish_wait(status.code());
+                    life.finish_wait(status.code(), status.signal());
                     Ok(false)
                 }
                 Ok(None) => {
@@ -786,6 +808,40 @@ fn live_count(map: &HashMap<String, Slot>) -> usize {
     map.values()
         .filter(|slot| slot.output.lock().map(|buf| !buf.eof).unwrap_or(false))
         .count()
+}
+
+/// A signal number of this host, named when it is one of the standard signals.
+fn process_signal(number: i32) -> ProcessSignal {
+    const NAMES: [(i32, &str); 21] = [
+        (libc::SIGHUP, "SIGHUP"),
+        (libc::SIGINT, "SIGINT"),
+        (libc::SIGQUIT, "SIGQUIT"),
+        (libc::SIGILL, "SIGILL"),
+        (libc::SIGTRAP, "SIGTRAP"),
+        (libc::SIGABRT, "SIGABRT"),
+        (libc::SIGBUS, "SIGBUS"),
+        (libc::SIGFPE, "SIGFPE"),
+        (libc::SIGKILL, "SIGKILL"),
+        (libc::SIGUSR1, "SIGUSR1"),
+        (libc::SIGSEGV, "SIGSEGV"),
+        (libc::SIGUSR2, "SIGUSR2"),
+        (libc::SIGPIPE, "SIGPIPE"),
+        (libc::SIGALRM, "SIGALRM"),
+        (libc::SIGTERM, "SIGTERM"),
+        (libc::SIGXCPU, "SIGXCPU"),
+        (libc::SIGXFSZ, "SIGXFSZ"),
+        (libc::SIGVTALRM, "SIGVTALRM"),
+        (libc::SIGPROF, "SIGPROF"),
+        (libc::SIGIO, "SIGIO"),
+        (libc::SIGSYS, "SIGSYS"),
+    ];
+    ProcessSignal {
+        number,
+        name: NAMES
+            .iter()
+            .find(|(known, _)| *known == number)
+            .map(|(_, name)| (*name).to_owned()),
+    }
 }
 
 fn missing(id: &str) -> ErrorBody {
@@ -1534,6 +1590,7 @@ mod tests {
         assert_eq!(status.state, ProcessState::Exited);
         assert_eq!(status.termination, Some(ProcessTermination::Exited));
         assert_eq!(status.exit_code, Some(0));
+        assert!(status.signal.is_none());
         assert!(status.eof);
         let read = runner
             .read_process(RunnerReadProcess {
@@ -1567,6 +1624,7 @@ mod tests {
         assert_eq!(status.state, ProcessState::Exited);
         assert_eq!(status.termination, Some(ProcessTermination::Exited));
         assert_eq!(status.exit_code, Some(1));
+        assert!(status.signal.is_none());
     }
 
     #[tokio::test]
@@ -1586,6 +1644,7 @@ mod tests {
         assert_eq!(status.state, ProcessState::Exited);
         assert_eq!(status.termination, Some(ProcessTermination::Timeout));
         assert!(status.exit_code.is_none());
+        assert!(status.signal.is_none());
         let err = runner
             .read_process(RunnerReadProcess {
                 process_id,
@@ -1621,6 +1680,88 @@ mod tests {
         assert_eq!(status.state, ProcessState::Exited);
         assert_eq!(status.termination, Some(ProcessTermination::Terminated));
         assert!(status.exit_code.is_none());
+        // CodeSpace's own SIGKILL is not reported as a signal.
+        assert!(status.signal.is_none());
+    }
+
+    fn pipe_child_pid(runner: &InProcessRunner, process_id: &ProcessId) -> libc::pid_t {
+        let map = runner.inner.lock().unwrap();
+        match &map[&process_id.0].io {
+            SessionIo::Pipe { child, .. } => {
+                let pid = child.lock().unwrap().id().expect("running child");
+                libc::pid_t::try_from(pid).unwrap()
+            }
+            SessionIo::Pty { .. } => panic!("{} is not a pipe child", process_id.0),
+        }
+    }
+
+    #[tokio::test]
+    async fn external_signal_status_names_the_signal() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-signal-status".into());
+        runner
+            .exec(
+                &ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/sleep".into(), "30".into()],
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                ),
+            )
+            .await
+            .unwrap();
+        // A kill that CodeSpace did not request, as from another process. The
+        // managed child is the one that dies, with or without the Linux helper.
+        let pid = pipe_child_pid(&runner, &process_id);
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.state, ProcessState::Exited);
+        assert_eq!(status.termination, Some(ProcessTermination::Signaled));
+        assert!(status.exit_code.is_none());
+        assert_eq!(
+            status.signal,
+            Some(ProcessSignal {
+                number: libc::SIGKILL,
+                name: Some("SIGKILL".into()),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pty_signal_death_is_reported_as_exit_code_one() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-pty-signal".into());
+        let mut req = RunnerExecRequest::for_host(
+            vec!["/bin/sh".into(), "-c".into(), "kill -KILL $$".into()],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = true;
+        runner.exec(&ws, req).await.unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        // The pinned Codex PTY turns a signal death into exit code 1, so the
+        // signal is not visible on this path (#85).
+        assert_eq!(status.termination, Some(ProcessTermination::Exited));
+        assert!(status.signal.is_none());
+        if !crate::linux_sandbox_available() {
+            assert_eq!(status.exit_code, Some(1));
+        }
+    }
+
+    #[test]
+    fn signal_names_follow_the_host_numbers() {
+        assert_eq!(
+            process_signal(libc::SIGSEGV).name.as_deref(),
+            Some("SIGSEGV")
+        );
+        assert_eq!(process_signal(libc::SIGBUS).name.as_deref(), Some("SIGBUS"));
+        assert_eq!(process_signal(libc::SIGTERM).number, libc::SIGTERM);
+        assert_eq!(process_signal(0).name, None);
+        assert_eq!(process_signal(1000).name, None);
     }
 
     #[tokio::test]
