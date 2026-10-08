@@ -69,8 +69,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "5728c2db61d3ec202e501bac1486723520a9531164c3d44d31dbee8803ec3e1a",
-      "translation_sha256": "1e7e586f22939d2bd6fbc8fe1ac76dc4db8874417b68d4d2b8c224132e085169"
+      "source_sha256": "b3558cad42e553b838b8f92876479d1d34ff7e0661d91a88c95309f789e49424",
+      "translation_sha256": "1823e184cf2b97e4e56cf97b7d799b7853749d044dc5d56f7cdd37852e5309f7"
     },
     {
       "id": "overview",
@@ -640,8 +640,8 @@
         "파일-복사-벤더가-금지인-이유",
         "확인과-갱신"
       ],
-      "source_sha256": "76f4f21b2b30bb124786a6dd71a55cd098d540a8fa79e0e3aa2948d4fa5d3281",
-      "translation_sha256": "efc5d23d076cac89fa667ceb7ed0596c37922ffad04927f59c905c6bef937fa1"
+      "source_sha256": "1ce93b9c0c1ea970853a1c474032145b90ec8332bf6151522a35b6cc3f6c5619",
+      "translation_sha256": "b6d92f70f012e2eacae907abdc2995e06a8c23192e946c358fba885cc37d5b21"
     },
     {
       "id": "upstream-update",

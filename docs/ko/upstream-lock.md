@@ -34,7 +34,7 @@ gateway([CSRG-U1](devguard-integration.md#devguard-status-connection))와 UDS wo
 | --- | --- |
 | 프로젝트 | [DevGuard](https://github.com/novelKR/DevGuard) |
 | 라이선스 | Apache-2.0. 저작권자는 CodeSpace와 같음 |
-| 커밋 | `f1f908429abea962d62d6b53c56a26c17250179b`. [DevGuard PR #21](https://github.com/novelKR/DevGuard/pull/21) 병합 후의 DevGuard `main` |
+| 커밋 | `6e7e065a0dd5b3876dc7f4546ab76069489937d1`. [DevGuard PR #27](https://github.com/novelKR/DevGuard/pull/27) 병합 후의 DevGuard `main` |
 | 소스 | 그 `rev`의 Cargo Git 의존성 |
 | crate | 제품에는 `devguard-client`와 `devguard-contract`. `test-fixtures`를 켠 `devguard-daemon`은 어댑터 테스트에서만 사용 |
 | 사용하는 구성 요소 | `crates/devguard`(`codespace-devguard`). `codespace-server`, `codespace-runner`, `codespace-codex-runtime`은 각자의 `devguard` feature를 켰을 때만 링크 |
