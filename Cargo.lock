@@ -1918,7 +1918,7 @@ dependencies = [
 [[package]]
 name = "devguard-client"
 version = "0.1.0"
-source = "git+https://github.com/novelKR/DevGuard?rev=f1f908429abea962d62d6b53c56a26c17250179b#f1f908429abea962d62d6b53c56a26c17250179b"
+source = "git+https://github.com/novelKR/DevGuard?rev=6e7e065a0dd5b3876dc7f4546ab76069489937d1#6e7e065a0dd5b3876dc7f4546ab76069489937d1"
 dependencies = [
  "devguard-contract",
  "libc",
@@ -1929,7 +1929,7 @@ dependencies = [
 [[package]]
 name = "devguard-contract"
 version = "0.1.0"
-source = "git+https://github.com/novelKR/DevGuard?rev=f1f908429abea962d62d6b53c56a26c17250179b#f1f908429abea962d62d6b53c56a26c17250179b"
+source = "git+https://github.com/novelKR/DevGuard?rev=6e7e065a0dd5b3876dc7f4546ab76069489937d1#6e7e065a0dd5b3876dc7f4546ab76069489937d1"
 dependencies = [
  "serde",
  "serde_json",

@@ -51,7 +51,7 @@ class GraphTests(unittest.TestCase):
 
     def test_devguard_and_codex_each_have_one_source(self):
         pinned = {'devguard-client': deps.DEVGUARD_SOURCE}
-        moved = {'devguard-client': deps.DEVGUARD_SOURCE.replace('f1f9084', 'e0e0e0e')}
+        moved = {'devguard-client': deps.DEVGUARD_SOURCE.replace('6e7e065', 'e0e0e0e')}
         edges = [('codespace-server', 'devguard-client', None)]
         self.assertFalse(deps.graph(fixture(['codespace-server', 'devguard-client'], edges, pinned),
                                     ['codespace-server'], devguard=True)['violations'])

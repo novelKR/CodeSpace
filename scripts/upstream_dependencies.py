@@ -17,8 +17,8 @@ FORBIDDEN = {'codex-core', 'codex-exec', 'codex-app-server', 'codex-login'}
 RUNNER_FORBIDDEN = {'codespace-linux-sandbox', 'codex-linux-sandbox'}
 # One reviewed DevGuard source, recorded in docs/upstream-lock.md, and the Codex gitlink. Every
 # `devguard-*` and `codex-*` package of every product graph must come from them.
-DEVGUARD_SOURCE = ('git+https://github.com/novelKR/DevGuard?rev=f1f908429abea962d62d6b53c56a26c17250179b'
-                   '#f1f908429abea962d62d6b53c56a26c17250179b')
+DEVGUARD_SOURCE = ('git+https://github.com/novelKR/DevGuard?rev=6e7e065a0dd5b3876dc7f4546ab76069489937d1'
+                   '#6e7e065a0dd5b3876dc7f4546ab76069489937d1')
 CODEX_PATH = 'path:third_party/codex/'
 # DevGuard's crates a product may link. Its test fixtures (`devguard-daemon` and what it
 # brings) stay development dependencies.

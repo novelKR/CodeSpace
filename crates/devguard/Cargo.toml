@@ -18,11 +18,11 @@ resolver = "2"
 # One reviewed, immutable DevGuard source identity, recorded in
 # docs/upstream-lock.md and checked by scripts/upstream_dependencies.py.
 [dependencies]
-devguard-client = { git = "https://github.com/novelKR/DevGuard", rev = "f1f908429abea962d62d6b53c56a26c17250179b" }
-devguard-contract = { git = "https://github.com/novelKR/DevGuard", rev = "f1f908429abea962d62d6b53c56a26c17250179b" }
+devguard-client = { git = "https://github.com/novelKR/DevGuard", rev = "6e7e065a0dd5b3876dc7f4546ab76069489937d1" }
+devguard-contract = { git = "https://github.com/novelKR/DevGuard", rev = "6e7e065a0dd5b3876dc7f4546ab76069489937d1" }
 libc = "0.2"
 
 [dev-dependencies]
-devguard-daemon = { git = "https://github.com/novelKR/DevGuard", rev = "f1f908429abea962d62d6b53c56a26c17250179b", features = ["test-fixtures"] }
+devguard-daemon = { git = "https://github.com/novelKR/DevGuard", rev = "6e7e065a0dd5b3876dc7f4546ab76069489937d1", features = ["test-fixtures"] }
 serde_json = "1"
 tempfile = "3"
