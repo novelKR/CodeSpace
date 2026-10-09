@@ -148,9 +148,16 @@ struct Plan {
     args: Vec<OsString>,
 }
 
+/// The search path of `execvp` when the environment has none: the C library's default.
+#[cfg(target_os = "macos")]
+const DEFAULT_PATH: &str = "/usr/bin:/bin";
+/// The search path of `execvp` when the environment has none: glibc's default.
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_PATH: &str = "/bin:/usr/bin";
+
 /// `name` resolved as the spawn would resolve it: a name with a slash is a path, relative to the
-/// working directory; a bare name is searched on `path` (`/usr/bin:/bin` when unset, as
-/// `execvp` does), an empty entry meaning the working directory. The first regular file this
+/// working directory; a bare name is searched on `path` (the C library's default when unset,
+/// as `execvp` does), an empty entry meaning the working directory. The first regular file this
 /// user may execute wins. The helper runs the executable by this absolute path, which is
 /// therefore its `argv[0]`.
 pub fn resolve_program(name: &str, cwd: &Path, path: Option<&str>) -> Option<PathBuf> {
@@ -168,7 +175,7 @@ pub fn resolve_program(name: &str, cwd: &Path, path: Option<&str>) -> Option<Pat
         let candidate = anchored(name);
         return executable(&candidate).then_some(candidate);
     }
-    path.unwrap_or("/usr/bin:/bin")
+    path.unwrap_or(DEFAULT_PATH)
         .split(':')
         .map(|dir| anchored(dir).join(name))
         .find(|candidate| executable(candidate))
@@ -680,9 +687,11 @@ mod tests {
     /// A stand-in for DevGuard's launch helper. It takes the helper's arguments, runs `entry`,
     /// consumes the permit, then runs `behavior`, which writes transcript lines with `report`
     /// as the real helper does. It cannot present a grant, so it tests CodeSpace's side only.
+    /// It runs under bash: the carriers' numbers can exceed 9, which dash, Linux's `sh`, cannot
+    /// redirect.
     fn stand_in(dir: &Path, name: &str, entry: &str, behavior: &str) -> PathBuf {
         let script = format!(
-            r#"#!/bin/sh
+            r#"#!/bin/bash
 while [ "$1" != "--" ]; do
   case "$1" in
     --permit-fd) permit="$2" ;;
@@ -1547,6 +1556,8 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
             resolve_program("/bin/sh", cwd, Some("")),
             Some(PathBuf::from("/bin/sh"))
         );
+        // Without `PATH`, the C library's default: macOS has no `/usr/bin/sh`, and glibc
+        // searches `/bin` first.
         assert_eq!(
             resolve_program("sh", cwd, None),
             Some(PathBuf::from("/bin/sh"))

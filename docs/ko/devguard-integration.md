@@ -177,7 +177,7 @@ CSRG-U4는 준비된 실행을 DevGuard 아래에서 한 번 실행한다. `requ
 
 **순서.** CSRG-U3의 [준비](#devguard-admission) 다음에 실행 소유자는 다음을 한다.
 
-1. **무엇을 확정하기 전에 확인할 수 있는 것을 확인한다.** 준비된 명령과 그 기한, helper(다른 사용자가 바꿔 놓을 수 없는 일반 실행 파일이어야 한다. 이 사용자나 root가 소유하고 group과 다른 사용자가 쓸 수 없으며, 경로의 디렉터리도 그래야 한다), 그리고 실행 경로가 찾을 방식대로 실행의 `PATH`에서 절대 경로로 찾은 프로그램이다. 여기서 실패하면 시작하지 않은 attempt를 취소한다.
+1. **무엇을 확정하기 전에 확인할 수 있는 것을 확인한다.** 준비된 명령과 그 기한, helper(다른 사용자가 바꿔 놓을 수 없는 일반 실행 파일이어야 한다. 이 사용자나 root가 소유하고 그 밖의 누구도 쓸 수 없어야 한다. 다른 사용자는 쓸 수 없고, group은 그 group이 root의 group(gid 0, macOS의 `wheel`)일 때만 쓸 수 있다. 경로의 디렉터리도 그래야 하며, root가 소유한 sticky `/tmp`는 예외다), 그리고 실행 경로가 찾을 방식대로 실행의 `PATH`에서 절대 경로로 찾은 프로그램이다. 여기서 실패하면 시작하지 않은 attempt를 취소한다.
 2. **`BeginLaunch`를 한 번 보낸다.** 등록된 소유자의 상한 있는 세션(`Register` 후 `BeginLaunch`)에서 보낸다. 첫 답만 attempt의 일회용 permit을 담으며, 이 소유자가 확정한 이 attempt·의미의 기록과 함께 온 permit만 받아들인다.
 3. **자신의 실행 경로로 helper를 시작한다.** 자신의 직계 자식으로 시작하며 준비가 잡아 둔 slot을 채운다. 호출은 DevGuard의 `helper_command`가 만든다. secret이 없는 helper 인자와 비공개 descriptor 두 개, 즉 permit carrier(permit을 담고 쓰는 쪽을 닫은 socket pair)와 helper transcript의 쓰는 쪽(pipe)이다. 이 둘은 helper만 받는다.
 4. **transcript를 끝까지 읽는다.** helper는 자신의 process group을 이끌고 grant를 제시한다. DevGuard는 그 group을 attempt의 scope로 묶고 정책을 적용해 다시 읽은 뒤 실행을 승인한다. 그러면 helper가 READY를 보고하고 프로그램을 실행하며, 프로그램은 helper의 PID를 그대로 쓴다. READY 뒤 transcript가 끝나면 명령이 시작된 것이다.
