@@ -37,6 +37,7 @@ gateway([CSRG-U1](devguard-integration.md#devguard-status-connection))와 UDS wo
 | 커밋 | `6e7e065a0dd5b3876dc7f4546ab76069489937d1`. [DevGuard PR #27](https://github.com/novelKR/DevGuard/pull/27) 병합 후의 DevGuard `main` |
 | 소스 | 그 `rev`의 Cargo Git 의존성 |
 | crate | 제품에는 `devguard-client`와 `devguard-contract`. `test-fixtures`를 켠 `devguard-daemon`은 어댑터 테스트에서만 사용 |
+| launch helper | `devguard-launch`는 링크하지 않음. 운영자는 socket을 제공하는 DevGuard release의 helper를 지정하고(`--devguard-launch-helper`, [CSRG-U4](devguard-integration.md#devguard-launch)), launch 테스트는 DevGuard 자체 lockfile로 이 커밋에서 빌드함 |
 | 사용하는 구성 요소 | `crates/devguard`(`codespace-devguard`). `codespace-server`, `codespace-runner`, `codespace-codex-runtime`은 각자의 `devguard` feature를 켰을 때만 링크 |
 | 검사 | `scripts/upstream_dependencies.py`(`DEVGUARD_SOURCE`) |
 

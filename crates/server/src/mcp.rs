@@ -882,11 +882,42 @@ impl CodeSpace {
             Participating::Off => {}
             #[cfg(feature = "devguard")]
             Participating::Managed => {
-                // The workspace lease is held while the owner prepares; nothing is started, so
-                // it is released with the answer whatever the attempt's own state.
-                let refused = self.prepare_governed(ws, req).await;
-                reservation.abort();
-                return Err(refused);
+                if !self
+                    .registration
+                    .as_ref()
+                    .is_some_and(|registration| registration.launches(&self.runner))
+                {
+                    // The workspace lease is held while the owner prepares; nothing is started,
+                    // so it is released with the answer whatever the attempt's own state.
+                    let refused = self.prepare_governed(ws, req).await;
+                    reservation.abort();
+                    return Err(refused);
+                }
+                // The owner may create a process from here on (CSRG-U4).
+                reservation.arm_dispatch();
+                return match self.launch_governed(ws, req).await {
+                    Ok(launch) => {
+                        reservation.confirm();
+                        Ok(ExecCommandResult {
+                            process_id: launch.process_id,
+                            dispatch_status: match launch.dispatch {
+                                codespace_runner::launch::LaunchDispatch::Confirmed => {
+                                    ExecDispatchStatus::Confirmed
+                                }
+                                codespace_runner::launch::LaunchDispatch::Unknown => {
+                                    ExecDispatchStatus::Unknown
+                                }
+                            },
+                            coordination: self
+                                .hint(&params.workspace_id.0, params.work_id.as_ref()),
+                        })
+                    }
+                    Err(refused) => {
+                        // The command did not start; a helper that existed was reaped.
+                        reservation.abort();
+                        Err(refused)
+                    }
+                };
             }
         }
         reservation.arm_dispatch();
@@ -951,8 +982,8 @@ impl CodeSpace {
         ))
     }
 
-    /// Have the execution owner prepare `req` (CSRG-U3). Managed launch is not available yet,
-    /// so every preparation ends in a refusal and nothing is started.
+    /// Have the execution owner prepare `req` without launching it (CSRG-U3): an owner that
+    /// cannot launch cancels each preparation, so it ends in a refusal and nothing is started.
     #[cfg(feature = "devguard")]
     async fn prepare_governed(&self, ws: &Workspace, req: RunnerExecRequest) -> ErrorBody {
         let Some(registration) = &self.registration else {
@@ -965,6 +996,32 @@ impl CodeSpace {
         {
             Ok(report) => report.into_error_body(&ws.id.0),
             Err(err) => err,
+        }
+    }
+
+    /// Have the execution owner prepare `req` and launch it once under the resource authority
+    /// (CSRG-U4): the launched process, or the refusal of a command that did not start.
+    #[cfg(feature = "devguard")]
+    async fn launch_governed(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+    ) -> Result<codespace_runner::launch::ManagedLaunch, ErrorBody> {
+        let Some(registration) = &self.registration else {
+            return Err(ErrorBody::new(
+                ErrorCode::Internal,
+                "no execution owner registration",
+            ));
+        };
+        let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
+        match registration
+            .launch(&self.runner, ws, req, attempt_id)
+            .await?
+        {
+            codespace_runner::launch::LaunchReport::Launched(launch) => Ok(launch),
+            codespace_runner::launch::LaunchReport::NotLaunched(report) => {
+                Err(report.into_error_body(&ws.id.0))
+            }
         }
     }
 
@@ -1103,15 +1160,29 @@ impl CodeSpace {
         #[cfg(feature = "devguard")]
         if let Some(settings) = cli.devguard.settings() {
             if cli.devguard.mode == crate::devguard::DevGuardMode::Register {
+                let launcher = cli.devguard.launcher();
+                if let Some(launcher) = &launcher {
+                    // Checked again before each launch; a helper that cannot be used refuses
+                    // the launch, never runs anything else.
+                    if let Err(problem) = launcher.usable() {
+                        tracing::warn!(
+                            problem = problem.describe(),
+                            "DevGuard launch helper cannot be used now"
+                        );
+                    }
+                }
                 let registration = crate::devguard::Registration::new(
                     settings,
                     cli.runner,
                     cli.runtime_bin.is_some(),
+                    launcher,
                 );
                 tracing::info!(
                     participation = "registration",
                     owner = ?registration.owner(),
-                    "DevGuard registration of the execution owner enabled; it governs no execution"
+                    launch_helper = cli.devguard.launch_helper.is_some(),
+                    "DevGuard registration of the execution owner enabled; with a launch helper \
+                     it launches the executions of workspaces that require resource participation"
                 );
                 return handler.with_registration(registration);
             }
@@ -2551,7 +2622,7 @@ mod devguard_tests {
     }
 
     /// With native evidence DevGuard admits each governed execution and CodeSpace cancels it,
-    /// as managed launch is not available; without it the owner cannot register.
+    /// as this owner has no launch helper; without it the owner cannot register.
     async fn assert_governed(
         fixture: &mut FixtureAuthority,
         handler: &CodeSpace,
@@ -2562,7 +2633,7 @@ mod devguard_tests {
             (
                 ErrorCode::ManagedLaunchUnavailable,
                 &[
-                    "the resource authority admitted it, but managed launch is not available yet",
+                    "the resource authority admitted it, but the execution owner has no launch helper",
                     ": cancelled; nothing was started",
                 ],
             )
@@ -2684,6 +2755,7 @@ mod devguard_tests {
                             protocol: WIRE_PROTOCOL,
                             registration: true,
                             admission: true,
+                            launch: false,
                         };
                         let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
                         write_frame(&mut worker, &reply).await.unwrap();
@@ -2709,6 +2781,7 @@ mod devguard_tests {
             settings(dir.path(), dir.path().join("absent.sock")),
             crate::config::RunnerMode::Uds,
             true,
+            None,
         ));
         let touch = format!("{}/started", dir.path().display());
         let raw = handler
@@ -2926,5 +2999,549 @@ mod devguard_tests {
             endpoint.accepted()
         );
         process.wait_exit().await;
+    }
+
+    // CSRG-U4: governed executions launched once through DevGuard's launch helper.
+
+    /// DevGuard's launch helper built from the pinned source (`CODESPACE_DEVGUARD_LAUNCH_BIN`).
+    fn launch_helper() -> Option<std::path::PathBuf> {
+        crate::devguard::tests::test_binary("CODESPACE_DEVGUARD_LAUNCH_BIN")
+    }
+
+    /// `gov` and `gov-confirm` require resource participation, asking little enough for a small
+    /// host's work capacity (under 500 m CPU on a three-core CI runner), beside `demo`.
+    fn launch_registry(root: &std::path::Path) -> Registry {
+        launch_registry_with(root, 0)
+    }
+
+    /// [`launch_registry`], plus `gov-0`... and `demo-0`... up to `each`: a workspace runs one
+    /// live process at a time, so concurrent children need workspaces of their own.
+    fn launch_registry_with(root: &std::path::Path, each: usize) -> Registry {
+        let governed = |approvals: &str| {
+            serde_json::json!({
+                "root": root,
+                "profile": "workspace-write",
+                "approvals": approvals,
+                "resources": {"participation": "required", "request": {
+                    "cpu_milli": 50, "memory_bytes": 33554432, "tasks": 4}},
+            })
+        };
+        let plain = serde_json::json!({"root": root, "profile": "workspace-write"});
+        let mut workspaces = serde_json::Map::new();
+        workspaces.insert("demo".into(), plain.clone());
+        workspaces.insert("gov".into(), governed("off"));
+        workspaces.insert("gov-confirm".into(), governed("confirm"));
+        for n in 0..each {
+            workspaces.insert(format!("gov-{n}"), governed("off"));
+            workspaces.insert(format!("demo-{n}"), plain.clone());
+        }
+        let config = serde_json::json!({ "workspaces": workspaces });
+        Registry::load_json(&config.to_string()).unwrap()
+    }
+
+    /// The process's whole output once it ended, and its final status.
+    async fn finished(
+        handler: &CodeSpace,
+        process_id: &ProcessId,
+    ) -> (String, ProcessStatusResult) {
+        let mut output = String::new();
+        for _ in 0..1000 {
+            let read = handler
+                .read_process(Parameters(ReadProcessParams {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                }))
+                .await
+                .unwrap()
+                .0;
+            output = read.chunk.replace("\r\n", "\n");
+            if read.eof {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        for _ in 0..500 {
+            let status = handler
+                .process_status(Parameters(ProcessStatusParams {
+                    process_id: process_id.clone(),
+                }))
+                .await
+                .unwrap()
+                .0;
+            if status.state == ProcessState::Exited {
+                return (output, status);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("{process_id:?} did not exit: {output:?}");
+    }
+
+    /// Wait until DevGuard holds nothing for CodeSpace: it releases a launched attempt once its
+    /// reconciler observes the scope's end, within about a second.
+    fn released(fixture: &mut FixtureAuthority) -> (Vec<String>, u64) {
+        let mut charged = fixture.charged();
+        for _ in 0..100 {
+            if charged == (Vec::new(), 0) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            charged = fixture.charged();
+        }
+        charged
+    }
+
+    /// `exec_command`, again while it stops at the credential (see `past_the_credential`).
+    async fn executed(
+        handler: &CodeSpace,
+        params: ExecCommandParams,
+    ) -> Result<ExecCommandResult, ErrorBody> {
+        past_the_credential(
+            |result: &Result<ExecCommandResult, ErrorBody>| {
+                matches!(result, Err(body)
+                    if body.message.contains("(registration: credential_unavailable"))
+            },
+            || {
+                let params = params.clone();
+                async move {
+                    handler
+                        .exec_command(Parameters(params))
+                        .await
+                        .map(|result| result.0)
+                        .map_err(|raw| serde_json::from_str(&raw).unwrap())
+                }
+            },
+        )
+        .await
+    }
+
+    /// Each new execution in a `gov` workspace runs once under DevGuard, on a pipe and on a PTY,
+    /// and so does one held for approval and resumed; the lease is released when it ends, the
+    /// other tools keep working, and DevGuard releases every attempt afterwards.
+    async fn assert_governed_runs_once(
+        handler: &CodeSpace,
+        store: &Store,
+        fixture: &mut FixtureAuthority,
+    ) {
+        let script = "echo argv0:$0; if [ -t 0 ]; then echo tty; stty size; else echo pipe; fi";
+        for tty in [false, true] {
+            let result = executed(handler, exec_params("gov", &["/bin/sh", "-c", script], tty))
+                .await
+                .unwrap_or_else(|body| panic!("tty={tty}: {body:?}"));
+            assert_eq!(result.dispatch_status, ExecDispatchStatus::Confirmed);
+            let (output, status) = finished(handler, &result.process_id).await;
+            let expected = if tty {
+                "argv0:/bin/sh\ntty\n24 80\n"
+            } else {
+                "argv0:/bin/sh\npipe\n"
+            };
+            assert_eq!(output, expected, "tty={tty}");
+            assert_eq!(
+                (status.termination, status.exit_code),
+                (Some(codespace_domain::ProcessTermination::Exited), Some(0))
+            );
+            // The lease ends with the process, as for any process.
+            for _ in 0..200 {
+                if store.try_acquire_write("gov").is_ok() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            drop(
+                store
+                    .try_acquire_write("gov")
+                    .expect("the lease is released"),
+            );
+        }
+        // Held for approval, granted, resumed: launched like a new execution.
+        let held = handler
+            .exec_command(Parameters(exec_params(
+                "gov-confirm",
+                &["/bin/echo", "resumed"],
+                false,
+            )))
+            .await
+            .err()
+            .expect("held");
+        let held: ErrorBody = serde_json::from_str(&held).unwrap();
+        assert_eq!(held.code, ErrorCode::ApprovalRequired);
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        handler
+            .approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let resumed = handler
+            .operation_resume(Parameters(OperationResumeParams {
+                approval_id: approval_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        let launched = resumed.exec_command.expect("an exec result");
+        assert_eq!(launched.dispatch_status, ExecDispatchStatus::Confirmed);
+        assert_eq!(finished(handler, &launched.process_id).await.0, "resumed\n");
+        // Resuming it again does not launch it again.
+        let again = handler
+            .operation_resume(Parameters(OperationResumeParams { approval_id }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            again.exec_command.map(|result| result.process_id),
+            Some(launched.process_id)
+        );
+        // An ungoverned workspace runs as before.
+        let plain = handler
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/echo", "plain"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(finished(handler, &plain.process_id).await.0, "plain\n");
+        assert_eq!(released(fixture), (Vec::new(), 0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_in_process_gateway_launches_each_governed_execution_once() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(dir.path()),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        if !fixture.native {
+            // Without native evidence the owner cannot register, so nothing is launched.
+            let body = executed(&handler, exec_params("gov", &["/bin/echo"], false))
+                .await
+                .unwrap_err();
+            assert_eq!(body.code, ErrorCode::ResourceAuthorityUnavailable);
+            assert!(body.message.ends_with("nothing was started"), "{body:?}");
+            return;
+        }
+        let report = reported_past_the_credential(&handler).await;
+        assert_eq!(report["resource_authority"]["governs_execution"], true);
+        assert_governed_runs_once(&handler, &store, &mut fixture).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_uds_worker_launches_each_governed_execution_once() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let (Some(helper), Some(bin)) = (launch_helper(), devguard_worker()) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "uds",
+                "--runtime-bin",
+                bin.to_str().unwrap(),
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let worker = cli.devguard.worker().unwrap();
+        let (mut process, runner) =
+            RuntimeProcess::spawn_registered(&bin, None, release(&store), store.clone(), &worker)
+                .await
+                .unwrap();
+        assert!(runner.states_launch());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(dir.path()),
+            store.clone(),
+            RuntimeBackend::Uds(runner),
+        );
+        if fixture.native {
+            let report = reported_past_the_credential(&handler).await;
+            assert_eq!(report["resource_authority"]["governs_execution"], true);
+            assert_governed_runs_once(&handler, &store, &mut fixture).await;
+            // The worker is the only instance, and the helper's parent.
+            assert_eq!(fixture.instances().len(), 1);
+        } else {
+            let body = executed(&handler, exec_params("gov", &["/bin/echo"], false))
+                .await
+                .unwrap_err();
+            assert_eq!(body.code, ErrorCode::ResourceAuthorityUnavailable);
+        }
+        process.wait_exit().await;
+    }
+
+    /// A governed process is CodeSpace's: its stdin, its PTY's size, termination and status,
+    /// with no DevGuard session, and DevGuard settles it once it ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_governed_process_is_controlled_like_any_other() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(dir.path()),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        // A PTY: its size changes, and it leads its own session on its terminal.
+        let script = "stty -echo; printf 'start:%s\\n' \"$(stty size)\"; \
+                      ps -o pid=,pgid=,sess= -p $$ | awk '{ print ($1 == $2 ? \"leader\" : \"member\") }'; \
+                      IFS= read line; printf 'after:%s %s\\n' \"$(stty size)\" \"$line\"";
+        let pty = executed(
+            &handler,
+            exec_params("gov", &["/bin/sh", "-c", script], true),
+        )
+        .await
+        .unwrap();
+        for _ in 0..500 {
+            let read = handler
+                .read_process(Parameters(ReadProcessParams {
+                    process_id: pty.process_id.clone(),
+                    cursor: 0,
+                }))
+                .await
+                .unwrap()
+                .0;
+            if read.chunk.contains("leader") || read.chunk.contains("member") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        handler
+            .process_resize(Parameters(ProcessResizeParams {
+                process_id: pty.process_id.clone(),
+                rows: 40,
+                cols: 120,
+            }))
+            .await
+            .unwrap();
+        handler
+            .write_stdin(Parameters(WriteStdinParams {
+                process_id: pty.process_id.clone(),
+                data: "go\n".into(),
+            }))
+            .await
+            .unwrap();
+        let (output, status) = finished(&handler, &pty.process_id).await;
+        assert_eq!(output, "start:24 80\nleader\nafter:40 120 go\n");
+        assert_eq!(status.exit_code, Some(0));
+        // A pipe: stdin reaches it, and termination ends it.
+        // The shell becomes `sleep`, so terminating the root ends the scope: on a pipe,
+        // termination kills the root only, and a descendant left in the scope would keep the
+        // attempt charged until it ended (CSRG-U5).
+        let pipe = executed(
+            &handler,
+            exec_params(
+                "gov",
+                &["/bin/sh", "-c", "read line; echo got:$line; exec sleep 30"],
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+        handler
+            .write_stdin(Parameters(WriteStdinParams {
+                process_id: pipe.process_id.clone(),
+                data: "in\n".into(),
+            }))
+            .await
+            .unwrap();
+        // The command read its stdin and answered before it is terminated.
+        for _ in 0..500 {
+            let read = handler
+                .read_process(Parameters(ReadProcessParams {
+                    process_id: pipe.process_id.clone(),
+                    cursor: 0,
+                }))
+                .await
+                .unwrap()
+                .0;
+            if read.chunk.contains("got:in") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_process_control_needs_no_registration(&handler, pipe.process_id.clone()).await;
+        let (output, status) = finished(&handler, &pipe.process_id).await;
+        assert_eq!(output, "got:in\n");
+        assert_eq!(
+            status.termination,
+            Some(codespace_domain::ProcessTermination::Terminated)
+        );
+        assert_eq!(released(&mut fixture), (Vec::new(), 0));
+    }
+
+    /// D6 for the launch carriers: governed launches run concurrently with ordinary pipe and PTY
+    /// children of the same gateway. No child but each launch's own helper may hold its permit
+    /// carrier or transcript; no governed command holds anything beyond its standard
+    /// descriptors; and a descriptor this process leaves inheritable reaches only the
+    /// unguarded control spawn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_launches_pass_their_descriptors_to_no_other_child() {
+        use std::os::fd::AsRawFd;
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let runner = codespace_runner::InProcessRunner::new(release(&store)).with_max_processes(32);
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry_with(dir.path(), 4),
+            store.clone(),
+            RuntimeBackend::InProcess(runner),
+        );
+        let secret = std::fs::read_to_string(&fixture.settings.credential_file).unwrap();
+        // The positive control: a socket inheritable in this process, as one is inside
+        // DevGuard's connect window on macOS.
+        let (control, _peer) = crate::devguard::tests::inheritable_socket();
+        let control_fd = control.as_raw_fd();
+        // Every descriptor 3..1024 a child holds, and which are sockets or pipes.
+        let probe = "fds=; sockets=; pipes=; n=3; while [ $n -lt 1024 ]; do \
+                     if [ -e /dev/fd/$n ]; then fds=\"$fds $n\"; \
+                     if [ -S /dev/fd/$n ]; then sockets=\"$sockets $n\"; fi; \
+                     if [ -p /dev/fd/$n ]; then pipes=\"$pipes $n\"; fi; fi; n=$((n + 1)); done; \
+                     echo \"fds:$fds\"; echo \"sockets:$sockets\"; echo \"pipes:$pipes\"; env";
+        let field = |output: &str, name: &str| -> String {
+            output
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .unwrap_or_else(|| panic!("no {name} in {output:?}"))
+                .trim()
+                .to_owned()
+        };
+        let rounds = 6;
+        let (mut governed, mut ordinary, mut control_held) = (0, 0, 0);
+        for round in 0..rounds {
+            let mut tasks = Vec::new();
+            // Two governed launches and four ordinary children at once, each in its own
+            // workspace, alternating PTYs.
+            for n in 0..6 {
+                let handler = handler.clone();
+                let workspace = if n < 2 {
+                    format!("gov-{n}")
+                } else {
+                    format!("demo-{}", n - 2)
+                };
+                let tty = (round + n) % 2 == 1;
+                tasks.push(tokio::spawn(async move {
+                    let result = executed(
+                        &handler,
+                        exec_params(&workspace, &["/bin/sh", "-c", probe], tty),
+                    )
+                    .await
+                    .unwrap_or_else(|body| panic!("{workspace}: {body:?}"));
+                    let output = finished(&handler, &result.process_id).await.0;
+                    (workspace, tty, output)
+                }));
+            }
+            // The unguarded control spawns while the launches run.
+            let controls: Vec<_> = (0..4)
+                .map(|_| {
+                    std::process::Command::new("/bin/sh")
+                        .args(["-c", probe])
+                        .stdin(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .output()
+                        .unwrap()
+                })
+                .collect();
+            for task in tasks {
+                let (workspace, tty, output) = task.await.unwrap();
+                assert!(
+                    !output.contains(&secret),
+                    "{workspace} tty={tty} saw the secret"
+                );
+                assert_eq!(
+                    (
+                        field(&output, "fds:"),
+                        field(&output, "sockets:"),
+                        field(&output, "pipes:")
+                    ),
+                    (String::new(), String::new(), String::new()),
+                    "{workspace} tty={tty}: {output}"
+                );
+                if workspace.starts_with("gov") {
+                    governed += 1;
+                } else {
+                    ordinary += 1;
+                }
+            }
+            for output in controls {
+                let output = String::from_utf8(output.stdout).unwrap();
+                let fds = field(&output, "fds:");
+                if fds.split(' ').any(|fd| fd == control_fd.to_string()) {
+                    control_held += 1;
+                }
+            }
+        }
+        assert_eq!(
+            control_held,
+            rounds * 4,
+            "the control must see the inheritable descriptor"
+        );
+        assert_eq!(released(&mut fixture), (Vec::new(), 0));
+        eprintln!(
+            "u4 d6: {governed} governed launches and {ordinary} ordinary children held no \
+             descriptor beyond stdio; the unguarded control held the inheritable descriptor \
+             {control_held}/{}",
+            rounds * 4
+        );
+        drop(control);
     }
 }

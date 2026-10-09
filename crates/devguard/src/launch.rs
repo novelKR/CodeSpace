@@ -369,9 +369,9 @@ pub enum HelperProblem {
     NotAFile,
     /// The file is not executable.
     NotExecutable,
-    /// Another user than this one or root owns the file or a directory on its path, or the
-    /// group or others can write it, so they could replace the helper this owner hands its
-    /// permits to.
+    /// Another user than this one or root owns the file or a directory on its path, or others,
+    /// or a group other than root's, can write it, so they could replace the helper this owner
+    /// hands its permits to.
     NotPrivate,
 }
 
@@ -389,15 +389,20 @@ impl HelperProblem {
 }
 
 /// Whether `path` can serve as the launch helper: an absolute path, through real directories
-/// owned by this user or root that the group and others cannot write (apart from a root-owned
-/// sticky `/tmp`), to a regular, executable file owned by this user or root that the group and
-/// others cannot write. The owner hands this file each permit, so no one else may swap it.
+/// owned by this user or root, to a regular, executable file owned by this user or root, where
+/// only their owner or root can write any of them (apart from a root-owned sticky `/tmp`): the
+/// group may write only when it is root's group (gid 0, `wheel` on macOS). The owner hands this
+/// file each permit, so no one else may swap it.
 pub fn check_helper(path: &Path) -> Result<(), HelperProblem> {
     let (true, Some(parent)) = (path.is_absolute(), path.parent()) else {
         return Err(HelperProblem::NotAbsolute);
     };
     let uid = effective_uid();
     let owned = |meta: &std::fs::Metadata| meta.uid() == uid || meta.uid() == 0;
+    // Others never write it; a group does only when it is root's.
+    let shared = |meta: &std::fs::Metadata| {
+        meta.mode() & 0o002 != 0 || (meta.mode() & 0o020 != 0 && meta.gid() != 0)
+    };
     let mut current = PathBuf::new();
     for component in parent.components() {
         match component {
@@ -409,7 +414,7 @@ pub fn check_helper(path: &Path) -> Result<(), HelperProblem> {
         let shared_tmp = matches!(current.to_str(), Some("/tmp" | "/private/tmp"))
             && meta.uid() == 0
             && meta.mode() & 0o1000 != 0;
-        if !meta.is_dir() || !owned(&meta) || (!shared_tmp && meta.mode() & 0o022 != 0) {
+        if !meta.is_dir() || !owned(&meta) || (!shared_tmp && shared(&meta)) {
             return Err(HelperProblem::NotPrivate);
         }
     }
@@ -423,7 +428,7 @@ pub fn check_helper(path: &Path) -> Result<(), HelperProblem> {
     if !meta.is_file() {
         return Err(HelperProblem::NotAFile);
     }
-    if !owned(&meta) || meta.mode() & 0o022 != 0 {
+    if !owned(&meta) || shared(&meta) {
         return Err(HelperProblem::NotPrivate);
     }
     if meta.mode() & 0o111 == 0 {
@@ -621,10 +626,20 @@ pub(crate) mod tests {
             check_helper(&file("plain", 0o600)),
             Err(HelperProblem::NotExecutable)
         );
-        assert_eq!(
-            check_helper(&file("group", 0o770)),
-            Err(HelperProblem::NotPrivate)
-        );
+        // A group other than root's may not write it. (A file created here takes the
+        // directory's group, root's on macOS, so it is moved to this user's own group.)
+        let group = file("group", 0o770);
+        // SAFETY: getgid has no preconditions.
+        let own_group = unsafe { libc::getgid() };
+        std::os::unix::fs::chown(&group, None, Some(own_group)).unwrap();
+        if own_group != 0 {
+            assert_eq!(check_helper(&group), Err(HelperProblem::NotPrivate));
+        }
+        // Root's group writing it is root writing it.
+        let wheel = file("wheel", 0o770);
+        if std::fs::metadata(&wheel).unwrap().gid() == 0 {
+            assert_eq!(check_helper(&wheel), Ok(()));
+        }
         let link = base.join("link");
         std::os::unix::fs::symlink(base.join("good"), &link).unwrap();
         assert_eq!(check_helper(&link), Err(HelperProblem::NotAFile));

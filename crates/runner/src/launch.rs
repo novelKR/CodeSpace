@@ -65,6 +65,9 @@ const SETTLE_BOUND: Duration = Duration::from_secs(5);
 pub struct Launcher {
     helper: PathBuf,
     ready_bound: Duration,
+    /// Refuse when the Linux command sandbox would wrap the command. Only tests of the launch
+    /// flow itself turn this off.
+    sandbox_check: bool,
 }
 
 impl Launcher {
@@ -78,7 +81,16 @@ impl Launcher {
         Ok(Self {
             helper,
             ready_bound: DEFAULT_READY_BOUND,
+            sandbox_check: true,
         })
+    }
+
+    /// Launch even where the Linux command sandbox is available, unsandboxed, as only a test
+    /// of the launch flow may.
+    #[cfg(test)]
+    pub(crate) fn ignoring_the_sandbox(mut self) -> Self {
+        self.sandbox_check = false;
+        self
     }
 
     /// Wait at most `bound` for the helper's transcript.
@@ -109,7 +121,7 @@ impl Launcher {
         }
         // The Linux command sandbox wraps the command in its own helper, whose process the
         // resource authority would govern instead; DevGuard cannot register there anyway.
-        if crate::linux_sandbox_available() {
+        if self.sandbox_check && crate::linux_sandbox_available() {
             return Err(PreparationOutcome::SandboxUnsupported);
         }
         if matches!(req.policy.network, NetworkAxis::Enabled) {
@@ -370,13 +382,18 @@ impl PreparedExecution {
             Ok(Err(_)) => TranscriptEnd::Uncertain,
             Err(_) => {
                 // Not settled in time: the process is CodeSpace's either way. The transcript
-                // is still read to its end, and a helper that never ran the executable is
-                // still reported once it is reaped.
+                // is still read to its end; then a helper that never ran the executable is
+                // reported once it is reaped, and one whose transcript says nothing certain
+                // once its process has ended.
                 let settle = self.settler();
                 tokio::spawn(async move {
-                    if let Ok(end) = ended.await {
-                        if never_ran(end) {
+                    match ended.await {
+                        Ok(TranscriptEnd::Started | TranscriptEnd::ExecFailed { .. }) => {}
+                        Ok(end) if never_ran(end) => {
                             settle.after_reap().await;
+                        }
+                        _ => {
+                            settle.after_exit().await;
                         }
                     }
                 });
@@ -394,7 +411,16 @@ impl PreparedExecution {
                 ]);
                 self.launched(phases, LaunchDispatch::Confirmed).await
             }
-            TranscriptEnd::Uncertain => self.launched(phases, LaunchDispatch::Unknown).await,
+            TranscriptEnd::Uncertain => {
+                // Whether the executable started is not known. Once the process has ended this
+                // owner holds no helper: a grant the helper never claimed is then released as
+                // never started, and a claimed one still settles through its scope.
+                let settle = self.settler();
+                tokio::spawn(async move {
+                    settle.after_exit().await;
+                });
+                self.launched(phases, LaunchDispatch::Unknown).await
+            }
             TranscriptEnd::ExecFailed { errno } => {
                 // The helper claimed the grant before READY, so its scope settles it; the
                 // helper exits 126 or 127 at once.
@@ -550,6 +576,23 @@ impl Settler {
         if !self.reaped().await {
             return AttemptState::Unknown;
         }
+        self.abandon_exited().await
+    }
+
+    /// [`Self::after_reap`] for a process that may be the executable: however long it runs, it
+    /// is reported once CodeSpace has reaped it, and it is not killed for it.
+    async fn after_exit(&self) -> AttemptState {
+        loop {
+            match self.runner.host_process_status(&self.process_id) {
+                Ok(status) if status.state != ProcessState::Exited => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                _ => return self.abandon_exited().await,
+            }
+        }
+    }
+
+    async fn abandon_exited(&self) -> AttemptState {
         abandoned(
             call(
                 &self.authority,
@@ -663,10 +706,13 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
 
     const READY: &str = r#"report '{"phase":"ready"}'; eval "exec $report>&-"; exec "$@""#;
 
+    /// A launcher for these tests, which test the launch flow on hosts with or without the
+    /// Linux command sandbox (see `the_linux_command_sandbox_is_not_launched_under_devguard`).
     fn launcher(helper: PathBuf) -> Launcher {
         Launcher::new(helper)
             .unwrap()
             .with_ready_bound(Duration::from_secs(5))
+            .ignoring_the_sandbox()
     }
 
     async fn launch(
@@ -1038,8 +1084,9 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
             Some(codespace_domain::ProcessTermination::Terminated)
         );
 
-        // A transcript that is not well formed: whether the command started is not known, and
-        // nothing is reported for the grant.
+        // A transcript that is not well formed: whether the command started is not known. Once
+        // the process has ended the owner holds no helper, which it reports: DevGuard releases
+        // an unclaimed grant, and settles a claimed one through its scope.
         let fake = Fake::admitting([prepared()]);
         let req = request(&["/bin/echo", "maybe"], "proc-garbage");
         let launch_report =
@@ -1049,7 +1096,13 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
             finished_output(&runner, &launch_report.process_id).await,
             "maybe\n"
         );
-        assert_eq!(fake.count(ABANDON), 0);
+        for _ in 0..250 {
+            if fake.count(ABANDON) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(*fake.abandoned_for.lock().unwrap(), [Abandon::HelperExited]);
     }
 
     #[tokio::test]
@@ -1156,9 +1209,13 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
     async fn nothing_is_committed_when_the_owner_cannot_launch() {
         let helpers = helper_directory();
         let ready = stand_in(helpers.path(), "ready", "", READY);
+        // Writable by a group other than root's (a file made here takes the directory's group,
+        // root's on macOS, so it is moved to this user's own group).
         let shared = helpers.path().join("shared");
         std::fs::copy(&ready, &shared).unwrap();
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o770)).unwrap();
+        // SAFETY: getgid has no preconditions.
+        std::os::unix::fs::chown(&shared, None, Some(unsafe { libc::getgid() })).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let ws = governed(dir.path());
         let mut network = request(&["/bin/echo"], "proc-local");
@@ -1294,6 +1351,82 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
             // The command holds nothing beyond its standard descriptors.
             assert_eq!(lines.collect::<Vec<_>>(), ["end"], "tty={tty}: {output:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_linux_command_sandbox_is_not_launched_under_devguard() {
+        if !crate::linux_sandbox_available() {
+            return;
+        }
+        let helpers = helper_directory();
+        let helper = stand_in(helpers.path(), "ready", "", READY);
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner();
+        let fake = Fake::admitting([prepared()]);
+        let (marker, req) = marker_request(dir.path(), "proc-sandboxed");
+        let launcher = Launcher::new(helper)
+            .unwrap()
+            .with_ready_bound(Duration::from_secs(5));
+        let report =
+            not_launched(launch(&fake, &runner, &governed(dir.path()), req, Some(launcher)).await);
+        assert_eq!(
+            (report.outcome, report.attempt),
+            (
+                PreparationOutcome::SandboxUnsupported,
+                AttemptState::Cancelled
+            )
+        );
+        assert_eq!(fake.count(BEGIN), 0);
+        assert!(!marker.exists());
+    }
+
+    /// The PTY path makes the two descriptors inheritable in this process for the length of its
+    /// spawn. A child another thread spawns meanwhile holds them unless its spawner excludes
+    /// unrelated descriptors, as CodeSpace's do: the unguarded control holds both; the guarded
+    /// child holds neither.
+    #[tokio::test]
+    async fn during_a_pty_spawn_only_guarded_children_are_safe() {
+        let helpers = helper_directory();
+        let helper = stand_in(helpers.path(), "ready", "", READY);
+        let dir = tempfile::tempdir().unwrap();
+        let ws = governed(dir.path());
+        let runner = runner();
+        let fake = Fake::admitting([prepared()]);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        crate::process::inheritable_window::set(
+            "proc-window",
+            Box::new(move |descriptors| {
+                let script = format!(
+                    "for n in {} {}; do if [ -e /dev/fd/$n ]; then echo held; else echo clear; fi; done",
+                    descriptors[0], descriptors[1]
+                );
+                let child = |guarded: bool| {
+                    let mut command = std::process::Command::new("/bin/sh");
+                    command
+                        .args(["-c", &script])
+                        .stdin(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                    if guarded {
+                        crate::descriptors::exclude_unrelated_std(&mut command);
+                    }
+                    String::from_utf8(command.output().unwrap().stdout).unwrap()
+                };
+                record.lock().unwrap().push((child(false), child(true)));
+            }),
+        );
+        let mut req = request(&["/bin/echo", "window"], "proc-window");
+        req.tty = true;
+        let launch = launched(launch(&fake, &runner, &ws, req, Some(launcher(helper))).await);
+        assert_eq!(
+            finished_output(&runner, &launch.process_id).await,
+            "window\n"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.as_slice(),
+            [("held\nheld\n".to_owned(), "clear\nclear\n".to_owned())]
+        );
     }
 
     #[test]

@@ -156,3 +156,11 @@ manifest와 소스를 core와 같은 방식으로 검사합니다. 이 어댑터
 graph(`codex-runtime+devguard`)도 root와 같이 검사하며, Codex 어댑터 leg는 이
 feature로 worker를 빌드·lint·테스트합니다. feature가 없으면 모든 제품 graph는
 바뀌지 않습니다.
+
+*2026-10-09 추가, CSRG-U4:* DevGuard의 launch helper인 `devguard-launch`는 링크하지
+않습니다. 운영에서는 실행 소유자가 socket을 제공하는 DevGuard release의 helper를
+`--devguard-launch-helper`로 지정해 실행합니다. launch 테스트를 돌리는 검증 단계는
+DevGuard client 고정 버전에서 DevGuard 자체 lockfile로 이를 빌드하고
+(`cargo install --locked --git ... --rev`, `scripts/validate-upstream.py`의
+`devguard_binaries()`), `CODESPACE_DEVGUARD_LAUNCH_BIN`으로 테스트에 알립니다. 제품
+graph는 바뀌지 않습니다.

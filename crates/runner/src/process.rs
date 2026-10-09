@@ -127,6 +127,28 @@ enum SessionIo {
     },
 }
 
+/// Lets a test act inside a managed PTY spawn's window, while the launch's two descriptors are
+/// inheritable in this process.
+#[cfg(all(test, feature = "devguard"))]
+pub(crate) mod inheritable_window {
+    type Hook = Box<dyn Fn([libc::c_int; 2]) + Send + Sync>;
+
+    static HOOK: std::sync::Mutex<Option<(String, Hook)>> = std::sync::Mutex::new(None);
+
+    /// Run `hook` with the two descriptors inside the window of `process_id`'s spawn.
+    pub(crate) fn set(process_id: &str, hook: Hook) {
+        *HOOK.lock().unwrap() = Some((process_id.to_owned(), hook));
+    }
+
+    pub(super) fn run(process_id: &str, descriptors: [libc::c_int; 2]) {
+        if let Some((id, hook)) = HOOK.lock().unwrap().as_ref() {
+            if id == process_id {
+                hook(descriptors);
+            }
+        }
+    }
+}
+
 /// What a spawn starts: the request's own command, or a governed execution's launch helper.
 enum How {
     Direct,
@@ -688,6 +710,8 @@ impl InProcessRunner {
                 // descriptors from its children meanwhile (#79).
                 match managed.make_inheritable() {
                     Ok(()) => {
+                        #[cfg(test)]
+                        inheritable_window::run(&process_id, managed.descriptors());
                         codespace_pty::spawn_inheriting(
                             &program,
                             &args,

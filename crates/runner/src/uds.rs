@@ -48,6 +48,9 @@ struct Shared {
     /// The worker's `Hello` stated that it answers `Prepare` (CSRG-U3).
     #[cfg(feature = "devguard")]
     admission: AtomicBool,
+    /// The worker's `Hello` stated that it answers `Launch` (CSRG-U4).
+    #[cfg(feature = "devguard")]
+    launch: AtomicBool,
 }
 
 pub struct UdsRunner {
@@ -104,6 +107,8 @@ impl UdsRunner {
             registration: AtomicBool::new(false),
             #[cfg(feature = "devguard")]
             admission: AtomicBool::new(false),
+            #[cfg(feature = "devguard")]
+            launch: AtomicBool::new(false),
         });
         let reader_shared = shared.clone();
         tokio::spawn(async move {
@@ -122,6 +127,7 @@ impl UdsRunner {
                 if let RunnerOpResult::Hello {
                     registration,
                     admission,
+                    launch,
                     ..
                 } = hello
                 {
@@ -129,6 +135,7 @@ impl UdsRunner {
                         .registration
                         .store(registration, Ordering::SeqCst);
                     self.shared.admission.store(admission, Ordering::SeqCst);
+                    self.shared.launch.store(launch, Ordering::SeqCst);
                 }
                 #[cfg(not(feature = "devguard"))]
                 let _ = hello;
@@ -234,6 +241,69 @@ impl UdsRunner {
                 PreparationOutcome::Unknown,
                 AttemptState::Unknown,
             )),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Whether the worker's `Hello` stated that it answers `Launch` (CSRG-U4).
+    #[cfg(feature = "devguard")]
+    pub fn states_launch(&self) -> bool {
+        self.shared.launch.load(Ordering::SeqCst)
+    }
+
+    /// Have the worker prepare a governed execution under its own registration and launch it
+    /// once through its own launch helper (CSRG-U4). The request is never sent again. When the
+    /// request never left, nothing was asked. When no report comes back, the worker may have
+    /// launched it: the report is a launch whose dispatch is unknown, for its `process_id`.
+    #[cfg(feature = "devguard")]
+    pub async fn launch(
+        &self,
+        ws: &Workspace,
+        request: RunnerExecRequest,
+        attempt_id: String,
+    ) -> Result<crate::launch::LaunchReport, RunnerError> {
+        use crate::admission::{AttemptState, ManagedPreparation, PreparationOutcome};
+        use crate::launch::{LaunchDispatch, LaunchReport, ManagedLaunch};
+        use codespace_domain::ResourceRegistrationState;
+        if !self.states_launch() {
+            return Err(RunnerError::execution(ErrorBody::new(
+                ErrorCode::ResourcePolicyUnsupported,
+                "this worker cannot launch governed executions",
+            )));
+        }
+        let process_id = request.process_id.clone();
+        match self
+            .call(RunnerOp::Launch {
+                workspace: ws.clone(),
+                request,
+                attempt_id: attempt_id.clone(),
+            })
+            .await
+        {
+            Ok(RunnerOpResult::Launched(report)) => Ok(report),
+            Ok(other) => Err(unexpected(other)),
+            Err(RunnerError::TransportBeforeDispatch { .. }) => {
+                Ok(LaunchReport::NotLaunched(ManagedPreparation {
+                    attempt_id,
+                    process_id,
+                    outcome: PreparationOutcome::AuthorityUnavailable {
+                        registration: ResourceRegistrationState::OwnerUnreachable,
+                        error_code: None,
+                    },
+                    attempt: AttemptState::NotAsked,
+                    account: None,
+                }))
+            }
+            Err(RunnerError::TransportAmbiguous { .. }) => {
+                Ok(LaunchReport::Launched(ManagedLaunch {
+                    attempt_id,
+                    process_id,
+                    dispatch: LaunchDispatch::Unknown,
+                    phases: Vec::new(),
+                    account: None,
+                    scope_root_pid: None,
+                }))
+            }
             Err(err) => Err(err),
         }
     }

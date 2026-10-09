@@ -240,7 +240,8 @@ def compiled(stage):
                      validation.cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib'),
                      validation.cargo('test', 'root', '-p', 'codespace-domain', '--features', 'devguard', '--lib')]
     crates = set()
-    for command in (command for command in commands if command[0] == 'cargo'):
+    # `cargo install` builds DevGuard's launch helper from its own repository, not a crate here.
+    for command in (command for command in commands if command[0] == 'cargo' and command[1] != 'install'):
         manifest = [arg for arg in command if arg.startswith('crates/') and arg.endswith('/Cargo.toml')]
         package = command[command.index('-p') + 1] if '-p' in command else None
         if manifest:

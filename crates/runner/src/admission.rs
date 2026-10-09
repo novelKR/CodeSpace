@@ -260,8 +260,8 @@ pub enum AttemptState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum PreparationOutcome {
-    /// Admitted and prepared; managed launch is not available yet, so the unstarted attempt
-    /// was cancelled.
+    /// Admitted and prepared, but the execution owner has no launch helper, so the unstarted
+    /// attempt was cancelled.
     LaunchUnavailable,
     /// No CodeSpace process slot was free; the authority was not asked.
     SlotUnavailable,
@@ -373,8 +373,8 @@ impl ManagedPreparation {
         let (code, what) = match self.outcome {
             PreparationOutcome::LaunchUnavailable => (
                 ErrorCode::ManagedLaunchUnavailable,
-                "the resource authority admitted it, but managed launch is not available yet, \
-                 so the unstarted attempt was cancelled"
+                "the resource authority admitted it, but the execution owner has no launch \
+                 helper, so the unstarted attempt was cancelled"
                     .to_string(),
             ),
             PreparationOutcome::SlotUnavailable => (

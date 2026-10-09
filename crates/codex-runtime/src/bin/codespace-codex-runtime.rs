@@ -9,7 +9,8 @@
 //! authority's socket, the consumer and its generation, and the number of a descriptor carrying
 //! the consumer secret, never the secret itself. The worker consumes and closes that descriptor
 //! before anything else, registers itself in the background and answers the gateway's
-//! `Registration` requests from then on.
+//! `Registration` requests from then on. With `--devguard-launch-helper` too, it launches the
+//! governed executions it prepares through that helper, as their helper's parent (CSRG-U4).
 
 use std::path::PathBuf;
 
@@ -36,7 +37,7 @@ async fn serve() {
     codex_process_hardening::pre_main_hardening();
     // First of all, so the handed descriptor is closed before this process can start a child.
     #[cfg(feature = "devguard")]
-    let registration = devguard::start(std::env::args_os().skip(2));
+    let (registration, launcher) = devguard::start(std::env::args_os().skip(2));
     let socket = match std::env::args().nth(1) {
         Some(path) => PathBuf::from(path),
         None => match std::env::var_os("CODESPACE_RUNNER_SOCKET") {
@@ -59,7 +60,9 @@ async fn serve() {
     // instead of unlinking this rendezvous.
     let _listener = listener;
     #[cfg(feature = "devguard")]
-    let _ = serve_runner_connection_with_registration(stream, runner, events, registration).await;
+    let _ =
+        serve_runner_connection_with_registration(stream, runner, events, registration, launcher)
+            .await;
     #[cfg(not(feature = "devguard"))]
     let _ = serve_runner_connection(stream, runner, events).await;
 }
@@ -71,6 +74,7 @@ mod devguard {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use codespace_runner::launch::Launcher;
     use codespace_runner::registration::{
         handoff, Owner, OwnerCredential, OwnerSettings, ResourceOwner,
     };
@@ -83,6 +87,7 @@ mod devguard {
         pub(crate) consumer: Option<String>,
         pub(crate) generation: Option<String>,
         pub(crate) credential_fd: Option<RawFd>,
+        pub(crate) launch_helper: Option<PathBuf>,
     }
 
     pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Arguments, String> {
@@ -105,17 +110,19 @@ mod devguard {
                             .map_err(|_| format!("{flag} needs a number"))?,
                     )
                 }
+                "--devguard-launch-helper" => parsed.launch_helper = Some(value.into()),
                 _ => return Err(format!("unknown argument {flag}")),
             }
         }
         Ok(parsed)
     }
 
-    /// Consume the handed descriptor, then register in the background. `None` when the worker
-    /// was started without DevGuard settings: it then answers that its mode cannot register.
+    /// Consume the handed descriptor, then register in the background. No registration when
+    /// the worker was started without DevGuard settings: it then answers that its mode cannot
+    /// register. A launch helper only with a registration.
     pub(crate) fn start(
         args: impl IntoIterator<Item = OsString>,
-    ) -> Option<Arc<OwnerRegistration>> {
+    ) -> (Option<Arc<OwnerRegistration>>, Option<Launcher>) {
         let arguments = match parse(args) {
             Ok(arguments) => arguments,
             Err(problem) => {
@@ -131,10 +138,18 @@ mod devguard {
                 .unwrap_or(OwnerCredential::Unavailable),
             None => OwnerCredential::Unavailable,
         };
+        let launcher = match arguments.launch_helper.map(Launcher::new) {
+            Some(Err(problem)) => {
+                eprintln!("codespace-codex-runtime: --devguard-launch-helper: {problem}");
+                std::process::exit(2);
+            }
+            Some(Ok(launcher)) => Some(launcher),
+            None => None,
+        };
         let (Some(socket), Some(consumer), Some(generation)) =
             (arguments.socket, arguments.consumer, arguments.generation)
         else {
-            return None;
+            return (None, None);
         };
         let registration = OwnerRegistration::new(
             Owner::new(
@@ -149,7 +164,7 @@ mod devguard {
         );
         let eager = registration.clone();
         tokio::spawn(async move { eager.report().await });
-        Some(registration)
+        (Some(registration), launcher)
     }
 
     #[cfg(test)]
@@ -171,6 +186,8 @@ mod devguard {
                 "g1",
                 "--devguard-credential-fd",
                 "3",
+                "--devguard-launch-helper",
+                "/opt/devguard/bin/devguard-launch",
             ]))
             .unwrap();
             assert_eq!(
@@ -180,6 +197,7 @@ mod devguard {
                     consumer: Some("codespace".into()),
                     generation: Some("g1".into()),
                     credential_fd: Some(3),
+                    launch_helper: Some("/opt/devguard/bin/devguard-launch".into()),
                 }
             );
             assert_eq!(parse(args(&[])).unwrap(), Arguments::default());

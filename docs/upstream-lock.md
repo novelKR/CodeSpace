@@ -35,6 +35,7 @@ The opt-in `devguard` features of the gateway ([CSRG-U1](devguard-integration.md
 | Commit | `6e7e065a0dd5b3876dc7f4546ab76069489937d1`, DevGuard `main` after [DevGuard PR #27](https://github.com/novelKR/DevGuard/pull/27) |
 | Source | Cargo Git dependency at that `rev` |
 | Crates | `devguard-client` and `devguard-contract` in the product; `devguard-daemon` with `test-fixtures` only in the adapter's tests |
+| Launch helper | `devguard-launch` is never linked. Operators name the helper of the DevGuard release that serves the socket (`--devguard-launch-helper`, [CSRG-U4](devguard-integration.md#devguard-launch)); the launch tests build it from this commit with DevGuard's own lockfile |
 | Consumer | `crates/devguard` (`codespace-devguard`), linked by `codespace-server`, `codespace-runner` and `codespace-codex-runtime` only with their `devguard` features |
 | Check | `scripts/upstream_dependencies.py` (`DEVGUARD_SOURCE`) |
 

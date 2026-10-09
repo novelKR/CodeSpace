@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from upstream_dependencies import ADAPTERS, ROOT
+from upstream_dependencies import ADAPTERS, DEVGUARD_SOURCE, ROOT
 
 
 def capture(*cmd):
@@ -64,14 +64,15 @@ def stages():
         # macOS path the Linux legs cannot exercise.
         + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'fork_handlers', 'missing_executable_is_process_spawn_failed'),
            cargo('test', 'root', '-p', 'codespace-server', '--lib', '--', 'descriptors')]
-        # The DevGuard adapter against an authority with native host evidence, and the DevGuard
-        # tests of the runner (registration, its wire and the preparation of governed executions,
-        # CSRG-U3), the worker and the gateway where socket creation is not atomically
-        # close-on-exec, the gateway's against the worker and the fixture authority built here.
+        # The DevGuard adapter against an authority with native host evidence and DevGuard's
+        # launch helper, and the DevGuard tests of the runner (registration, its wire, the
+        # preparation of governed executions, CSRG-U3, and their launch, CSRG-U4), the worker
+        # and the gateway where socket creation is not atomically close-on-exec, the gateway's
+        # against the worker, the fixture authority and the helper built here.
         + devguard_binaries()
         + [cargo('test', 'devguard'),
            cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
-           cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire', 'admission'),
+           cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire', 'admission', 'launch'),
            cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard')],
         # Children killed inside fork on macOS: fresh-process trials of reads concurrent with
         # pipe spawns (crates/runner/tests/fork_race.rs); any child without an exit code fails.
@@ -99,9 +100,11 @@ HELPERS = {'patch': ('codespace-patch', 'CODESPACE_PATCH_BIN'),
            'linux-sandbox': ('codespace-linux-sandbox', 'CODESPACE_LINUX_SANDBOX_BIN')}
 TARGET_DIR = (ROOT / 'target' / 'upstream-validation').resolve()
 # The gateway's DevGuard registration tests (CSRG-U2) need the worker built with its DevGuard
-# feature, kept beside the default worker, and DevGuard's fixture authority in its own process.
+# feature, kept beside the default worker, and DevGuard's fixture authority in its own process;
+# the launch tests (CSRG-U4) need DevGuard's launch helper.
 DEVGUARD_RUNTIME = 'codespace-codex-runtime-devguard'
 DEVGUARD_FIXTURE = 'examples/fixture_authority'
+DEVGUARD_LAUNCH = 'devguard-launch'
 DEVGUARD_STAGES = ('integration', 'macos-core')
 
 
@@ -114,16 +117,28 @@ def devguard_env(target_dir):
     test that needs one fails instead of skipping."""
     return {'CODESPACE_DEVGUARD_RUNTIME_BIN': str(target_dir / 'debug' / DEVGUARD_RUNTIME),
             'CODESPACE_DEVGUARD_FIXTURE_BIN': str(target_dir / 'debug' / DEVGUARD_FIXTURE),
+            'CODESPACE_DEVGUARD_LAUNCH_BIN': str(target_dir / DEVGUARD_LAUNCH / 'bin' / DEVGUARD_LAUNCH),
             'CODESPACE_REQUIRE_DEVGUARD_BINS': '1'}
+
+
+def devguard_pin():
+    """The reviewed DevGuard repository and commit that every `devguard-*` crate comes from."""
+    url, rest = DEVGUARD_SOURCE.removeprefix('git+').split('?rev=', 1)
+    return url, rest.split('#', 1)[0]
 
 
 def devguard_binaries():
     """Build the worker with its DevGuard feature and copy it beside the default worker, whose
-    build replaces that path, then the fixture authority."""
+    build replaces that path, then the fixture authority, then DevGuard's launch helper from the
+    reviewed pin with DevGuard's own lockfile. The helper is a test binary here: no CodeSpace
+    product links or ships it."""
     worker = TARGET_DIR / 'debug' / 'codespace-codex-runtime'
+    url, rev = devguard_pin()
     return [cargo('build', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
             ['cp', str(worker), str(TARGET_DIR / 'debug' / DEVGUARD_RUNTIME)],
-            cargo('build', 'devguard', '--example', 'fixture_authority')]
+            cargo('build', 'devguard', '--example', 'fixture_authority'),
+            ['cargo', 'install', '--locked', '--git', url, '--rev', rev, DEVGUARD_LAUNCH,
+             '--root', str(TARGET_DIR / DEVGUARD_LAUNCH), '--target-dir', str(TARGET_DIR / (DEVGUARD_LAUNCH + '-build'))]]
 
 
 def execute(commands, env, log):
