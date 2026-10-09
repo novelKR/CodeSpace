@@ -178,17 +178,25 @@ pub(crate) fn worker_command(bin: &Path, socket: &Path) -> Command {
     command
 }
 
+/// How long the gateway waits for a started worker's socket. A worker binary never run before
+/// can take macOS a few seconds to start, as it checks a new executable file on its first exec.
+const WORKER_READY_BOUND: Duration = Duration::from_secs(10);
+
+/// The worker's socket once it accepts; an error at once if the worker exits first.
 async fn wait_for_socket(socket: &Path, wait: &JoinHandle<()>) -> Result<UnixStream> {
-    for _ in 0..100 {
+    let deadline = tokio::time::Instant::now() + WORKER_READY_BOUND;
+    loop {
         if wait.is_finished() {
             return Err(anyhow!("worker exited before the runner socket was ready"));
         }
         match UnixStream::connect(socket).await {
             Ok(stream) => return Ok(stream),
-            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await
+            }
+            Err(_) => return Err(anyhow!("worker socket not ready at {}", socket.display())),
         }
     }
-    Err(anyhow!("worker socket not ready at {}", socket.display()))
 }
 
 #[cfg(test)]
@@ -497,5 +505,27 @@ mod tests {
             .try_acquire_write("demo")
             .expect("process leases released after worker death");
         assert!(!dir.exists() || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) == 0);
+    }
+
+    /// The wait for a worker's socket is long enough for a first exec, but a worker that exits
+    /// first fails the start at once.
+    #[tokio::test]
+    async fn a_worker_that_exits_before_its_socket_fails_at_once() {
+        let store = Arc::new(Store::memory().unwrap());
+        let started = std::time::Instant::now();
+        let error =
+            RuntimeProcess::spawn(Path::new("/usr/bin/false"), None, Arc::new(|_| {}), store)
+                .await
+                .err()
+                .expect("a worker that exits cannot serve");
+        assert!(
+            format!("{error:#}").contains("worker exited before"),
+            "{error:#}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
