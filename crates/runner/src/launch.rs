@@ -1429,6 +1429,95 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
         );
     }
 
+    /// A governed process times out as any other: CodeSpace's own timeout kills it, and its
+    /// status says so.
+    #[tokio::test]
+    async fn a_governed_process_times_out_like_any_other() {
+        let helpers = helper_directory();
+        let helper = stand_in(helpers.path(), "ready", "", READY);
+        let dir = tempfile::tempdir().unwrap();
+        let ws = governed(dir.path());
+        for tty in [false, true] {
+            let runner = runner();
+            let fake = Fake::admitting([prepared()]);
+            let mut req = request(&["/bin/sleep", "30"], &format!("proc-timeout-{tty}"));
+            req.tty = tty;
+            req.timeout_ms = 300;
+            let launch =
+                launched(launch(&fake, &runner, &ws, req, Some(launcher(helper.clone()))).await);
+            assert_eq!(launch.dispatch, LaunchDispatch::Confirmed);
+            let mut status = runner.process_status(&launch.process_id).await.unwrap();
+            for _ in 0..250 {
+                if status.state == ProcessState::Exited {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                status = runner.process_status(&launch.process_id).await.unwrap();
+            }
+            assert_eq!(
+                (status.state, status.termination),
+                (
+                    ProcessState::Exited,
+                    Some(codespace_domain::ProcessTermination::Timeout)
+                ),
+                "tty={tty}"
+            );
+            assert_eq!(fake.count(ABANDON), 0);
+        }
+    }
+
+    /// Once the helper has started, the owner holds neither of its descriptors: they close when
+    /// the spawn returns, and the transcript's reader when the transcript ends. It runs in a
+    /// process of its own, where no other test reuses the numbers.
+    #[test]
+    fn the_owner_keeps_no_carrier_once_the_helper_started() {
+        use crate::fork_handlers::tests::{in_isolated_copy, run_isolated};
+        if !in_isolated_copy() {
+            run_isolated("launch::tests::the_owner_keeps_no_carrier_once_the_helper_started");
+            return;
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let helpers = helper_directory();
+            let entry = r#"echo "carriers: $permit $report""#;
+            let helper = stand_in(helpers.path(), "carriers", entry, READY);
+            let dir = tempfile::tempdir().unwrap();
+            let ws = governed(dir.path());
+            for tty in [false, true] {
+                let runner = runner();
+                let fake = Fake::admitting([prepared()]);
+                let mut req = request(&["/bin/echo", "done"], &format!("proc-carriers-{tty}"));
+                req.tty = tty;
+                let launch = launched(
+                    launch(&fake, &runner, &ws, req, Some(launcher(helper.clone()))).await,
+                );
+                let output = finished_output(&runner, &launch.process_id).await;
+                let carriers: Vec<libc::c_int> = output
+                    .lines()
+                    .find_map(|line| line.strip_prefix("carriers: "))
+                    .unwrap_or_else(|| panic!("{output:?}"))
+                    .split(' ')
+                    .map(|fd| fd.parse().unwrap())
+                    .collect();
+                assert_eq!(carriers.len(), 2, "{output:?}");
+                for fd in carriers {
+                    // SAFETY: F_GETFD only reads a descriptor's flags.
+                    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                    let error = std::io::Error::last_os_error().raw_os_error();
+                    assert_eq!(
+                        (flags, error),
+                        (-1, Some(libc::EBADF)),
+                        "tty={tty}: the owner still holds {fd}"
+                    );
+                }
+            }
+        });
+    }
+
     #[test]
     fn programs_resolve_as_the_spawn_would() {
         let dir = tempfile::tempdir().unwrap();
