@@ -609,9 +609,11 @@ mod tests {
 
     #[test]
     fn prepare_stdout_flood_is_too_large() {
-        let dir = tempfile::tempdir().unwrap();
-        let helper = write_script(dir.path(), "#!/bin/sh\nwhile :; do printf x; done\n");
-        let spawned = Command::new(&helper)
+        // The system's `yes` floods in large writes, from a file executed before. Under load,
+        // a byte per write, or the first exec of a script written for the test, could take
+        // long enough to reach the deadline before the limit.
+        let helper = Path::new("/usr/bin/yes");
+        let spawned = Command::new(helper)
             .arg("prepare")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -619,7 +621,7 @@ mod tests {
             .spawn()
             .unwrap();
         let start = Instant::now();
-        let err = prepare_from_child(&helper, spawned, b"{}", Duration::from_secs(2), 64 * 1024)
+        let err = prepare_from_child(helper, spawned, b"{}", Duration::from_secs(2), 64 * 1024)
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::ProcessSpawnFailed);
         assert!(err.message.contains("output too large"), "{}", err.message);
