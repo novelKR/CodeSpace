@@ -1451,12 +1451,14 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
             let fake = Fake::admitting([prepared()]);
             let mut req = request(&["/bin/sleep", "30"], &format!("proc-timeout-{tty}"));
             req.tty = tty;
-            req.timeout_ms = 300;
+            // The timeout runs from the helper's spawn, so it must leave the helper time to
+            // report READY under load; one that ends first ends the launch before the command.
+            req.timeout_ms = 2_000;
             let launch =
                 launched(launch(&fake, &runner, &ws, req, Some(launcher(helper.clone()))).await);
             assert_eq!(launch.dispatch, LaunchDispatch::Confirmed);
             let mut status = runner.process_status(&launch.process_id).await.unwrap();
-            for _ in 0..250 {
+            for _ in 0..500 {
                 if status.state == ProcessState::Exited {
                     break;
                 }

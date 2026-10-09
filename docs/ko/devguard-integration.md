@@ -184,11 +184,12 @@ CSRG-U4는 준비된 실행을 DevGuard 아래에서 한 번 실행한다. `requ
 
 DevGuard는 helper의 부모가 등록된 소유자이기를 요구하므로 실행은 소유자가 한다. `in-process` 모드에서는 gateway가, `uds` 모드에서는 gateway가 시작한 worker가 `launch` 요청 하나를 받아 실행한다. worker는 등록하고 helper가 있을 때만 `Hello`에 `launch`를 밝히며, 이 요청은 다시 보내지 않는다.
 
-**프로세스.** spawn 뒤에는 다른 CodeSpace 프로세스와 같다. 같은 slot, 출력, stdin, `process_resize`, timeout, `terminate_process`, workspace lease, reap을 준비된 `process_id`로 쓴다. 관리하지 않는 실행과는 세 가지가 다르다.
+**프로세스.** spawn 뒤에는 다른 CodeSpace 프로세스와 같다. 같은 slot, 출력, stdin, `process_resize`, timeout, `terminate_process`, workspace lease, reap을 준비된 `process_id`로 쓴다. 관리하지 않는 실행과는 네 가지가 다르다.
 
 - 명령은 찾아낸 절대 경로를 `argv[0]`로 받아 실행된다.
 - pipe에서는 helper 때문에 자신의 process group을 이끈다. PTY에서는 이전처럼 자신의 session을 이끈다.
 - PTY에서 signal로 죽으면 고정된 Codex PTY의 descriptor 유지 경로가 보고하는 대로 1이 아니라 128에 signal 번호를 더한 exit code로 보고한다.
+- timeout은 helper를 spawn한 때부터 세므로 READY 전에 helper가 DevGuard와 주고받는 시간도 포함한다. 그 전에 timeout이 끝나면 명령을 시작하기 전에 실행이 끝나며, 시작하지 않은 것으로 보고한다.
 
 **결과.** `exec_command`는 transcript가 끝나거나 10초가 지나면 돌아온다.
 

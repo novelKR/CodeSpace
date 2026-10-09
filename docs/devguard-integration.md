@@ -184,11 +184,12 @@ CSRG-U4 launches a prepared execution once under DevGuard: with `required`, the 
 
 DevGuard requires the helper's parent to be the registered owner, so the owner launches: the gateway in `in-process` mode, and in `uds` mode the worker the gateway started, which receives one `launch` request. The worker states `launch` in its `Hello` only when it registers and has a helper; the request is never sent again.
 
-**The process.** From the spawn on it is a CodeSpace process like any other: the same slot, output, stdin, `process_resize`, timeout, `terminate_process`, workspace lease and reaping, under the prepared `process_id`. It differs from an ungoverned execution in three ways:
+**The process.** From the spawn on it is a CodeSpace process like any other: the same slot, output, stdin, `process_resize`, timeout, `terminate_process`, workspace lease and reaping, under the prepared `process_id`. It differs from an ungoverned execution in four ways:
 
 - the command runs with its resolved absolute path as `argv[0]`;
 - on a pipe it leads its own process group, as the helper makes it; on a PTY it leads its own session, as before;
 - on a PTY, a death by a signal is reported as exit code 128 plus the signal number instead of 1, as the pinned Codex PTY's descriptor-keeping path reports it.
+- its timeout runs from the helper's spawn, so it also covers the helper's exchange with DevGuard before READY: a timeout that runs out first ends the launch before the command starts, which is reported as not started.
 
 **Results.** `exec_command` returns once the transcript has ended, or after 10 s:
 
