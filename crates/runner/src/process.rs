@@ -3,6 +3,11 @@
 //! standard descriptors (`descriptors`). `tty: true` uses the isolated
 //! `codespace-pty` adapter. When the Linux helper probe succeeds, both wrap
 //! the same helper argv. UDS dispatch lives in `UdsRunner`.
+//!
+//! A governed execution (CSRG-U4) goes through the same two spawners: their command is
+//! DevGuard's launch helper with its arguments, which becomes the user's executable, and the
+//! helper alone also receives its two private descriptors. Process handles, output, timeout,
+//! termination and reaping are the same as for any other process.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -120,6 +125,86 @@ enum SessionIo {
         session: Arc<PtySession>,
         writer: mpsc::Sender<Vec<u8>>,
     },
+}
+
+/// What a spawn starts: the request's own command, or a governed execution's launch helper.
+enum How {
+    Direct,
+    #[cfg(feature = "devguard")]
+    Managed(Arc<Managed>),
+}
+
+impl How {
+    /// The spawn has returned, whether or not it succeeded: a launch helper's descriptors are
+    /// closed in this process.
+    fn spawned(&self) {
+        match self {
+            How::Direct => {}
+            #[cfg(feature = "devguard")]
+            How::Managed(managed) => managed.close_descriptors(),
+        }
+    }
+}
+
+/// A launch helper's invocation while it is spawned, then the owner's end of its transcript.
+#[cfg(feature = "devguard")]
+pub(crate) struct Managed {
+    invocation: std::sync::Mutex<Option<codespace_devguard::launch::HelperInvocation>>,
+    transcript: std::sync::Mutex<Option<codespace_devguard::launch::Transcript>>,
+    helper: PathBuf,
+    args: Vec<OsString>,
+    descriptors: [libc::c_int; 2],
+}
+
+#[cfg(feature = "devguard")]
+impl Managed {
+    fn new(invocation: codespace_devguard::launch::HelperInvocation) -> Self {
+        Self {
+            helper: invocation.helper().to_owned(),
+            args: invocation.args().to_vec(),
+            descriptors: invocation.descriptors(),
+            invocation: std::sync::Mutex::new(Some(invocation)),
+            transcript: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn helper(&self) -> &Path {
+        &self.helper
+    }
+
+    fn args(&self) -> &[OsString] {
+        &self.args
+    }
+
+    fn descriptors(&self) -> [libc::c_int; 2] {
+        self.descriptors
+    }
+
+    fn make_inheritable(&self) -> std::io::Result<()> {
+        match self.invocation.lock().ok().as_deref() {
+            Some(Some(invocation)) => invocation.make_inheritable(),
+            _ => Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+        }
+    }
+
+    /// Close this process's copies of the two descriptors, keeping the transcript.
+    fn close_descriptors(&self) {
+        let invocation = self.invocation.lock().ok().and_then(|mut held| held.take());
+        if let Some(invocation) = invocation {
+            if let Ok(mut transcript) = self.transcript.lock() {
+                *transcript = Some(invocation.into_transcript());
+            }
+        }
+    }
+
+    fn finish(&self) -> codespace_devguard::launch::Transcript {
+        self.close_descriptors();
+        self.transcript
+            .lock()
+            .ok()
+            .and_then(|mut transcript| transcript.take())
+            .expect("the invocation became its transcript")
+    }
 }
 
 struct SpawnCtx {
@@ -343,6 +428,39 @@ impl InProcessRunner {
         }
         // The slot first: no process is created without one.
         let slot = self.reserve_slot(&req.process_id.0)?;
+        self.spawn_slotted(ws, req, slot, How::Direct).await
+    }
+
+    /// Start a governed execution's launch helper through this runner's own pipe or PTY spawner
+    /// (CSRG-U4), filling the slot its preparation took. The helper alone receives the
+    /// invocation's two descriptors, and this process's copies are closed as soon as the spawn
+    /// returns. The helper becomes the execution: from here it is a process like any other.
+    /// Returns the spawn's result and the owner's end of the helper's transcript.
+    #[cfg(feature = "devguard")]
+    pub(crate) async fn spawn_managed(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+        slot: SlotReservation,
+        invocation: codespace_devguard::launch::HelperInvocation,
+    ) -> (
+        Result<RunnerExecResult, ErrorBody>,
+        codespace_devguard::launch::Transcript,
+    ) {
+        let managed = Arc::new(Managed::new(invocation));
+        let result = self
+            .spawn_slotted(ws, req, slot, How::Managed(managed.clone()))
+            .await;
+        (result, managed.finish())
+    }
+
+    async fn spawn_slotted(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+        slot: SlotReservation,
+        how: How,
+    ) -> Result<RunnerExecResult, ErrorBody> {
         let cap = req.output_bytes_cap.max(1) as usize;
         let timeout = Duration::from_millis(req.timeout_ms.max(1));
         let cwd = match req.cwd {
@@ -358,9 +476,9 @@ impl InProcessRunner {
             process_id: req.process_id.0.clone(),
         };
         if req.tty {
-            self.spawn_pty(ws, req, ctx, slot).await
+            self.spawn_pty(ws, req, ctx, slot, how).await
         } else {
-            self.spawn_pipe(ws, req, ctx, slot)
+            self.spawn_pipe(ws, req, ctx, slot, how)
         }
     }
 
@@ -370,6 +488,7 @@ impl InProcessRunner {
         req: RunnerExecRequest,
         ctx: SpawnCtx,
         reservation: SlotReservation,
+        how: How,
     ) -> Result<RunnerExecResult, ErrorBody> {
         let SpawnCtx {
             cwd,
@@ -380,9 +499,20 @@ impl InProcessRunner {
             lifecycle,
             process_id,
         } = ctx;
-        let launch = exec_launch(ws, &req)?;
-        let mut child = Command::new(&launch.program);
-        child.args(&launch.args);
+        let (mut child, launch) = match &how {
+            How::Direct => {
+                let launch = exec_launch(ws, &req)?;
+                let mut child = Command::new(&launch.program);
+                child.args(&launch.args);
+                (child, Some(launch))
+            }
+            #[cfg(feature = "devguard")]
+            How::Managed(managed) => {
+                let mut child = Command::new(managed.helper());
+                child.args(managed.args());
+                (child, None)
+            }
+        };
         child
             .current_dir(&cwd)
             .env_clear()
@@ -390,12 +520,25 @@ impl InProcessRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        crate::descriptors::exclude_unrelated(&mut child);
-        for (key, value) in spawn_env(&cwd, &req, launch.sandboxed) {
+        match &how {
+            How::Direct => {
+                crate::descriptors::exclude_unrelated(&mut child);
+            }
+            #[cfg(feature = "devguard")]
+            How::Managed(managed) => {
+                crate::descriptors::exclude_unrelated_except(&mut child, managed.descriptors());
+            }
+        }
+        let sandboxed = launch.as_ref().is_some_and(|launch| launch.sandboxed);
+        for (key, value) in spawn_env(&cwd, &req, sandboxed) {
             child.env(key, value);
         }
-        let mut spawned = child.spawn().map_err(|err| {
-            launch.abort_plan();
+        let spawned = child.spawn();
+        how.spawned();
+        let mut spawned = spawned.map_err(|err| {
+            if let Some(launch) = &launch {
+                launch.abort_plan();
+            }
             ErrorBody::new(
                 ErrorCode::ProcessSpawnFailed,
                 format!("failed to spawn process: {err}"),
@@ -490,6 +633,7 @@ impl InProcessRunner {
         req: RunnerExecRequest,
         ctx: SpawnCtx,
         reservation: SlotReservation,
+        how: How,
     ) -> Result<RunnerExecResult, ErrorBody> {
         let SpawnCtx {
             cwd,
@@ -500,29 +644,71 @@ impl InProcessRunner {
             lifecycle,
             process_id,
         } = ctx;
-        let launch = exec_launch(ws, &req)?;
-        let mut env = spawn_env(&cwd, &req, launch.sandboxed);
+        let launch = match &how {
+            How::Direct => Some(exec_launch(ws, &req)?),
+            #[cfg(feature = "devguard")]
+            How::Managed(_) => None,
+        };
+        let abort = || {
+            if let Some(launch) = &launch {
+                launch.abort_plan();
+            }
+        };
+        let sandboxed = launch.as_ref().is_some_and(|launch| launch.sandboxed);
+        let mut env = spawn_env(&cwd, &req, sandboxed);
         if req.env.use_runner_defaults {
             env.insert("TERM".into(), "xterm".into());
         }
-        let (program, args) = match utf8_launch(&launch.program, &launch.args) {
+        let utf8 = match (&launch, &how) {
+            (Some(launch), _) => utf8_launch(&launch.program, &launch.args),
+            #[cfg(feature = "devguard")]
+            (None, How::Managed(managed)) => utf8_launch(managed.helper(), managed.args()),
+            (None, _) => Err(ErrorBody::new(
+                ErrorCode::Internal,
+                "no command to launch on the PTY",
+            )),
+        };
+        let (program, args) = match utf8 {
             Ok(value) => value,
             Err(err) => {
-                launch.abort_plan();
+                abort();
                 return Err(err);
             }
         };
-        // portable-pty forks: see `prepare_fork_spawns`.
+        // portable-pty and the Codex PTY's descriptor-keeping path fork: see
+        // `prepare_fork_spawns`.
         crate::prepare_fork_spawns();
-        let mut session = codespace_pty::spawn(&program, &args, &cwd, &env)
-            .await
-            .map_err(|err| {
-                launch.abort_plan();
-                ErrorBody::new(
-                    ErrorCode::ProcessSpawnFailed,
-                    format!("failed to spawn process: {err}"),
-                )
-            })?;
+        let spawned = match &how {
+            How::Direct => codespace_pty::spawn(&program, &args, &cwd, &env).await,
+            #[cfg(feature = "devguard")]
+            How::Managed(managed) => {
+                // The pinned Codex PTY keeps only descriptors that are already inheritable, so
+                // the two are inheritable here from now until `how.spawned()` closes them right
+                // after the spawn. Every other spawner in this process excludes unrelated
+                // descriptors from its children meanwhile (#79).
+                match managed.make_inheritable() {
+                    Ok(()) => {
+                        codespace_pty::spawn_inheriting(
+                            &program,
+                            &args,
+                            &cwd,
+                            &env,
+                            &managed.descriptors(),
+                        )
+                        .await
+                    }
+                    Err(err) => Err(format!("cannot pass the launch descriptors: {err}")),
+                }
+            }
+        };
+        how.spawned();
+        let mut session = spawned.map_err(|err| {
+            abort();
+            ErrorBody::new(
+                ErrorCode::ProcessSpawnFailed,
+                format!("failed to spawn process: {err}"),
+            )
+        })?;
         let stdout = session
             .take_stdout()
             .ok_or_else(|| ErrorBody::new(ErrorCode::InvalidPatch, "PTY stdout missing"))?;

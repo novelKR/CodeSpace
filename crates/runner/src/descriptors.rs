@@ -23,6 +23,10 @@
 //! marked) it returns the error and the spawn fails, instead of starting a child that may hold
 //! an unrelated descriptor. Other platforms always fail this way.
 //!
+//! [`exclude_unrelated_except`] does the same but keeps two named descriptors, which it makes
+//! inheritable in the child only: the private descriptors of a DevGuard-managed launch, which
+//! reach the launch helper and no other child (CSRG-U4).
+//!
 //! The step runs after fork and before exec. It does not allocate, take locks or panic. It
 //! calls only `fcntl`, plus `getpid` and `proc_pidinfo` on macOS or `syscall` (`close_range`,
 //! `openat`, `read`, `close`) on Linux, and it writes only its own stack and `errno`.
@@ -55,6 +59,30 @@ pub(crate) fn exclude_unrelated_std(
     unsafe { command.pre_exec(|| mark_unrelated(Forced::NONE)) }
 }
 
+/// [`exclude_unrelated`], except that the child keeps `keep` (CSRG-U4): it marks every other
+/// descriptor above 2 close-on-exec and clears close-on-exec on each of `keep`, which therefore
+/// may stay close-on-exec in this process. A managed launch passes DevGuard's permit carrier and
+/// transcript writer this way to its launch helper and to nothing else. If one of `keep` is not
+/// open in the child the step fails, and with it the spawn.
+#[cfg(any(feature = "devguard", test))]
+pub(crate) fn exclude_unrelated_except(
+    command: &mut tokio::process::Command,
+    keep: [libc::c_int; 2],
+) -> &mut tokio::process::Command {
+    crate::prepare_fork_spawns();
+    // SAFETY: the step runs in the forked child and is restricted as the module documentation
+    // describes; `keep` is copied into the closure, so it allocates nothing there.
+    unsafe {
+        command.pre_exec(move || {
+            mark_unrelated_except(Forced::NONE, &keep)?;
+            for fd in keep {
+                keep_open(fd)?;
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Failures the tests force. Production code passes `Forced::NONE`.
 #[derive(Clone, Copy)]
 struct Forced {
@@ -73,6 +101,12 @@ impl Forced {
 
 /// Runs in the child: mark every descriptor above 2 close-on-exec, or fail.
 fn mark_unrelated(forced: Forced) -> io::Result<()> {
+    mark_unrelated_except(forced, &[])
+}
+
+/// [`mark_unrelated`], leaving `keep` as it is. (`close_range` marks them too; the caller then
+/// clears them.)
+fn mark_unrelated_except(forced: Forced, keep: &[libc::c_int]) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         if !forced.close_range && close_range_cloexec() {
@@ -87,7 +121,24 @@ fn mark_unrelated(forced: Forced) -> io::Result<()> {
         descriptor_table_size()
     }?;
     for fd in 3..end {
-        mark_close_on_exec(fd)?;
+        if !keep.contains(&fd) {
+            mark_close_on_exec(fd)?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs in the child: clear close-on-exec on `fd`, which must be open.
+#[cfg(any(feature = "devguard", test))]
+fn keep_open(fd: libc::c_int) -> io::Result<()> {
+    // SAFETY: fcntl reads and sets only this process's descriptor flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -335,6 +386,117 @@ pub(crate) mod tests {
         let held = inheritable_descriptor();
         let report = child_report(held.as_raw_fd(), |command| forced(command, WALK));
         assert_eq!(report, "held\nclear\n");
+    }
+
+    /// A close-on-exec descriptor at or above `at`, as DevGuard creates a launch's carriers.
+    fn close_on_exec_at(at: libc::c_int) -> OwnedFd {
+        let held = inheritable_at(at);
+        // SAFETY: sets the flags of a descriptor this test owns.
+        assert_eq!(
+            unsafe { libc::fcntl(held.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+        held
+    }
+
+    /// A shell command that reports, for each of `fds`, whether it holds it.
+    fn report_each(fds: &[libc::c_int]) -> String {
+        let numbers: Vec<String> = fds.iter().map(|fd| fd.to_string()).collect();
+        format!(
+            "for n in {}; do if [ -e /dev/fd/$n ]; then echo held; else echo clear; fi; done",
+            numbers.join(" ")
+        )
+    }
+
+    async fn tokio_report(
+        script: String,
+        prepare: impl FnOnce(&mut tokio::process::Command),
+    ) -> String {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        prepare(&mut command);
+        let output = command.output().await.expect("spawn /bin/sh");
+        String::from_utf8(output.stdout).expect("utf-8 report")
+    }
+
+    #[tokio::test]
+    async fn only_the_kept_descriptors_reach_the_child() {
+        // Close-on-exec here, as a launch's carriers are; and one inheritable, as another
+        // thread's creation window would leave.
+        let permit = close_on_exec_at(210);
+        let report = close_on_exec_at(220);
+        let unrelated = inheritable_descriptor();
+        let fds = [
+            permit.as_raw_fd(),
+            report.as_raw_fd(),
+            unrelated.as_raw_fd(),
+        ];
+        // The control: a plain child holds only the inheritable one.
+        assert_eq!(
+            tokio_report(report_each(&fds), |_| {}).await,
+            "clear\nclear\nheld\n"
+        );
+        let kept = tokio_report(report_each(&fds), |command| {
+            exclude_unrelated_except(command, [fds[0], fds[1]]);
+        })
+        .await;
+        assert_eq!(kept, "held\nheld\nclear\n");
+        // This process's copies stay close-on-exec.
+        for fd in [fds[0], fds[1]] {
+            // SAFETY: reads the flags of a descriptor this test owns.
+            assert_ne!(
+                unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+                0
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kept_descriptor_that_is_not_open_fails_the_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let ran = dir.path().join("ran");
+        let gone = close_on_exec_at(230);
+        let number = gone.as_raw_fd();
+        drop(gone);
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(format!(": > '{}'", ran.display()))
+            .stdin(Stdio::null());
+        exclude_unrelated_except(&mut command, [number, number]);
+        let error = command.spawn().expect_err("the spawn must fail");
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+        assert!(!ran.exists(), "the child must not run");
+    }
+
+    #[test]
+    fn the_table_walk_keeps_only_the_kept_descriptors() {
+        let kept = close_on_exec_at(240);
+        let unrelated = inheritable_descriptor();
+        let fds = [kept.as_raw_fd(), unrelated.as_raw_fd()];
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(report_each(&fds))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        crate::prepare_fork_spawns();
+        let keep = [fds[0], fds[0]];
+        // SAFETY: as for `exclude_unrelated_except`.
+        unsafe {
+            command.pre_exec(move || {
+                mark_unrelated_except(WALK, &keep)?;
+                keep_open(keep[0])
+            });
+        }
+        let output = command.output().unwrap();
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "held\nclear\n");
     }
 
     #[test]

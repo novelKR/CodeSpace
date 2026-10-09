@@ -5,8 +5,10 @@
 //! and closes it (CSRG-U1). [`Owner::register`] registers the process that owns CodeSpace's
 //! executions in such a session (CSRG-U2), and [`handoff`] hands the consumer secret to the UDS
 //! worker that owns them. [`admission`] admits, looks up and cancels one attempt of that owner
-//! (CSRG-U3). Nothing here launches anything. Every outcome is a [`Status`], a [`Registration`]
-//! or an [`admission::Answer`], never an error for the caller.
+//! (CSRG-U3). [`launch`] commits an admitted attempt's launch once and builds the invocation of
+//! DevGuard's launch helper, whose process the owner starts itself (CSRG-U4); nothing here
+//! spawns anything. Every outcome is a [`Status`], a [`Registration`], an
+//! [`admission::Answer`] or a [`launch::LaunchAnswer`], never an error for the caller.
 //!
 //! DevGuard's transport bounds the session: connecting and each frame read or write have a
 //! 250 ms deadline, so a probe ends within about 1.75 s and a registration within about 2.25 s.
@@ -24,6 +26,7 @@
 
 pub mod admission;
 pub mod handoff;
+pub mod launch;
 mod registration;
 
 pub use registration::{Owner, OwnerCredential, OwnerSettings, Registration, RegistrationState};

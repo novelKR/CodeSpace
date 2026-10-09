@@ -14,9 +14,10 @@
 //! termination and reaping; DevGuard keeps admission, reservations and the attempt's durable
 //! identity and accounting.
 //!
-//! Managed launch (`BeginLaunch`, its permit and carrier, the helper) is U4's. Until it exists
-//! [`PreparedExecution::launch`] cannot launch: it cancels the unstarted attempt and answers
-//! [`PreparationOutcome::LaunchUnavailable`]. Nothing is ever run outside the authority instead.
+//! Managed launch (`BeginLaunch`, its permit and carrier, the helper) is in [`crate::launch`]
+//! (CSRG-U4). An owner without a launch helper cannot launch: [`PreparedExecution::launch`]
+//! then cancels the unstarted attempt and answers [`PreparationOutcome::LaunchUnavailable`].
+//! Nothing is ever run outside the authority instead.
 //!
 //! Uncertainty stays conservative. A timeout, a lost reply or an EOF is not taken as a refusal
 //! or as proof that no attempt exists: the attempt is looked up once, cancelled when the lookup
@@ -29,29 +30,47 @@
 //! never asked DevGuard to launch the attempt, so a cancellation finds it prepared or settled.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codespace_devguard as devguard;
-use codespace_devguard::admission::{self as dg, Admission, Answer, Meaning};
+use codespace_devguard::admission::{self as dg, Abandon, Admission, Answer, Meaning};
+use codespace_devguard::launch::{HelperInvocation, LaunchAnswer, Permit};
 use codespace_domain::{
     ErrorBody, ErrorCode, ProcessId, ResourceAuthorityErrorCode, ResourceRegistrationState,
 };
 use codespace_policy::{EnforcementLevel, Participation, ResourceRequest, Workspace};
 use serde::{Deserialize, Serialize};
 
+use crate::launch::{LaunchReport, Launcher};
 use crate::process::{spawn_env, SlotReservation};
 use crate::registration::{error_code, registration_state};
 use crate::{InProcessRunner, RunnerCwd, RunnerExecRequest};
 
-/// The authority that admits, finds and cancels an owner's attempts: DevGuard's, through the
-/// registered owner. Each call is one bounded, blocking session.
+/// The authority that admits, finds, cancels and launches an owner's attempts: DevGuard's,
+/// through the registered owner. Each call is one bounded, blocking session, except
+/// [`Self::helper`], which only builds the helper's invocation.
 pub trait AttemptAuthority: Send + Sync + 'static {
     fn consumer(&self) -> &str;
     fn generation(&self) -> &str;
     fn admit(&self, admission: &Admission) -> Answer;
     fn lookup(&self, admission: &Admission) -> Answer;
     fn cancel(&self, admission: &Admission) -> Answer;
+    /// Commit the attempt's launch (CSRG-U4). Sent at most once per attempt.
+    fn begin_launch(&self, admission: &Admission) -> LaunchAnswer;
+    /// Report that this owner holds no helper for the attempt's grant (CSRG-U4).
+    fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer;
+    /// The launch helper's invocation for the attempt's grant (CSRG-U4).
+    fn helper(
+        &self,
+        helper: &Path,
+        admission: &Admission,
+        permit: Permit,
+        program: &Path,
+        args: &[OsString],
+    ) -> Result<HelperInvocation, devguard::ErrorCode>;
 }
 
 impl AttemptAuthority for devguard::Owner {
@@ -69,6 +88,22 @@ impl AttemptAuthority for devguard::Owner {
     }
     fn cancel(&self, admission: &Admission) -> Answer {
         devguard::Owner::cancel(self, admission)
+    }
+    fn begin_launch(&self, admission: &Admission) -> LaunchAnswer {
+        devguard::Owner::begin_launch(self, admission)
+    }
+    fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer {
+        devguard::Owner::abandon_launch(self, admission, reason)
+    }
+    fn helper(
+        &self,
+        helper: &Path,
+        admission: &Admission,
+        permit: Permit,
+        program: &Path,
+        args: &[OsString],
+    ) -> Result<HelperInvocation, devguard::ErrorCode> {
+        devguard::Owner::helper(self, helper, admission, permit, program, args)
     }
 }
 
@@ -144,8 +179,38 @@ pub struct Reserved {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Applied {
-    /// Nothing was launched, so nothing was applied. Always so before managed launch (U4).
+    /// Nothing was launched, so nothing was applied.
     NotLaunched,
+    /// Launched, and DevGuard's record shows, per resource, what it applied to the scope
+    /// before it authorized the run (CSRG-U4).
+    Launched {
+        cpu: AppliedControl,
+        memory: AppliedControl,
+        pids: AppliedControl,
+    },
+    /// Launched, but the record could not be read, or the launch was not confirmed.
+    Unknown,
+}
+
+/// What DevGuard did with one resource's control in a launched scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppliedControl {
+    Planned,
+    Applied,
+    Unsupported,
+    Failed,
+}
+
+impl From<dg::Application> for AppliedControl {
+    fn from(application: dg::Application) -> Self {
+        match application {
+            dg::Application::Planned => Self::Planned,
+            dg::Application::Applied => Self::Applied,
+            dg::Application::Unsupported => Self::Unsupported,
+            dg::Application::Failed => Self::Failed,
+        }
+    }
 }
 
 /// The four stages of an admission, kept apart: what was requested and the weakest control
@@ -175,10 +240,19 @@ pub enum AttemptState {
     Cancelled,
     /// Expired unlaunched: its reservation is returned.
     Expired,
+    /// Released after this owner reported it holds no helper for the unclaimed launch grant:
+    /// the authority's proof that the command never started (CSRG-U4).
+    Released,
+    /// A launch helper claimed it, so the authority holds its reservation until it observes the
+    /// scope end, and then releases it (CSRG-U4).
+    Launched,
+    /// Released after the authority observed its scope end (CSRG-U4).
+    ScopeEnded,
     /// The authority holds it in another phase.
     Other,
-    /// Not known: it may be prepared, holding its reservation until the authority expires it.
-    /// Nothing was started for it.
+    /// Not known: it may be prepared, holding its reservation until the authority expires it,
+    /// or committed for launch, holding it until the authority settles it. Nothing was started
+    /// for it by this owner.
     Unknown,
 }
 
@@ -214,6 +288,59 @@ pub enum PreparationOutcome {
     DigestMismatch,
     /// Whether the authority admitted it is not known.
     Unknown,
+    /// The owner's launch helper cannot be used (CSRG-U4); the unstarted attempt was cancelled.
+    HelperUnusable { problem: HelperProblem },
+    /// The command's program is not an executable file on its `PATH` (CSRG-U4); the unstarted
+    /// attempt was cancelled.
+    ProgramUnavailable,
+    /// Enabled network needs the Linux command sandbox, which a managed launch does not use
+    /// (CSRG-U4); the unstarted attempt was cancelled.
+    NetworkUnsupported,
+    /// The Linux command sandbox would wrap the command, which a managed launch does not support
+    /// (CSRG-U4); the unstarted attempt was cancelled.
+    SandboxUnsupported,
+    /// The authority refused `BeginLaunch`, so nothing was committed (CSRG-U4).
+    LaunchRefused {
+        error_code: ResourceAuthorityErrorCode,
+    },
+    /// No usable answer to `BeginLaunch` came back; it was not sent again (CSRG-U4). The
+    /// attempt state says what one lookup found and how it was settled.
+    LaunchUnknown,
+    /// The launch was committed, but the helper could not be created (CSRG-U4).
+    HelperNotCreated,
+    /// The authority did not authorize the helper, which never attempted the command (CSRG-U4).
+    HelperRefused {
+        error_code: ResourceAuthorityErrorCode,
+    },
+    /// The helper failed before presenting the grant and never attempted the command (CSRG-U4).
+    HelperFailed { stage: HelperStage },
+    /// The helper ended before READY without a report, so it never attempted the command
+    /// (CSRG-U4).
+    HelperEnded,
+    /// The helper was authorized, and its exec of the command failed with this errno (CSRG-U4).
+    ExecFailed { errno: i32 },
+}
+
+/// Why the owner's launch helper cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperProblem {
+    NotAbsolute,
+    NotAFile,
+    NotExecutable,
+    NotPrivate,
+}
+
+/// Where a launch helper failed before presenting the grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperStage {
+    Scope,
+    Clamp,
+    Report,
+    Permit,
+    Connect,
+    Other,
 }
 
 /// The owner's report of one preparation. Nothing was started for it.
@@ -228,11 +355,17 @@ pub struct ManagedPreparation {
 }
 
 impl ManagedPreparation {
-    /// The tool error for this preparation. Every preparation ends in one, as none starts
-    /// anything (CSRG-U3). Only enumerations and identifiers are stated.
+    /// The tool error for a preparation that started nothing, or a launch whose command did not
+    /// start (CSRG-U3, U4). Only enumerations, numbers and identifiers are stated.
     pub fn into_error_body(self, workspace_id: &str) -> ErrorBody {
+        // Once a helper process existed, something was started; the command was not.
+        let started = if self.outcome.created_a_helper() {
+            "the command was not started"
+        } else {
+            "nothing was started"
+        };
         let attempt = format!(
-            "attempt `{}` for process_id `{}`: {}; nothing was started",
+            "attempt `{}` for process_id `{}`: {}; {started}",
             self.attempt_id,
             self.process_id.0,
             wire_name(&self.attempt)
@@ -298,12 +431,101 @@ impl ManagedPreparation {
                  execution is not known"
                     .to_string(),
             ),
+            PreparationOutcome::HelperUnusable { problem } => (
+                ErrorCode::ManagedLaunchUnavailable,
+                format!(
+                    "the resource authority admitted it, but the execution owner's launch helper \
+                     cannot be used ({}), so the unstarted attempt was cancelled",
+                    wire_name(&problem)
+                ),
+            ),
+            PreparationOutcome::ProgramUnavailable => (
+                ErrorCode::ProcessSpawnFailed,
+                "the command's program is not an executable file on its PATH, so the unstarted \
+                 attempt was cancelled"
+                    .to_string(),
+            ),
+            PreparationOutcome::NetworkUnsupported => (
+                ErrorCode::ProcessSpawnFailed,
+                "Enabled network requires the Linux command sandbox helper, which a managed \
+                 launch does not use, so the unstarted attempt was cancelled"
+                    .to_string(),
+            ),
+            PreparationOutcome::SandboxUnsupported => (
+                ErrorCode::ResourcePolicyUnsupported,
+                "a managed launch cannot run inside the Linux command sandbox, so the unstarted \
+                 attempt was cancelled"
+                    .to_string(),
+            ),
+            PreparationOutcome::LaunchRefused { error_code } => (
+                crate::launch::launch_refusal(error_code),
+                format!(
+                    "the resource authority refused to launch it ({}), so nothing was committed",
+                    wire_name(&error_code)
+                ),
+            ),
+            PreparationOutcome::LaunchUnknown => (
+                if self.attempt == AttemptState::Unknown {
+                    ErrorCode::AdmissionUnknown
+                } else {
+                    ErrorCode::ResourceAuthorityUnavailable
+                },
+                "no answer came back from the resource authority when the launch was committed, \
+                 and it was not asked again"
+                    .to_string(),
+            ),
+            PreparationOutcome::HelperNotCreated => (
+                ErrorCode::ProcessSpawnFailed,
+                "the launch was committed, but its helper could not be started".to_string(),
+            ),
+            PreparationOutcome::HelperRefused { error_code } => (
+                crate::launch::launch_refusal(error_code),
+                format!(
+                    "the resource authority did not authorize the launch helper ({}), which \
+                     never attempted the command",
+                    wire_name(&error_code)
+                ),
+            ),
+            PreparationOutcome::HelperFailed { stage } => (
+                ErrorCode::ResourceAuthorityUnavailable,
+                format!(
+                    "the launch helper failed before it presented the launch ({}) and never \
+                     attempted the command",
+                    wire_name(&stage)
+                ),
+            ),
+            PreparationOutcome::HelperEnded => (
+                ErrorCode::ProcessSpawnFailed,
+                "the launch helper ended before it reported ready, so it never attempted the \
+                 command"
+                    .to_string(),
+            ),
+            PreparationOutcome::ExecFailed { errno } => (
+                ErrorCode::ProcessSpawnFailed,
+                format!(
+                    "the resource authority authorized the launch, but the command could not be \
+                     executed (errno {errno})"
+                ),
+            ),
         };
         ErrorBody::new(
             code,
             format!(
                 "workspace `{workspace_id}` requires resource participation: {what}; {attempt}"
             ),
+        )
+    }
+}
+
+impl PreparationOutcome {
+    /// Whether a launch helper process existed for this outcome.
+    pub fn created_a_helper(&self) -> bool {
+        matches!(
+            self,
+            Self::HelperRefused { .. }
+                | Self::HelperFailed { .. }
+                | Self::HelperEnded
+                | Self::ExecFailed { .. }
         )
     }
 }
@@ -315,13 +537,14 @@ fn wire_name(value: &impl Serialize) -> String {
         .unwrap_or_default()
 }
 
-/// Prepares governed executions for the owner that holds both the process slots and the
-/// registered identity.
+/// Prepares and launches governed executions for the owner that holds both the process slots
+/// and the registered identity.
 #[derive(Clone)]
 pub struct Preparer {
     authority: Arc<dyn AttemptAuthority>,
     runner: InProcessRunner,
     ttl_bound: Duration,
+    launcher: Option<Launcher>,
 }
 
 impl Preparer {
@@ -330,12 +553,20 @@ impl Preparer {
             authority,
             runner,
             ttl_bound: Duration::from_millis(devguard_prepared_ttl()),
+            launcher: None,
         }
     }
 
     /// Hold prepared attempts for at most `bound` here, whatever the authority grants.
     pub fn with_ttl_bound(mut self, bound: Duration) -> Self {
         self.ttl_bound = bound;
+        self
+    }
+
+    /// Launch prepared executions through `launcher` (CSRG-U4). Without one, a prepared
+    /// execution is cancelled and refused as `launch_unavailable`.
+    pub fn with_launcher(mut self, launcher: Option<Launcher>) -> Self {
+        self.launcher = launcher;
         self
     }
 
@@ -424,6 +655,7 @@ impl Preparer {
                             deadline: started + ttl,
                             admission,
                             authority: self.authority.clone(),
+                            runner: self.runner.clone(),
                             slot: Some(slot),
                             settled: false,
                         })
@@ -468,9 +700,41 @@ impl Preparer {
         }
     }
 
-    /// U3's whole path for a governed execution: prepare it, then present it for launch, which
-    /// cannot launch yet and cancels it. It runs as its own task, so a caller that stops
-    /// waiting leaves the preparation to settle rather than abandoning a prepared attempt.
+    /// The whole path of a governed execution (CSRG-U4): prepare it, then launch it once
+    /// through this preparer's launcher. It runs as its own task, so a caller that stops
+    /// waiting leaves the launch to finish and settle rather than abandoning it halfway.
+    pub async fn prepare_and_launch(
+        &self,
+        ws: Workspace,
+        req: RunnerExecRequest,
+        attempt_id: String,
+    ) -> LaunchReport {
+        let preparer = self.clone();
+        let (attempt, process_id) = (attempt_id.clone(), req.process_id.clone());
+        let task = tokio::spawn(async move {
+            let launch = req.clone();
+            match preparer.prepare(&ws, req, attempt_id).await {
+                Ok(prepared) => {
+                    prepared
+                        .launch_managed(&launch, preparer.launcher.as_ref())
+                        .await
+                }
+                Err(report) => LaunchReport::NotLaunched(*report),
+            }
+        });
+        task.await
+            .unwrap_or(LaunchReport::NotLaunched(ManagedPreparation {
+                attempt_id: attempt,
+                process_id,
+                outcome: PreparationOutcome::Unknown,
+                attempt: AttemptState::Unknown,
+                account: None,
+            }))
+    }
+
+    /// U3's path for a governed execution: prepare it, then present it for launch without a
+    /// launcher, which cancels it. It runs as its own task, so a caller that stops waiting
+    /// leaves the preparation to settle rather than abandoning a prepared attempt.
     pub async fn prepare_and_dispose(
         &self,
         ws: Workspace,
@@ -505,15 +769,17 @@ impl Preparer {
 /// Dropping it unsettled cancels the attempt in the background; a local task ending is not
 /// taken as the attempt's release.
 pub struct PreparedExecution {
-    identity: AttemptIdentity,
-    ws: Workspace,
-    request: RunnerExecRequest,
-    account: AdmissionAccount,
-    deadline: Instant,
-    admission: Admission,
-    authority: Arc<dyn AttemptAuthority>,
-    slot: Option<SlotReservation>,
-    settled: bool,
+    pub(crate) identity: AttemptIdentity,
+    pub(crate) ws: Workspace,
+    pub(crate) request: RunnerExecRequest,
+    pub(crate) account: AdmissionAccount,
+    pub(crate) deadline: Instant,
+    pub(crate) admission: Admission,
+    pub(crate) authority: Arc<dyn AttemptAuthority>,
+    /// The runner whose slot it holds, which spawns its launch helper.
+    pub(crate) runner: InProcessRunner,
+    pub(crate) slot: Option<SlotReservation>,
+    pub(crate) settled: bool,
 }
 
 impl std::fmt::Debug for PreparedExecution {
@@ -543,22 +809,17 @@ impl PreparedExecution {
         &self.request
     }
 
-    /// Present `request` for launch. Only the prepared command, before its deadline, could be
-    /// launched; managed launch is not available yet (U4), so the unstarted attempt is
-    /// cancelled in every case and nothing is started.
-    pub async fn launch(mut self, request: &RunnerExecRequest) -> ManagedPreparation {
-        let outcome = if meaning(&self.ws, request).digest().as_deref()
-            != Some(self.identity.digest.as_str())
-            || request.process_id != self.identity.process_id
-        {
-            PreparationOutcome::DigestMismatch
-        } else if Instant::now() >= self.deadline {
-            PreparationOutcome::Expired
-        } else {
-            PreparationOutcome::LaunchUnavailable
-        };
-        let attempt = self.settle().await;
-        self.report(outcome, attempt)
+    /// Present `request` for launch without a launch helper: only the prepared command, before
+    /// its deadline, could be launched, and without a helper this owner cannot launch it, so the
+    /// unstarted attempt is cancelled in every case and nothing is started. With a helper, see
+    /// [`Self::launch_managed`].
+    pub async fn launch(self, request: &RunnerExecRequest) -> ManagedPreparation {
+        match self.launch_managed(request, None).await {
+            LaunchReport::NotLaunched(report) => report,
+            LaunchReport::Launched(launch) => {
+                unreachable!("launched without a launcher: {launch:?}")
+            }
+        }
     }
 
     /// Cancel the unstarted attempt and free its slot.
@@ -566,14 +827,18 @@ impl PreparedExecution {
         self.settle().await
     }
 
-    async fn settle(&mut self) -> AttemptState {
+    pub(crate) async fn settle(&mut self) -> AttemptState {
         self.settled = true;
         let attempt = cancelled(call(&self.authority, &self.admission, Call::Cancel).await);
         self.slot = None;
         attempt
     }
 
-    fn report(&self, outcome: PreparationOutcome, attempt: AttemptState) -> ManagedPreparation {
+    pub(crate) fn report(
+        &self,
+        outcome: PreparationOutcome,
+        attempt: AttemptState,
+    ) -> ManagedPreparation {
         ManagedPreparation {
             attempt_id: self.identity.attempt_id.clone(),
             process_id: self.identity.process_id.clone(),
@@ -599,19 +864,25 @@ impl Drop for PreparedExecution {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Call {
+pub(crate) enum Call {
     Admit,
     Lookup,
     Cancel,
+    Abandon(Abandon),
 }
 
 /// One blocking session on its own thread. A thread that cannot finish is unknown.
-async fn call(authority: &Arc<dyn AttemptAuthority>, admission: &Admission, call: Call) -> Answer {
+pub(crate) async fn call(
+    authority: &Arc<dyn AttemptAuthority>,
+    admission: &Admission,
+    call: Call,
+) -> Answer {
     let (authority, admission) = (authority.clone(), admission.clone());
     tokio::task::spawn_blocking(move || match call {
         Call::Admit => authority.admit(&admission),
         Call::Lookup => authority.lookup(&admission),
         Call::Cancel => authority.cancel(&admission),
+        Call::Abandon(reason) => authority.abandon_launch(&admission, reason),
     })
     .await
     .unwrap_or(Answer::Unknown)
@@ -629,10 +900,35 @@ async fn resolve(authority: &Arc<dyn AttemptAuthority>, admission: &Admission) -
     }
 }
 
-fn cancelled(answer: Answer) -> AttemptState {
+pub(crate) fn cancelled(answer: Answer) -> AttemptState {
     match answer {
         Answer::Attempt(attempt) => state(attempt.phase),
         Answer::Refused(_) | Answer::NotSent(_) | Answer::Unknown => AttemptState::Unknown,
+    }
+}
+
+/// What an `AbandonLaunch` answer shows (CSRG-U4).
+pub(crate) fn abandoned(answer: Answer) -> AttemptState {
+    match answer {
+        Answer::Attempt(attempt) => attempt_state(&attempt),
+        Answer::Refused(_) | Answer::NotSent(_) | Answer::Unknown => AttemptState::Unknown,
+    }
+}
+
+/// What a record of a possibly launched attempt shows (CSRG-U4).
+pub(crate) fn attempt_state(attempt: &dg::Attempt) -> AttemptState {
+    match (attempt.phase, attempt.release) {
+        (dg::Phase::Released, Some(dg::Release::NoHelperCreated)) => AttemptState::Released,
+        (dg::Phase::Released, _) => AttemptState::ScopeEnded,
+        (
+            dg::Phase::LaunchCommitted
+            | dg::Phase::ScopeBound
+            | dg::Phase::RunAuthorized
+            | dg::Phase::Draining
+            | dg::Phase::Suspect,
+            _,
+        ) => AttemptState::Launched,
+        (phase, _) => state(phase),
     }
 }
 
@@ -654,10 +950,14 @@ pub(crate) fn meaning(ws: &Workspace, req: &RunnerExecRequest) -> Meaning {
     let cwd = match req.cwd {
         RunnerCwd::WorkspaceRoot => ws.root.clone(),
     };
-    let environment: BTreeMap<String, String> =
+    let mut environment: BTreeMap<String, String> =
         spawn_env(&cwd, req, crate::linux_sandbox_available())
             .into_iter()
             .collect();
+    // The PTY spawner gives its child a terminal type too.
+    if req.tty && req.env.use_runner_defaults {
+        environment.insert("TERM".into(), "xterm".into());
+    }
     Meaning {
         executable: req.argv.first().cloned().unwrap_or_default(),
         cwd: format!(
@@ -762,43 +1062,64 @@ fn reserved(reservation: dg::Reservation) -> Reserved {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use codespace_devguard::launch::{HelperInvocation, LaunchTicket};
     use codespace_domain::{Profile, WorkspaceId};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    /// What the fake answers to `BeginLaunch` (CSRG-U4).
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum Grant {
+        Granted,
+        Refused(devguard::ErrorCode),
+        NotSent,
+        Unknown,
+    }
+
     /// An authority whose answers the test sets, counting each call.
     #[derive(Default)]
-    struct Fake {
+    pub(crate) struct Fake {
         admits: Mutex<VecDeque<Answer>>,
         lookups: Mutex<VecDeque<Answer>>,
         cancels: Mutex<VecDeque<Answer>>,
+        grants: Mutex<VecDeque<Grant>>,
+        abandons: Mutex<VecDeque<Answer>>,
         admit_delay: Mutex<Duration>,
-        calls: [AtomicUsize; 3],
+        calls: [AtomicUsize; 5],
         seen: Mutex<Vec<Admission>>,
+        pub(crate) abandoned_for: Mutex<Vec<Abandon>>,
     }
 
     impl Fake {
-        fn admitting(answers: impl IntoIterator<Item = Answer>) -> Arc<Self> {
+        pub(crate) fn admitting(answers: impl IntoIterator<Item = Answer>) -> Arc<Self> {
             let fake = Self::default();
             fake.admits.lock().unwrap().extend(answers);
             Arc::new(fake)
         }
-        fn then_lookup(self: Arc<Self>, answer: Answer) -> Arc<Self> {
+        pub(crate) fn then_lookup(self: Arc<Self>, answer: Answer) -> Arc<Self> {
             self.lookups.lock().unwrap().push_back(answer);
             self
         }
-        fn then_cancel(self: Arc<Self>, answer: Answer) -> Arc<Self> {
+        pub(crate) fn then_cancel(self: Arc<Self>, answer: Answer) -> Arc<Self> {
             self.cancels.lock().unwrap().push_back(answer);
+            self
+        }
+        pub(crate) fn then_grant(self: Arc<Self>, grant: Grant) -> Arc<Self> {
+            self.grants.lock().unwrap().push_back(grant);
+            self
+        }
+        pub(crate) fn then_abandon(self: Arc<Self>, answer: Answer) -> Arc<Self> {
+            self.abandons.lock().unwrap().push_back(answer);
             self
         }
         fn slow(self: Arc<Self>, delay: Duration) -> Arc<Self> {
             *self.admit_delay.lock().unwrap() = delay;
             self
         }
-        fn count(&self, call: usize) -> usize {
+        pub(crate) fn count(&self, call: usize) -> usize {
             self.calls[call].load(Ordering::SeqCst)
         }
         fn next(queue: &Mutex<VecDeque<Answer>>, default: Answer) -> Answer {
@@ -806,9 +1127,15 @@ mod tests {
         }
     }
 
-    const ADMIT: usize = 0;
-    const LOOKUP: usize = 1;
-    const CANCEL: usize = 2;
+    pub(crate) const ADMIT: usize = 0;
+    pub(crate) const LOOKUP: usize = 1;
+    pub(crate) const CANCEL: usize = 2;
+    pub(crate) const BEGIN: usize = 3;
+    pub(crate) const ABANDON: usize = 4;
+
+    /// A permit as a test authority would grant one.
+    pub(crate) const PERMIT: &str =
+        "7e577e577e577e577e577e577e577e577e577e577e577e577e577e577e577e57";
 
     impl AttemptAuthority for Fake {
         fn consumer(&self) -> &str {
@@ -833,9 +1160,86 @@ mod tests {
             self.seen.lock().unwrap().push(admission.clone());
             Self::next(&self.cancels, attempt(dg::Phase::Cancelled, None))
         }
+        fn begin_launch(&self, admission: &Admission) -> LaunchAnswer {
+            self.calls[BEGIN].fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(admission.clone());
+            let grant = self
+                .grants
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Grant::Granted);
+            match grant {
+                Grant::Granted => LaunchAnswer::Granted {
+                    attempt: record(dg::Phase::LaunchCommitted, None),
+                    permit: Permit::from_text(PERMIT).unwrap(),
+                },
+                Grant::Refused(code) => LaunchAnswer::Refused(code),
+                Grant::NotSent => LaunchAnswer::NotSent(unreachable_registration()),
+                Grant::Unknown => LaunchAnswer::Unknown,
+            }
+        }
+        fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer {
+            self.calls[ABANDON].fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(admission.clone());
+            self.abandoned_for.lock().unwrap().push(reason);
+            Self::next(
+                &self.abandons,
+                Answer::Attempt(record(
+                    dg::Phase::Released,
+                    Some(dg::Release::NoHelperCreated),
+                )),
+            )
+        }
+        fn helper(
+            &self,
+            helper: &Path,
+            admission: &Admission,
+            permit: Permit,
+            program: &Path,
+            args: &[OsString],
+        ) -> Result<HelperInvocation, devguard::ErrorCode> {
+            let ticket = LaunchTicket {
+                endpoint: "/private/tmp/codespace-fake-authority.sock".into(),
+                consumer: "codespace".into(),
+                generation: "g1".into(),
+                attempt_id: admission.attempt_id.clone(),
+                instance_id: "codespace-fake".into(),
+            };
+            HelperInvocation::new(helper, &ticket, permit, program, args)
+        }
     }
 
-    fn attempt(phase: dg::Phase, denial: Option<devguard::ErrorCode>) -> Answer {
+    /// A session that ended before its request: the authority could not be reached.
+    pub(crate) fn unreachable_registration() -> devguard::Registration {
+        devguard::Registration {
+            status: devguard::Status {
+                state: devguard::State::Unavailable,
+                error_code: Some(devguard::ErrorCode::ResourceControlUnavailable),
+                report: None,
+            },
+            state: devguard::RegistrationState::Unavailable,
+            error_code: Some(devguard::ErrorCode::ResourceControlUnavailable),
+            pid: None,
+        }
+    }
+
+    /// A record of a launched or settled attempt (CSRG-U4).
+    pub(crate) fn record(phase: dg::Phase, release: Option<dg::Release>) -> dg::Attempt {
+        dg::Attempt {
+            phase,
+            denial: None,
+            plan: None,
+            reservation: None,
+            scope: None,
+            applied: None,
+            release,
+            tracking_lost: false,
+            known_not_started: release == Some(dg::Release::NoHelperCreated),
+        }
+    }
+
+    pub(crate) fn attempt(phase: dg::Phase, denial: Option<devguard::ErrorCode>) -> Answer {
         let prepared = phase == dg::Phase::Prepared;
         Answer::Attempt(dg::Attempt {
             phase,
@@ -863,16 +1267,19 @@ mod tests {
                 },
                 prepared_ttl_ms: 5_000,
             }),
-            applied: false,
+            scope: None,
+            applied: None,
+            release: None,
+            tracking_lost: false,
             known_not_started: !prepared,
         })
     }
 
-    fn prepared() -> Answer {
+    pub(crate) fn prepared() -> Answer {
         attempt(dg::Phase::Prepared, None)
     }
 
-    fn governed(root: &std::path::Path) -> Workspace {
+    pub(crate) fn governed(root: &std::path::Path) -> Workspace {
         let mut ws = Workspace::new(
             WorkspaceId("gov".into()),
             root.to_path_buf(),
@@ -882,7 +1289,7 @@ mod tests {
         ws
     }
 
-    fn request(argv: &[&str], process: &str) -> RunnerExecRequest {
+    pub(crate) fn request(argv: &[&str], process: &str) -> RunnerExecRequest {
         RunnerExecRequest::for_host(
             argv.iter().map(|part| part.to_string()).collect(),
             ProcessId(process.into()),
@@ -890,7 +1297,7 @@ mod tests {
         )
     }
 
-    fn runner() -> InProcessRunner {
+    pub(crate) fn runner() -> InProcessRunner {
         InProcessRunner::new(Arc::new(|_| {}))
     }
 
