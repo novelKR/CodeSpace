@@ -171,11 +171,21 @@ pub enum RunnerOp {
     #[cfg(feature = "devguard")]
     Registration,
     /// Prepare a governed execution under the worker's own registration (CSRG-U3): its slot,
-    /// its admission and, as managed launch is not available yet, the cancellation of the
-    /// unstarted attempt. Sent only to a worker whose `Hello` states `admission`. The worker
-    /// never starts the command.
+    /// its admission and, as the worker cannot launch it, the cancellation of the unstarted
+    /// attempt. Sent only to a worker whose `Hello` states `admission`. The worker never starts
+    /// the command.
     #[cfg(feature = "devguard")]
     Prepare {
+        workspace: Workspace,
+        request: RunnerExecRequest,
+        attempt_id: String,
+    },
+    /// Prepare a governed execution under the worker's own registration and launch it once
+    /// through the worker's launch helper (CSRG-U4): the worker is the helper's parent, as
+    /// DevGuard requires of the registered owner. Sent only to a worker whose `Hello` states
+    /// `launch`, and never sent again: a launch is not replayed.
+    #[cfg(feature = "devguard")]
+    Launch {
         workspace: Workspace,
         request: RunnerExecRequest,
         attempt_id: String,
@@ -208,11 +218,18 @@ pub enum RunnerOpResult {
         #[cfg(feature = "devguard")]
         #[serde(default, skip_serializing_if = "is_false")]
         admission: bool,
+        /// The worker answers `Launch`: it registers and has a launch helper (CSRG-U4). Left
+        /// out when false, as `registration`.
+        #[cfg(feature = "devguard")]
+        #[serde(default, skip_serializing_if = "is_false")]
+        launch: bool,
     },
     #[cfg(feature = "devguard")]
     Registration(codespace_domain::ResourceAuthorityInfo),
     #[cfg(feature = "devguard")]
     Prepared(crate::admission::ManagedPreparation),
+    #[cfg(feature = "devguard")]
+    Launched(crate::launch::LaunchReport),
 }
 
 #[cfg(feature = "devguard")]
@@ -220,11 +237,23 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// The worker's registration, when it was started with one.
+/// The worker's registration, when it was started with one, and its launch helper.
 #[cfg(feature = "devguard")]
-type Registrar = Option<Arc<crate::OwnerRegistration>>;
+#[derive(Clone, Default)]
+struct Registrar {
+    registration: Option<Arc<crate::OwnerRegistration>>,
+    launcher: Option<crate::launch::Launcher>,
+}
 #[cfg(not(feature = "devguard"))]
 type Registrar = ();
+
+#[cfg(feature = "devguard")]
+impl Registrar {
+    /// The worker launches governed executions: it registers and has a launch helper.
+    fn launches(&self) -> bool {
+        self.registration.is_some() && self.launcher.is_some()
+    }
+}
 
 /// Host worker: `InProcessRunner` plus a `ProcessExited` event stream.
 pub fn host_worker() -> (InProcessRunner, mpsc::UnboundedReceiver<RunnerEvent>) {
@@ -246,26 +275,37 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     #[cfg(feature = "devguard")]
-    let registrar = None;
+    let registrar = Registrar::default();
     #[cfg(not(feature = "devguard"))]
     let registrar = ();
     serve(stream, runner, events, registrar).await
 }
 
 /// [`serve_runner_connection`] for a worker that owns its executions' DevGuard registration.
-/// A `Registration` request runs beside the other requests, so no process query, write,
-/// resize or termination waits for its session.
+/// A `Registration`, `Prepare` or `Launch` request runs beside the other requests, so no
+/// process query, write, resize or termination waits for its sessions. With `launcher` the
+/// worker launches governed executions (CSRG-U4).
 #[cfg(feature = "devguard")]
 pub async fn serve_runner_connection_with_registration<S>(
     stream: S,
     runner: InProcessRunner,
     events: mpsc::UnboundedReceiver<RunnerEvent>,
     registration: Option<Arc<crate::OwnerRegistration>>,
+    launcher: Option<crate::launch::Launcher>,
 ) -> Result<(), std::io::Error>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    serve(stream, runner, events, registration).await
+    serve(
+        stream,
+        runner,
+        events,
+        Registrar {
+            registration,
+            launcher,
+        },
+    )
+    .await
 }
 
 async fn serve<S>(
@@ -333,7 +373,7 @@ where
             // Not cached for replay: asking again opens a new session for the same identity.
             let (write, registrar) = (write.clone(), registrar.clone());
             tokio::spawn(async move {
-                let result = match registrar {
+                let result = match registrar.registration {
                     Some(registration) => {
                         Ok(RunnerOpResult::Registration(registration.report().await))
                     }
@@ -358,7 +398,7 @@ where
             // Beside the other requests, and never cached: a preparation is not replayed.
             let (write, registrar, runner) = (write.clone(), registrar.clone(), runner.clone());
             tokio::spawn(async move {
-                let result = match registrar {
+                let result = match registrar.registration {
                     Some(registration) => Ok(RunnerOpResult::Prepared(
                         crate::admission::Preparer::new(registration.owner(), runner)
                             .prepare_and_dispose(workspace, exec, attempt_id)
@@ -367,6 +407,35 @@ where
                     None => Err(ErrorBody::new(
                         ErrorCode::ResourcePolicyUnsupported,
                         "this worker was started without DevGuard settings",
+                    )),
+                };
+                let response = WireEnvelope::response(request_id, result);
+                let mut writer = write.lock().await;
+                let _ = write_frame(&mut *writer, &response).await;
+            });
+            continue;
+        }
+        #[cfg(feature = "devguard")]
+        if let Some(RunnerOp::Launch {
+            workspace,
+            request: exec,
+            attempt_id,
+        }) = request.op
+        {
+            // Beside the other requests, and never cached: a launch is never replayed. The
+            // launch is its own task, so it settles even if the gateway stops waiting.
+            let (write, registrar, runner) = (write.clone(), registrar.clone(), runner.clone());
+            tokio::spawn(async move {
+                let result = match (registrar.registration, registrar.launcher) {
+                    (Some(registration), Some(launcher)) => Ok(RunnerOpResult::Launched(
+                        crate::admission::Preparer::new(registration.owner(), runner)
+                            .with_launcher(Some(launcher))
+                            .prepare_and_launch(workspace, exec, attempt_id)
+                            .await,
+                    )),
+                    _ => Err(ErrorBody::new(
+                        ErrorCode::ResourcePolicyUnsupported,
+                        "this worker was started without DevGuard settings or a launch helper",
                     )),
                 };
                 let response = WireEnvelope::response(request_id, result);
@@ -397,6 +466,22 @@ where
                 }),
             Some(op) => {
                 let dispatched = dispatch(&runner, op).await;
+                // A worker states `launch` only with a registration and a launch helper.
+                #[cfg(feature = "devguard")]
+                let dispatched = dispatched.map(|result| match result {
+                    RunnerOpResult::Hello {
+                        protocol,
+                        registration,
+                        admission,
+                        ..
+                    } => RunnerOpResult::Hello {
+                        protocol,
+                        registration,
+                        admission,
+                        launch: registrar.launches(),
+                    },
+                    other => other,
+                });
                 let envelope = WireEnvelope::response(request_id.clone(), dispatched);
                 if !request_id.is_empty() {
                     if cache.len() >= MAX_REPLAY {
@@ -519,12 +604,16 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
             registration: true,
             #[cfg(feature = "devguard")]
             admission: true,
+            #[cfg(feature = "devguard")]
+            launch: false,
         }),
         RunnerOp::Replay { .. } => unreachable!("replay is handled before dispatch"),
         #[cfg(feature = "devguard")]
         RunnerOp::Registration => unreachable!("registration is handled before dispatch"),
         #[cfg(feature = "devguard")]
         RunnerOp::Prepare { .. } => unreachable!("preparation is handled before dispatch"),
+        #[cfg(feature = "devguard")]
+        RunnerOp::Launch { .. } => unreachable!("launch is handled before dispatch"),
     };
     result.map_err(RunnerError::into_error_body)
 }
@@ -746,12 +835,28 @@ mod tests {
             tokio::net::unix::OwnedReadHalf,
             tokio::net::unix::OwnedWriteHalf,
         ) {
+            serve_launching(registration, None)
+        }
+
+        fn serve_launching(
+            registration: Option<Arc<OwnerRegistration>>,
+            launcher: Option<crate::launch::Launcher>,
+        ) -> (
+            tokio::net::unix::OwnedReadHalf,
+            tokio::net::unix::OwnedWriteHalf,
+        ) {
             let (client, server) = tokio::net::UnixStream::pair().unwrap();
             let (worker, events) = host_worker();
             tokio::spawn(async move {
-                serve_runner_connection_with_registration(server, worker, events, registration)
-                    .await
-                    .expect("serve");
+                serve_runner_connection_with_registration(
+                    server,
+                    worker,
+                    events,
+                    registration,
+                    launcher,
+                )
+                .await
+                .expect("serve");
             });
             client.into_split()
         }
@@ -765,9 +870,10 @@ mod tests {
                     protocol,
                     registration,
                     admission,
+                    launch,
                 }) => assert_eq!(
-                    (protocol, registration, admission),
-                    (WIRE_PROTOCOL, true, true)
+                    (protocol, registration, admission, launch),
+                    (WIRE_PROTOCOL, true, true, false)
                 ),
                 other => panic!("unexpected {other:?}"),
             }
@@ -801,6 +907,37 @@ mod tests {
                 ErrorCode::ResourcePolicyUnsupported
             );
             assert!(!dir.path().join("started").exists());
+            // Nor launch one (CSRG-U4).
+            let mut workspace = Workspace::new(
+                codespace_domain::WorkspaceId("gov".into()),
+                dir.path().to_path_buf(),
+                codespace_domain::Profile::WorkspaceWrite,
+            );
+            workspace.resources.participation = codespace_policy::Participation::Required;
+            request(
+                &mut write,
+                "rrpc-launch",
+                RunnerOp::Launch {
+                    workspace,
+                    request: RunnerExecRequest::for_host(
+                        vec![
+                            "/usr/bin/touch".into(),
+                            dir.path().join("started").display().to_string(),
+                        ],
+                        ProcessId("proc-gov".into()),
+                        codespace_domain::Profile::WorkspaceWrite,
+                    ),
+                    attempt_id: "cs-attempt-2".into(),
+                },
+            )
+            .await;
+            let reply = response(&mut read).await;
+            assert_eq!(reply.request_id.as_deref(), Some("rrpc-launch"));
+            assert_eq!(
+                reply.error.unwrap().code,
+                ErrorCode::ResourcePolicyUnsupported
+            );
+            assert!(!dir.path().join("started").exists());
             request(&mut write, "rrpc-reg", RunnerOp::Registration).await;
             let reply = response(&mut read).await;
             assert_eq!(reply.request_id.as_deref(), Some("rrpc-reg"));
@@ -823,9 +960,43 @@ mod tests {
                 RunnerOpResult::Hello {
                     registration: false,
                     admission: false,
+                    launch: false,
                     ..
                 }
             ));
+        }
+
+        /// A worker states `launch` only when it registers and has a launch helper (CSRG-U4).
+        #[tokio::test]
+        async fn only_a_registered_worker_with_a_launch_helper_states_launch() {
+            let dir = private_directory();
+            let owner = || {
+                OwnerRegistration::new(
+                    Owner::new(
+                        OwnerSettings {
+                            socket: dir.path().join("absent.sock"),
+                            consumer: "codespace".into(),
+                            generation: "g1".into(),
+                        },
+                        OwnerCredential::Unavailable,
+                    ),
+                    ResourceOwner::Worker,
+                )
+            };
+            let launcher =
+                || crate::launch::Launcher::new("/usr/libexec/devguard-launch".into()).ok();
+            for (registration, launcher, expected) in [
+                (Some(owner()), launcher(), true),
+                (Some(owner()), None, false),
+                (None, launcher(), false),
+            ] {
+                let (mut read, mut write) = serve_launching(registration, launcher);
+                request(&mut write, "rrpc-hello", RunnerOp::Hello).await;
+                match response(&mut read).await.result {
+                    Some(RunnerOpResult::Hello { launch, .. }) => assert_eq!(launch, expected),
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
         }
 
         /// A private directory on a path without symbolic links, as the credential needs.
@@ -981,6 +1152,7 @@ mod tests {
                     worker,
                     events,
                     Some(registration),
+                    None,
                 )
                 .await
                 .expect("serve");

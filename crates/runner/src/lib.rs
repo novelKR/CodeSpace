@@ -106,6 +106,8 @@ mod apply;
 mod descriptors;
 mod files;
 mod fork_handlers;
+#[cfg(feature = "devguard")]
+pub mod launch;
 mod linux_sandbox;
 mod patch_helper;
 mod patch_verify;

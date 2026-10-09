@@ -160,3 +160,11 @@ features; the gateway's feature turns on the runner's. The worker's graph with
 its feature on (`codex-runtime+devguard`) is checked like the root's, and the
 Codex adapter legs build, lint and test the worker with it. Without the
 features every product graph is unchanged.
+
+*Added 2026-10-09, CSRG-U4:* DevGuard's launch helper, `devguard-launch`, is
+never linked. In operation the execution owner runs the helper of the DevGuard
+release that serves the socket, named by `--devguard-launch-helper`. The
+validation stages that run the launch tests build it from the DevGuard client
+pin with DevGuard's own lockfile (`cargo install --locked --git ... --rev`,
+`devguard_binaries()` in `scripts/validate-upstream.py`) and name it to the
+tests in `CODESPACE_DEVGUARD_LAUNCH_BIN`. Product graphs are unchanged.

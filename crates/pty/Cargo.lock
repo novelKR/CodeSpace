@@ -43,6 +43,7 @@ name = "codespace-pty"
 version = "0.6.0"
 dependencies = [
  "codex-utils-pty",
+ "libc",
  "tempfile",
  "tokio",
 ]

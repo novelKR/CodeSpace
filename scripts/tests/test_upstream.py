@@ -154,10 +154,23 @@ class RunnerTests(unittest.TestCase):
         env = validation.devguard_env(Path('/tmp/build'))
         self.assertEqual(env['CODESPACE_DEVGUARD_RUNTIME_BIN'], '/tmp/build/debug/codespace-codex-runtime-devguard')
         self.assertEqual(env['CODESPACE_DEVGUARD_FIXTURE_BIN'], '/tmp/build/debug/examples/fixture_authority')
+        self.assertEqual(env['CODESPACE_DEVGUARD_LAUNCH_BIN'], '/tmp/build/devguard-launch/bin/devguard-launch')
         self.assertEqual(env['CODESPACE_REQUIRE_DEVGUARD_BINS'], '1')
 
+    def test_the_launch_helper_comes_from_the_reviewed_devguard_pin(self):
+        *_, helper = validation.devguard_binaries()
+        url, rev = validation.devguard_pin()
+        self.assertEqual(url, 'https://github.com/novelKR/DevGuard')
+        self.assertIn(rev, deps.DEVGUARD_SOURCE)
+        self.assertEqual(len(rev), 40)
+        self.assertEqual(helper[:4], ['cargo', 'install', '--locked', '--git'])
+        self.assertEqual(helper[helper.index('--git') + 1], url)
+        self.assertEqual(helper[helper.index('--rev') + 1], rev)
+        self.assertIn('devguard-launch', helper)
+        self.assertEqual(Path(helper[helper.index('--root') + 1]), validation.TARGET_DIR / 'devguard-launch')
+
     def test_devguard_worker_is_built_before_and_kept_beside_the_default_one(self):
-        build, copy, fixture = validation.devguard_binaries()
+        build, copy, fixture, _ = validation.devguard_binaries()
         self.assertIn('--features', build)
         self.assertEqual(build[build.index('--features') + 1], 'devguard')
         self.assertEqual(copy[0], 'cp')

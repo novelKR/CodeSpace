@@ -40,7 +40,8 @@ pub enum ResourceParticipation {
     /// launch.
     Status,
     /// The process that owns CodeSpace's executions registers itself with the authority and
-    /// reports its status. Nothing is admitted or launched through the authority.
+    /// reports its status. It admits the executions of workspaces that require resource
+    /// participation, and with a launch helper launches them, through the authority.
     Registration,
 }
 

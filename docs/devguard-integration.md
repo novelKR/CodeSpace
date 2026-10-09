@@ -2,13 +2,13 @@
 
 # DevGuard integration roadmap
 
-> **Status: suspended as an implementation directive.** The CS-RG work order, the planned consumer boundary and the design revision 1 references on this page must not be implemented as described; current status and prerequisites are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability, except the current status, the [status-only connection](#devguard-status-connection) of CSRG-U1, which the owner approved on 2026-10-02 outside this suspension, the [execution-owner registration](#devguard-owner-registration) of CSRG-U2, which the owner directed on 2026-10-03, and the [admission and pre-spawn preparation](#devguard-admission) of CSRG-U3, which the owner directed on 2026-10-07.
+> **Status: suspended as an implementation directive.** The CS-RG work order, the planned consumer boundary and the design revision 1 references on this page must not be implemented as described; current status and prerequisites are unaffected. This is pending the CS-RG integration-boundary revalidation, an owner-directed review of the CodeSpace integration plan; it is not a work unit. No replacement architecture has been approved; the owner decides after reviewing its results. This notice suspends directives only and relaxes no safety requirement. The text below is retained unchanged for historical traceability, except the current status, the [status-only connection](#devguard-status-connection) of CSRG-U1, which the owner approved on 2026-10-02 outside this suspension, the [execution-owner registration](#devguard-owner-registration) of CSRG-U2, which the owner directed on 2026-10-03, the [admission and pre-spawn preparation](#devguard-admission) of CSRG-U3, which the owner directed on 2026-10-07, and the [managed launch](#devguard-launch) of CSRG-U4, which the owner directed on 2026-10-08.
 
 [English](devguard-integration.md) | [한국어](ko/devguard-integration.md)
 
 [DevGuard](https://github.com/novelKR/DevGuard) is an independent resource authority for development workloads, licensed under Apache-2.0 like CodeSpace. Its approved integration path adds a shared admission and accounting layer while CodeSpace keeps process ownership, PTY, input/output, permissions, approval holds and workspace coordination.
 
-**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` (a release ID, not a Git tag) on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) is in progress and not qualified. CSRG-U1 added an opt-in, status-only connection: a gateway built with the `devguard` feature and started with `--devguard status` reports DevGuard's status in `workspace_info`, through DevGuard's client pinned at [`6e7e065`](upstream-lock.md#devguard-client-pin). With CSRG-U2, the process that owns CodeSpace's executions registers itself with DevGuard (`--devguard register`), and a workspace's `resources` setting can require resource participation. With CSRG-U3, that owner takes a process slot and has DevGuard admit each such execution before anything is created; as managed launch does not exist yet (CSRG-U4), it then cancels the unstarted attempt and refuses the execution. Nothing is launched through DevGuard and nothing runs without it, so a running DevGuard service does not yet govern a running CodeSpace process. The qualified release remains a candidate for execution, not a selected pin; the client pin is a source pin of the client crates.
+**Current status:** DevGuard has completed DG-1 in its independent repository ([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [milestone ledger](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). On top of the DG-0 contracts it provides native macOS host evidence, an authenticated daemon installed as the current user's LaunchAgent, the fenced launch helper and reconciliation, the `devguard` command-line owner with Cargo adapters, parent leases for candidate tests, and upgrade and repair. Its macOS SLO is qualified for release `0.1.0-5daee5d-b3fa569e` (a release ID, not a Git tag) on the measured host and policy; Linux enforcement is not qualified. CodeSpace consumption (CS-RG) is in progress and not qualified. CSRG-U1 added an opt-in, status-only connection: a gateway built with the `devguard` feature and started with `--devguard status` reports DevGuard's status in `workspace_info`, through DevGuard's client pinned at [`6e7e065`](upstream-lock.md#devguard-client-pin). With CSRG-U2, the process that owns CodeSpace's executions registers itself with DevGuard (`--devguard register`), and a workspace's `resources` setting can require resource participation. With CSRG-U3, that owner takes a process slot and has DevGuard admit each such execution before anything is created. With CSRG-U4 and a configured launch helper (`--devguard-launch-helper`), it then launches the execution once through DevGuard's launch helper, which DevGuard authorizes after binding and policing its scope; without a helper it cancels the unstarted attempt and refuses the execution. Nothing runs without DevGuard. Observation before reaping, release and qualification are later units (CSRG-U5, U6). The qualified release remains a candidate for execution, not a selected pin; the client pin is a source pin of the client crates.
 
 DevGuard [design revision 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/design-revision-1.md), merged in [DevGuard PR #8](https://github.com/novelKR/DevGuard/pull/8) as `d4981b4c241cff42687f5c2c681b583c7847776e`, revised the CS-RG execution layer and work order. It changes plans and design decisions that bind later implementation. It does not change current CodeSpace behavior or any implementation or qualification status.
 
@@ -87,7 +87,7 @@ DevGuard takes the registered process from the session's peer, so a process can 
 
 **The session.** Each registration is one bounded session that the owner opens and closes: connect, `Hello` requiring protocol 1 and the capability `static_control_reservations`, `Authenticate`, which must grant `control_service`, `Status`, which must report registration ready, then `Register` with the owner's instance identity. DevGuard's 250 ms frame deadlines bound it at about 2.25 s. The instance identity, `codespace-` and 32 random hexadecimal digits, is minted once per owner process and registered again by every session, so DevGuard keeps one instance per owner: active while a session lasts, suspect after it. A restarted owner is a new process with a new identity. The owner registers at startup and for each `workspace_info` call; a call that arrives while a session runs waits and shares the next one. Each admission, lookup or cancellation of CSRG-U3 is its own session that registers first.
 
-**What it reports.** With `register`, `workspace_info.resource_authority` comes from the owner's session: `participation: registration`, `governs_execution: false`, the authority's `state`, `error_code` and `report` as with status, and `registration`:
+**What it reports.** With `register`, `workspace_info.resource_authority` comes from the owner's session: `participation: registration`, `governs_execution` (`true` only when the owner is registered and has a launch helper, CSRG-U4), the authority's `state`, `error_code` and `report` as with status, and `registration`:
 
 - `owner`: `in_process` or `worker`;
 - `state`: `registered`, `unavailable`, `untrusted_authority`, `incompatible`, `credential_unavailable`, `credential_refused`, `role_mismatch`, `not_ready`, `refused`, `owner_mismatch`, `owner_unreachable` or `unsupported_mode`;
@@ -115,13 +115,13 @@ When the owner cannot be asked (`owner_unreachable`, `unsupported_mode`), the au
 
 **Platforms.** On macOS, a DevGuard service with native host evidence registers the owner. Without native evidence, as on Linux before DG-LINUX, DevGuard states no capability, so registration is `incompatible`.
 
-**What it does not do.** No launch, permit, carrier or launch helper. Spawn, PTY, output, timeout, termination, reaping and lifecycle stay with CodeSpace.
+**What it does not do.** Registration alone launches nothing: launch is CSRG-U4's. Spawn, PTY, output, timeout, termination, reaping and lifecycle stay with CodeSpace.
 
 <a id="devguard-admission"></a>
 
 ## Admission and pre-spawn preparation (CSRG-U3)
 
-CSRG-U3 makes `required` operational up to launch: the execution owner admits each governed execution through DevGuard and holds a one-shot preparation of it. It still starts nothing. Managed launch (`BeginLaunch`, its permit and carrier, the launch helper) is CSRG-U4.
+CSRG-U3 makes `required` operational up to launch: the execution owner admits each governed execution through DevGuard and holds a one-shot preparation of it, which starts nothing. Its [managed launch](#devguard-launch) (`BeginLaunch`, its permit and carriers, the launch helper) is CSRG-U4.
 
 **Order.** A new execution in a `required` workspace, with `--devguard register`, goes through:
 
@@ -146,7 +146,7 @@ Without `request`, these are the values. Each quantity must be positive; `minimu
 
 **The preparation.** It keeps four stages apart: what was *requested* and the *required* minimum, what DevGuard *supports* for it (scope and, per resource, level and method), what it *reserved* and for how long it holds it unlaunched, and what was *applied*, which stays `not_launched`. It cannot be cloned; launching or cancelling consumes it, so it is used once. Its deadline is DevGuard's prepared lifetime (5 s at the pin), measured from before the admission was asked. Presenting another command, `process_id` or PTY choice for launch is refused and cancels the attempt; so does presenting it after its deadline. A preparation dropped without being settled is cancelled in the background.
 
-**Until managed launch exists.** After a successful preparation the owner cancels the unstarted attempt and the execution is refused with `MANAGED_LAUNCH_UNAVAILABLE`. Nothing ever runs through another path instead. Every outcome is a refusal that starts nothing, releases the workspace lease and the slot, and states the attempt ID, the `process_id` and what is known of the attempt (`not_asked`, `not_recorded`, `denied`, `cancelled`, `expired`, `other` or `unknown`):
+**Without a launch helper.** After a successful preparation an owner without a launch helper cancels the unstarted attempt and the execution is refused with `MANAGED_LAUNCH_UNAVAILABLE`; with one, the preparation is [launched](#devguard-launch). Nothing ever runs through another path instead. Every outcome is a refusal that starts nothing, releases the workspace lease and the slot, and states the attempt ID, the `process_id` and what is known of the attempt (`not_asked`, `not_recorded`, `denied`, `cancelled`, `expired`, `other` or `unknown`):
 
 | Outcome | Tool error |
 | --- | --- |
@@ -165,7 +165,68 @@ A resumed approval is prepared like a new execution, and resuming it again retur
 
 **Platforms.** On macOS, with a DevGuard service that has native host evidence, executions are admitted and cancelled. Without native evidence, as on Linux before DG-LINUX, the owner cannot register, so every governed execution is `RESOURCE_AUTHORITY_UNAVAILABLE`.
 
-**What it does not do.** No `BeginLaunch`, permit, carrier, launch helper, observation, reaping or release integration, and no pin change. Spawn, PTY, output, timeout, termination, reaping and lifecycle stay with CodeSpace.
+**What it does not do.** Preparation sends no `BeginLaunch` and starts nothing; launch is CSRG-U4's. No observation, reaping or release integration, and no pin change. Spawn, PTY, output, timeout, termination, reaping and lifecycle stay with CodeSpace.
+
+<a id="devguard-launch"></a>
+
+## Managed launch (CSRG-U4)
+
+CSRG-U4 launches a prepared execution once under DevGuard: with `required`, the command now runs, through DevGuard's launch helper and CodeSpace's own pipe and PTY spawners.
+
+- **Run.** `--devguard register` as before, plus `--devguard-launch-helper PATH` (`CODESPACE_DEVGUARD_LAUNCH_HELPER`): the absolute path of `devguard-launch` from the DevGuard release that serves the socket, which `devguard doctor` names. In UDS mode the gateway passes the path to the worker it starts. Without it a governed execution is admitted, then refused with `MANAGED_LAUNCH_UNAVAILABLE`, as in CSRG-U3.
+
+**Order.** After the [preparation](#devguard-admission) of CSRG-U3, the execution owner:
+
+1. **checks what it can before committing anything**: the prepared command and its deadline; the helper, which must be a regular executable file that no other user can replace (owned by this user or root and writable by no one else: not by others, and by its group only when that is root's group, gid 0, `wheel` on macOS; under directories with the same property, apart from a root-owned sticky `/tmp`); and the program, resolved to an absolute path on the execution's own `PATH` as the spawn would resolve it. A failure here cancels the unstarted attempt.
+2. **sends `BeginLaunch` once**, in a bounded session of the registered owner (`Register`, then `BeginLaunch`). Only its first answer carries the attempt's one-time permit, and only a permit that comes with this owner's committed record of this attempt and meaning is accepted.
+3. **starts the helper through its own spawner**, as its own direct child, filling the slot the preparation took. DevGuard's `helper_command` builds the invocation: the helper's arguments, which carry no secret, and two private descriptors, the permit carrier (a socket pair holding the permit, its writer closed) and the writer of the helper's transcript (a pipe). Only the helper receives them.
+4. **reads the transcript** to its end. The helper leads its own process group and presents the grant; DevGuard binds that group as the attempt's scope, applies and reads back the policy, and authorizes the run. The helper then reports READY and executes the program, which keeps the helper's PID. READY followed by the transcript's end is a started command.
+
+DevGuard requires the helper's parent to be the registered owner, so the owner launches: the gateway in `in-process` mode, and in `uds` mode the worker the gateway started, which receives one `launch` request. The worker states `launch` in its `Hello` only when it registers and has a helper; the request is never sent again.
+
+**The process.** From the spawn on it is a CodeSpace process like any other: the same slot, output, stdin, `process_resize`, timeout, `terminate_process`, workspace lease and reaping, under the prepared `process_id`. It differs from an ungoverned execution in four ways:
+
+- the command runs with its resolved absolute path as `argv[0]`;
+- on a pipe it leads its own process group, as the helper makes it; on a PTY it leads its own session, as before;
+- on a PTY, a death by a signal is reported as exit code 128 plus the signal number instead of 1, as the pinned Codex PTY's descriptor-keeping path reports it.
+- its timeout runs from the helper's spawn, so it also covers the helper's exchange with DevGuard before READY: a timeout that runs out first ends the launch before the command starts, which is reported as not started.
+
+**Results.** `exec_command` returns once the transcript has ended, or after 10 s:
+
+| Transcript | Result |
+| --- | --- |
+| READY, then its end | `dispatch_status: confirmed` |
+| not ended in time, or not well formed | `dispatch_status: unknown`: the process is CodeSpace's either way, and whether the command started is not known |
+| READY, then `exec_failed` | `PROCESS_SPAWN_FAILED`; the helper exits 126 or 127, and DevGuard settles the attempt through its scope |
+| refused, failed or ended before READY | the command never ran; once CodeSpace has reaped the helper, the owner reports that it holds no helper (`AbandonLaunch`) |
+
+Every refusal states the attempt ID, the `process_id` and what is known of the attempt. It ends with "nothing was started" when no helper process existed, and with "the command was not started" when one did. Launch adds three attempt states: `released` (DevGuard released the unclaimed grant as never started), `launched` (a helper claimed it, and DevGuard holds it until it observes the scope's end) and `scope_ended`.
+
+| Outcome | Tool error |
+| --- | --- |
+| No launch helper, or one that cannot be used | `MANAGED_LAUNCH_UNAVAILABLE` |
+| The program is not an executable file on its `PATH`, or `Enabled` network, which needs the Linux command sandbox | `PROCESS_SPAWN_FAILED` |
+| The Linux command sandbox would wrap the command | `RESOURCE_POLICY_UNSUPPORTED` |
+| DevGuard refused `BeginLaunch`, or did not authorize the helper | `RESOURCE_UNAVAILABLE` for `resource_unavailable`, `RESOURCE_POLICY_UNSUPPORTED` for `resource_policy_unsupported`, otherwise `RESOURCE_AUTHORITY_UNAVAILABLE` |
+| No answer to `BeginLaunch` | `ADMISSION_UNKNOWN` while the attempt is unknown, otherwise `RESOURCE_AUTHORITY_UNAVAILABLE` |
+| The helper failed before presenting the grant | `RESOURCE_AUTHORITY_UNAVAILABLE` |
+| The helper could not be started, or ended before READY without a report | `PROCESS_SPAWN_FAILED` |
+
+**One launch, no replay.** `BeginLaunch` is sent at most once per attempt. A timeout, a lost answer, an EOF, or an answer without the permit or for anything else, is not a refusal: the owner looks the attempt up once. Still prepared: the launch was not committed, so the attempt is cancelled. Committed and unclaimed: the permit never arrived and no helper exists, so the owner reports it (`AbandonLaunch`, `grant_not_received`) and DevGuard releases it as never started. Otherwise the attempt is reported as found, or as `unknown`, and is never launched again under any ID. A helper that could not be spawned is reported the same way (`spawn_failed`), and one that ended before READY once it is reaped (`helper_exited`). A report never releases a grant a helper claimed; only the end of its scope does. In `uds` mode a `launch` request the worker may have received without answering returns `dispatch_status: unknown` for its `process_id`; one that never left is `RESOURCE_AUTHORITY_UNAVAILABLE` (`owner_unreachable`).
+
+**Carriers and children.** The permit carrier and the transcript reach the helper and no other child:
+
+- on a pipe, the helper's spawn marks every descriptor above 2 close-on-exec in the child except the two, and clears close-on-exec on those two there only, as the [#79](https://github.com/novelKR/CodeSpace/issues/79) exclusion does for every CodeSpace spawn; the spawn fails rather than start a helper without them;
+- on a PTY, the pinned Codex PTY passes on only descriptors that are already inheritable (`inherited_fds`), so the two are inheritable in the owner's process from just before that spawn until it returns. Every other spawner in that process (pipe, PTY, patch and sandbox helpers, the worker) excludes unrelated descriptors from its children, so none of them receives the two meanwhile, and the Codex PTY's child closes every other inheritable descriptor itself;
+- the owner's copies close as soon as the spawn returns. The helper consumes and closes the permit, marks the transcript close-on-exec and closes its own authority session before the executable starts, which therefore holds none of them.
+
+Tests check each with controls: a deliberately inheritable descriptor; stand-in helpers that report exactly what they received; an unguarded child spawned inside the PTY window, which holds both descriptors while a guarded one holds neither; and governed launches running concurrently with ordinary pipe and PTY children of one gateway, against DevGuard's fixture authority and its launch helper.
+
+**Account.** A launched execution's account adds, per resource, what DevGuard applied, read from DevGuard's record after READY, and the scope's root, which is the helper's PID. `workspace_info.resource_authority.governs_execution` is `true` when the execution owner is registered and has a launch helper.
+
+**Supported.** macOS with a DevGuard service that has native host evidence: `in-process`, and `uds` with `--runtime-bin`, each on a pipe and on a PTY. Unsupported: `uds` with `--runner-socket` and Linux before DG-LINUX, where the owner cannot register; the Linux command sandbox and `Enabled` network, which are refused before anything is committed.
+
+**Not yet (CSRG-U5).** CodeSpace reaps and terminates the process as before, without asking DevGuard to observe or signal the scope; on a pipe, `terminate_process` and a timeout kill the root only. DevGuard releases a scope whose members all ended with its root. A descendant that outlives the root keeps the attempt charged while it runs; one that CodeSpace's reap leaves before DevGuard observed it leaves the attempt suspect. Approval dispatch states, release on every termination path and qualification are not claimed.
 
 ## CS-RG work order
 

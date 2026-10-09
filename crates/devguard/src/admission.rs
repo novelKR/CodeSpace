@@ -2,8 +2,8 @@
 //!
 //! DevGuard keeps attempts for the instance registered in the same session, so each request
 //! here is one bounded session: the owner's registration (see [`Owner::register`]), then one
-//! `Admit`, `Lookup` or `Cancel` of the attempt, then close. Nothing here launches anything:
-//! `BeginLaunch` and its permit are U4's.
+//! `Admit`, `Lookup`, `Cancel` or `AbandonLaunch` of the attempt, then close. Nothing here
+//! launches anything: `BeginLaunch`, its permit and the helper are in [`crate::launch`].
 //!
 //! An [`Answer`] says only what the session established:
 //!
@@ -159,6 +159,42 @@ pub struct Reservation {
     pub prepared_ttl_ms: u64,
 }
 
+/// The scope a launch helper claimed for the attempt (CSRG-U4): on macOS the process group the
+/// helper leads, named by its root, which becomes the executable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scope {
+    pub kind: ScopeKind,
+    pub root_pid: u32,
+}
+
+/// How far DevGuard got with one resource's control in a launched scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Application {
+    Planned,
+    Applied,
+    Unsupported,
+    Failed,
+}
+
+/// What DevGuard read back from the launched scope, per resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Applied {
+    pub cpu: Application,
+    pub memory: Application,
+    pub pids: Application,
+}
+
+/// Why DevGuard returned an attempt's reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Release {
+    /// The launched scope was observed to have ended.
+    ScopeTerminated,
+    /// The owner reported that it holds no helper for an unclaimed grant: nothing started.
+    NoHelperCreated,
+    /// The attempt belonged to an earlier boot.
+    PreviousBoot,
+}
+
 /// This owner's record of the attempt, without DevGuard's identities and digests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attempt {
@@ -167,8 +203,14 @@ pub struct Attempt {
     pub denial: Option<ErrorCode>,
     pub plan: Option<Plan>,
     pub reservation: Option<Reservation>,
-    /// Whether DevGuard reports resources applied to a launched scope.
-    pub applied: bool,
+    /// The scope a helper claimed, once one has.
+    pub scope: Option<Scope>,
+    /// What DevGuard applied to the launched scope, once it bound it.
+    pub applied: Option<Applied>,
+    /// Why the reservation was returned, once it was released.
+    pub release: Option<Release>,
+    /// Whether DevGuard lost track of the scope's members; this is sticky.
+    pub tracking_lost: bool,
     /// Whether DevGuard's record proves nothing was ever started for it.
     pub known_not_started: bool,
 }
@@ -203,6 +245,20 @@ impl Owner {
         self.attempt_request(admission, Request::Cancel, effective_uid(), self.pid())
     }
 
+    /// Report that this owner holds no helper for the attempt's launch grant and will start
+    /// none (CSRG-U4). DevGuard then releases an unclaimed grant as `no_helper_created`, which
+    /// proves the executable never started; a claimed grant has a helper and settles through
+    /// its scope instead. Only sound when it is true: the helper was never created, it was
+    /// reaped before READY, or the grant's permit never arrived.
+    pub fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer {
+        self.attempt_request(
+            admission,
+            Request::Abandon(reason),
+            effective_uid(),
+            self.pid(),
+        )
+    }
+
     pub(crate) fn admit_with(&self, admission: &Admission, uid: u32, pid: u32) -> Answer {
         self.attempt_request(admission, Request::Admit, uid, pid)
     }
@@ -232,17 +288,21 @@ impl Owner {
         let Ok(fingerprint) = wire.fingerprint() else {
             return Answer::Refused(ErrorCode::InvalidRequest);
         };
-        let (mut client, _) =
-            match self.open_with(authority_uid, admission_compatibility(), owner_pid) {
-                Ok(opened) => opened,
-                Err(registration) => return Answer::NotSent(registration),
-            };
+        let compatibility = match request {
+            Request::Abandon(_) => crate::launch::launch_compatibility(),
+            Request::Admit | Request::Lookup | Request::Cancel => admission_compatibility(),
+        };
+        let (mut client, _) = match self.open_with(authority_uid, compatibility, owner_pid) {
+            Ok(opened) => opened,
+            Err(registration) => return Answer::NotSent(registration),
+        };
         registered();
         let key = wire.key.clone();
         let answered = match request {
             Request::Admit => client.admit(wire),
             Request::Lookup => client.lookup(key.clone()),
             Request::Cancel => client.cancel(key.clone()),
+            Request::Abandon(reason) => client.abandon_launch(key.clone(), reason.wire()),
         };
         match answered {
             Ok(record) => self.attempt(&record, &key, &fingerprint),
@@ -250,7 +310,7 @@ impl Owner {
         }
     }
 
-    fn wire(&self, admission: &Admission) -> Option<WireAdmission> {
+    pub(crate) fn wire(&self, admission: &Admission) -> Option<WireAdmission> {
         let wire = WireAdmission {
             key: AttemptKey {
                 consumer_id: self.settings().consumer.clone(),
@@ -264,7 +324,12 @@ impl Owner {
     }
 
     /// The record, when it is this owner's record of this attempt for this meaning.
-    fn attempt(&self, record: &AttemptRecord, key: &AttemptKey, fingerprint: &str) -> Answer {
+    pub(crate) fn attempt(
+        &self,
+        record: &AttemptRecord,
+        key: &AttemptKey,
+        fingerprint: &str,
+    ) -> Answer {
         let ours = self
             .registered_identity()
             .is_some_and(|identity| identity == record.owner);
@@ -281,9 +346,45 @@ impl Owner {
                     .prepare_deadline_ms
                     .saturating_sub(reservation.prepared_at.monotonic_ms),
             }),
-            applied: record.applied.is_some(),
+            scope: record.scope.as_ref().map(|scope| Scope {
+                kind: scope_kind(scope.kind),
+                root_pid: scope.root.pid,
+            }),
+            applied: record.applied.as_ref().map(|applied| Applied {
+                cpu: application(applied.cpu),
+                memory: application(applied.memory),
+                pids: application(applied.pids),
+            }),
+            release: record.release_reason.map(|reason| match reason {
+                contract::ReleaseReason::ScopeTerminated => Release::ScopeTerminated,
+                contract::ReleaseReason::NoHelperCreated => Release::NoHelperCreated,
+                contract::ReleaseReason::PreviousBoot => Release::PreviousBoot,
+            }),
+            tracking_lost: record.tracking_lost,
             known_not_started: record.known_not_started(),
         })
+    }
+}
+
+/// Why this owner holds no helper for a launch grant (CSRG-U4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Abandon {
+    /// Creating the helper failed, or the owner decided not to create it: no helper exists.
+    SpawnFailed,
+    /// The helper exited and was reaped before READY.
+    HelperExited,
+    /// The `BeginLaunch` answer carrying the permit never arrived.
+    GrantNotReceived,
+}
+
+impl Abandon {
+    fn wire(self) -> devguard_client::protocol::AbandonReason {
+        use devguard_client::protocol::AbandonReason;
+        match self {
+            Self::SpawnFailed => AbandonReason::SpawnFailed,
+            Self::HelperExited => AbandonReason::HelperExited,
+            Self::GrantNotReceived => AbandonReason::GrantNotReceived,
+        }
     }
 }
 
@@ -292,10 +393,11 @@ enum Request {
     Admit,
     Lookup,
     Cancel,
+    Abandon(Abandon),
 }
 
 /// An error answer is definite, except DevGuard's client's own code for a transport failure.
-fn answered_error(code: Code) -> Answer {
+pub(crate) fn answered_error(code: Code) -> Answer {
     match code {
         Code::ResourceControlUnavailable => Answer::Unknown,
         code => Answer::Refused(code.into()),
@@ -365,15 +467,28 @@ fn planned(resource: &contract::PlannedResource) -> Planned {
     }
 }
 
+fn scope_kind(kind: contract::ScopeKind) -> ScopeKind {
+    match kind {
+        contract::ScopeKind::ObservedProcessGroup => ScopeKind::ObservedProcessGroup,
+        contract::ScopeKind::ContainedCgroup => ScopeKind::ContainedCgroup,
+    }
+}
+
 fn plan(plan: &contract::ExecutionPlan) -> Plan {
     Plan {
-        scope: match plan.scope_kind {
-            contract::ScopeKind::ObservedProcessGroup => ScopeKind::ObservedProcessGroup,
-            contract::ScopeKind::ContainedCgroup => ScopeKind::ContainedCgroup,
-        },
+        scope: scope_kind(plan.scope_kind),
         cpu: planned(&plan.cpu),
         memory: planned(&plan.memory),
         pids: planned(&plan.pids),
+    }
+}
+
+fn application(state: contract::ApplicationState) -> Application {
+    match state {
+        contract::ApplicationState::Planned => Application::Planned,
+        contract::ApplicationState::Applied => Application::Applied,
+        contract::ApplicationState::Unsupported => Application::Unsupported,
+        contract::ApplicationState::Failed => Application::Failed,
     }
 }
 
@@ -393,7 +508,7 @@ fn phase(phase: contract::AttemptPhase) -> Phase {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::registration::RegistrationState;
     use crate::tests::{private_file, short_directory, CODES};
@@ -519,7 +634,7 @@ mod tests {
     // A scripted authority: replies, losses and delays a real one does not give at will.
 
     /// What the scripted authority does with the attempt request of session `n` (from 0).
-    enum Reply {
+    pub(crate) enum Reply {
         /// Answer this.
         With(Box<Response>),
         /// Read the request and close the connection: a lost reply.
@@ -528,11 +643,11 @@ mod tests {
         Silent,
     }
 
-    type Script = Arc<dyn Fn(usize, &Wire, &InstanceIdentity) -> Reply + Send + Sync>;
+    pub(crate) type Script = Arc<dyn Fn(usize, &Wire, &InstanceIdentity) -> Reply + Send + Sync>;
 
-    struct Scripted {
+    pub(crate) struct Scripted {
         stop: Arc<AtomicBool>,
-        requests: Arc<AtomicUsize>,
+        pub(crate) requests: Arc<AtomicUsize>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
@@ -563,7 +678,7 @@ mod tests {
         }
     }
 
-    fn scripted(socket: &Path, script: Script) -> Scripted {
+    pub(crate) fn scripted(socket: &Path, script: Script) -> Scripted {
         let listener = UnixListener::bind(socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
@@ -596,7 +711,8 @@ mod tests {
                     protocol: PROTOCOL_VERSION,
                     authority: me(),
                     caller: me(),
-                    capabilities: admission_compatibility().required,
+                    // What launch sessions need, a superset of what admission sessions need.
+                    capabilities: crate::launch::launch_compatibility().required,
                     max_frame_bytes: MAX_FRAME_BYTES,
                     frame_deadline_ms: FRAME_DEADLINE_MS,
                     max_sessions: MAX_SESSIONS,
@@ -639,7 +755,7 @@ mod tests {
         }
     }
 
-    fn scripted_owner(dir: &Path, socket: &Path) -> Owner {
+    pub(crate) fn scripted_owner(dir: &Path, socket: &Path) -> Owner {
         let secret = "5ec2e7d0c0de".repeat(6);
         let credential = dir.join("scripted.secret");
         if !credential.exists() {
@@ -829,7 +945,10 @@ mod tests {
             panic!("not admitted");
         };
         assert_eq!(attempt.phase, Phase::Prepared);
-        assert!(!attempt.applied);
+        assert_eq!(
+            (attempt.scope, attempt.applied, attempt.release),
+            (None, None, None)
+        );
         for _ in 1..4 {
             assert_eq!(admitted(&owner, &admission), Answer::Unknown);
         }
@@ -866,7 +985,7 @@ mod tests {
             };
             assert_eq!(attempt.phase, Phase::Prepared, "{attempt:?}");
             assert_eq!(attempt.denial, None);
-            assert!(!attempt.applied && !attempt.known_not_started);
+            assert!(attempt.applied.is_none() && !attempt.known_not_started);
             let reservation = attempt.reservation.unwrap();
             assert_eq!(reservation.quantities, request().requested);
             assert_eq!(reservation.prepared_ttl_ms, contract::PREPARED_TTL_MS);

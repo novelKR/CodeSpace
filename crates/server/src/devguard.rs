@@ -9,8 +9,10 @@
 //! registers itself with DevGuard and `workspace_info` reports that registration: the gateway
 //! itself in InProcess mode, the worker it starts in UDS mode, which gets the consumer secret
 //! through one private descriptor. The gateway never registers on the worker's behalf, and a
-//! worker it did not start cannot register. Nothing is admitted or launched through DevGuard,
-//! and no process query, termination or timeout waits for a registration.
+//! worker it did not start cannot register. That owner admits each execution of a workspace
+//! that requires resource participation (CSRG-U3) and, with `--devguard-launch-helper`,
+//! launches it once through DevGuard's launch helper as the helper's parent (CSRG-U4). No
+//! process query, termination or timeout waits for a DevGuard session.
 //!
 //! The consumer secret stays in its file until a session or the worker's start needs it. These
 //! settings hold only its path, and only states, DevGuard's error codes and the owner's kind and
@@ -27,6 +29,7 @@ use codespace_domain::{
     ResourceRegistrationState,
 };
 use codespace_runner::admission::{ManagedPreparation, Preparer};
+use codespace_runner::launch::{LaunchReport, Launcher};
 use codespace_runner::registration::{
     handoff, status_info, Owner, OwnerCredential, OwnerRegistration, OwnerSettings,
 };
@@ -43,8 +46,9 @@ pub enum DevGuardMode {
     Off,
     /// Report DevGuard's status in `workspace_info`; nothing is registered, admitted or launched.
     Status,
-    /// The execution owner registers with DevGuard and `workspace_info` reports it; nothing is
-    /// admitted or launched.
+    /// The execution owner registers with DevGuard and `workspace_info` reports it. Executions
+    /// of workspaces that require resource participation are admitted, and with a launch helper
+    /// launched, through it.
     Register,
 }
 
@@ -96,6 +100,27 @@ pub struct DevGuardArgs {
         required_if_eq_any([("devguard", "status"), ("devguard", "register")])
     )]
     pub credential_file: Option<PathBuf>,
+
+    /// The absolute path of DevGuard's launch helper, `devguard-launch`, of the release serving
+    /// the socket. With `register`, the execution owner launches the executions of workspaces
+    /// that require resource participation through it; without it they are admitted and then
+    /// refused.
+    #[arg(
+        id = "devguard_launch_helper",
+        long = "devguard-launch-helper",
+        env = "CODESPACE_DEVGUARD_LAUNCH_HELPER",
+        value_parser = absolute_path
+    )]
+    pub launch_helper: Option<PathBuf>,
+}
+
+fn absolute_path(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err("must be an absolute path".into())
+    }
 }
 
 impl DevGuardArgs {
@@ -115,7 +140,21 @@ impl DevGuardArgs {
     /// What a UDS worker the gateway starts needs to register itself, with `register`.
     pub fn worker(&self) -> Option<WorkerSettings> {
         match self.mode {
-            DevGuardMode::Register => self.settings().map(|settings| WorkerSettings { settings }),
+            DevGuardMode::Register => self.settings().map(|settings| WorkerSettings {
+                settings,
+                launch_helper: self.launch_helper.clone(),
+            }),
+            DevGuardMode::Off | DevGuardMode::Status => None,
+        }
+    }
+
+    /// The launch helper the execution owner launches through, with `register` (CSRG-U4).
+    pub fn launcher(&self) -> Option<Launcher> {
+        match self.mode {
+            DevGuardMode::Register => self
+                .launch_helper
+                .clone()
+                .and_then(|helper| Launcher::new(helper).ok()),
             DevGuardMode::Off | DevGuardMode::Status => None,
         }
     }
@@ -175,8 +214,9 @@ impl ResourceAuthority {
 
 /// Which process owns CodeSpace's executions, and so registers (CSRG-U2).
 pub(crate) enum ExecutionOwner {
-    /// The gateway runs executions in its own process and registers itself.
-    InProcess(Arc<OwnerRegistration>),
+    /// The gateway runs executions in its own process and registers itself; with a launch
+    /// helper it launches governed executions (CSRG-U4).
+    InProcess(Arc<OwnerRegistration>, Option<Launcher>),
     /// The worker the gateway started owns them, registers itself and reports to the gateway.
     Worker,
     /// A worker the gateway did not start: nothing can hand it the consumer secret.
@@ -186,7 +226,7 @@ pub(crate) enum ExecutionOwner {
 impl ExecutionOwner {
     fn kind(&self) -> ResourceOwner {
         match self {
-            Self::InProcess(_) => ResourceOwner::InProcess,
+            Self::InProcess(..) => ResourceOwner::InProcess,
             Self::Worker | Self::UnstartedWorker => ResourceOwner::Worker,
         }
     }
@@ -203,20 +243,29 @@ pub struct Registration {
 
 impl Registration {
     /// The registration for the gateway's runner mode. In InProcess mode the gateway reads
-    /// the consumer secret from its file for each session, as a status probe does.
-    pub fn new(settings: Settings, runner: RunnerMode, starts_worker: bool) -> Arc<Self> {
+    /// the consumer secret from its file for each session, as a status probe does, and
+    /// launches through `launcher`; a worker the gateway starts gets its own.
+    pub fn new(
+        settings: Settings,
+        runner: RunnerMode,
+        starts_worker: bool,
+        launcher: Option<Launcher>,
+    ) -> Arc<Self> {
         let owner = match (runner, starts_worker) {
-            (RunnerMode::InProcess, _) => ExecutionOwner::InProcess(OwnerRegistration::new(
-                Owner::new(
-                    OwnerSettings {
-                        socket: settings.socket.clone(),
-                        consumer: settings.consumer.clone(),
-                        generation: settings.generation.clone(),
-                    },
-                    OwnerCredential::File(settings.credential_file.clone()),
+            (RunnerMode::InProcess, _) => ExecutionOwner::InProcess(
+                OwnerRegistration::new(
+                    Owner::new(
+                        OwnerSettings {
+                            socket: settings.socket.clone(),
+                            consumer: settings.consumer.clone(),
+                            generation: settings.generation.clone(),
+                        },
+                        OwnerCredential::File(settings.credential_file.clone()),
+                    ),
+                    ResourceOwner::InProcess,
                 ),
-                ResourceOwner::InProcess,
-            )),
+                launcher,
+            ),
             (RunnerMode::Uds, true) => ExecutionOwner::Worker,
             (RunnerMode::Uds, false) => ExecutionOwner::UnstartedWorker,
         };
@@ -236,10 +285,74 @@ impl Registration {
     /// worker states it.
     pub(crate) fn prepares(&self, runner: &RuntimeBackend) -> bool {
         match (&self.owner, runner) {
-            (ExecutionOwner::InProcess(_), RuntimeBackend::InProcess(_)) => true,
+            (ExecutionOwner::InProcess(..), RuntimeBackend::InProcess(_)) => true,
             (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => worker.states_admission(),
             _ => false,
         }
+    }
+
+    /// Whether this gateway's execution owner launches governed executions with `runner`
+    /// (CSRG-U4): the gateway with a launch helper in InProcess mode, or the worker it started
+    /// when that worker states it.
+    pub(crate) fn launches(&self, runner: &RuntimeBackend) -> bool {
+        match (&self.owner, runner) {
+            (ExecutionOwner::InProcess(_, launcher), RuntimeBackend::InProcess(_)) => {
+                launcher.is_some()
+            }
+            (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => worker.states_launch(),
+            _ => false,
+        }
+    }
+
+    /// Have the execution owner prepare `request` as attempt `attempt_id` and launch it once
+    /// (CSRG-U4), and report how it ended. Only for an owner that [`Self::launches`].
+    pub(crate) async fn launch(
+        &self,
+        runner: &RuntimeBackend,
+        ws: &codespace_policy::Workspace,
+        request: codespace_runner::RunnerExecRequest,
+        attempt_id: String,
+    ) -> Result<LaunchReport, codespace_domain::ErrorBody> {
+        let report = match (&self.owner, runner) {
+            (
+                ExecutionOwner::InProcess(registration, launcher),
+                RuntimeBackend::InProcess(runner),
+            ) if launcher.is_some() => {
+                Preparer::new(registration.owner(), runner.clone())
+                    .with_launcher(launcher.clone())
+                    .prepare_and_launch(ws.clone(), request, attempt_id)
+                    .await
+            }
+            (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => worker
+                .launch(ws, request, attempt_id)
+                .await
+                .map_err(codespace_runner::RunnerError::into_error_body)?,
+            _ => {
+                return Err(codespace_domain::ErrorBody::new(
+                    codespace_domain::ErrorCode::ResourcePolicyUnsupported,
+                    "this runner mode cannot launch governed executions",
+                ))
+            }
+        };
+        match &report {
+            LaunchReport::Launched(launch) => tracing::info!(
+                attempt_id = %launch.attempt_id,
+                process_id = %launch.process_id.0,
+                dispatch = ?launch.dispatch,
+                phases = ?launch.phases,
+                applied = ?launch.account.map(|account| account.applied),
+                scope_root_pid = ?launch.scope_root_pid,
+                "DevGuard managed launch"
+            ),
+            LaunchReport::NotLaunched(report) => tracing::info!(
+                attempt_id = %report.attempt_id,
+                process_id = %report.process_id.0,
+                outcome = ?report.outcome,
+                attempt = ?report.attempt,
+                "DevGuard managed launch; the command was not started"
+            ),
+        }
+        Ok(report)
     }
 
     /// Have the execution owner prepare `request` as attempt `attempt_id` and report how it
@@ -252,7 +365,7 @@ impl Registration {
         attempt_id: String,
     ) -> Result<ManagedPreparation, codespace_domain::ErrorBody> {
         let report = match (&self.owner, runner) {
-            (ExecutionOwner::InProcess(registration), RuntimeBackend::InProcess(runner)) => {
+            (ExecutionOwner::InProcess(registration, _), RuntimeBackend::InProcess(runner)) => {
                 Preparer::new(registration.owner(), runner.clone())
                     .prepare_and_dispose(ws.clone(), request, attempt_id)
                     .await
@@ -282,7 +395,7 @@ impl Registration {
     /// the owner could not be asked beside the authority's status from the gateway's own probe.
     pub async fn report(&self, runner: &RuntimeBackend) -> ResourceAuthorityInfo {
         let reported = match (&self.owner, runner) {
-            (ExecutionOwner::InProcess(registration), _) => Ok(registration.report().await),
+            (ExecutionOwner::InProcess(registration, _), _) => Ok(registration.report().await),
             (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => worker.registration().await,
             (ExecutionOwner::Worker, RuntimeBackend::InProcess(_))
             | (ExecutionOwner::UnstartedWorker, _) => {
@@ -290,7 +403,15 @@ impl Registration {
             }
         };
         let info = match reported {
-            Ok(info) => info,
+            // A registered owner that launches governs the executions of workspaces that
+            // require resource participation (CSRG-U4).
+            Ok(mut info) => {
+                info.governs_execution = self.launches(runner)
+                    && info.registration.as_ref().is_some_and(|registration| {
+                        registration.state == ResourceRegistrationState::Registered
+                    });
+                info
+            }
             Err(state) => {
                 let mut info = self.status.status().await;
                 info.participation = ResourceParticipation::Registration;
@@ -326,17 +447,21 @@ impl Registration {
     }
 }
 
-/// What a worker the gateway starts gets so it registers itself (CSRG-U2). None of it is a
-/// secret: the consumer secret goes through one private descriptor.
+/// What a worker the gateway starts gets so it registers itself (CSRG-U2), and launches
+/// (CSRG-U4). None of it is a secret: the consumer secret goes through one private descriptor.
 #[derive(Debug, Clone)]
 pub struct WorkerSettings {
     settings: Settings,
+    launch_helper: Option<PathBuf>,
 }
 
 impl WorkerSettings {
     #[cfg(test)]
     pub(crate) fn from_settings(settings: Settings) -> Self {
-        Self { settings }
+        Self {
+            settings,
+            launch_helper: None,
+        }
     }
 
     /// Add the worker's DevGuard arguments and hand it the consumer secret, read from its file
@@ -352,6 +477,9 @@ impl WorkerSettings {
             .arg(&self.settings.consumer)
             .arg("--devguard-generation")
             .arg(&self.settings.generation);
+        if let Some(helper) = &self.launch_helper {
+            command.arg("--devguard-launch-helper").arg(helper);
+        }
         if let Some(carrier) = handoff::prepare(&self.settings.credential_file) {
             let fd = carrier.attach(command.as_std_mut());
             command.arg("--devguard-credential-fd").arg(fd.to_string());
@@ -570,7 +698,7 @@ pub(crate) mod tests {
             (RunnerMode::Uds, true, ResourceOwner::Worker),
             (RunnerMode::Uds, false, ResourceOwner::Worker),
         ] {
-            let registration = Registration::new(settings.clone(), runner, starts_worker);
+            let registration = Registration::new(settings.clone(), runner, starts_worker, None);
             assert_eq!(registration.owner(), owner);
         }
     }
@@ -583,7 +711,8 @@ pub(crate) mod tests {
             .get_arguments()
             .filter(|arg| arg.get_id().as_str().starts_with("devguard"))
             .collect();
-        assert_eq!(devguard.len(), 5);
+        // The socket, consumer, generation, credential file and launch helper, and the mode.
+        assert_eq!(devguard.len(), 6);
         for arg in devguard {
             let long = arg.get_long().unwrap();
             assert!(
@@ -952,7 +1081,7 @@ pub(crate) mod tests {
     }
 
     /// A connected socket left inheritable, as one is inside DevGuard's connect window on macOS.
-    fn inheritable_socket() -> (
+    pub(crate) fn inheritable_socket() -> (
         std::os::unix::net::UnixStream,
         std::os::unix::net::UnixStream,
     ) {
@@ -1544,7 +1673,7 @@ pub(crate) mod tests {
         let in_process = RuntimeBackend::in_process(Arc::new(|_| {}));
 
         // The gateway registers itself when it runs the executions...
-        let registration = Registration::new(settings.clone(), RunnerMode::InProcess, false);
+        let registration = Registration::new(settings.clone(), RunnerMode::InProcess, false, None);
         let info = past_the_credential(stopped_at_the_credential, || {
             registration.report(&in_process)
         })
@@ -1566,7 +1695,8 @@ pub(crate) mod tests {
         // ...but never for a worker: one it did not start reports that it cannot register,
         // beside the authority's status from the gateway's own probe.
         for starts_worker in [false, true] {
-            let registration = Registration::new(settings.clone(), RunnerMode::Uds, starts_worker);
+            let registration =
+                Registration::new(settings.clone(), RunnerMode::Uds, starts_worker, None);
             let info = past_the_credential(stopped_at_the_credential, || {
                 registration.report(&in_process)
             })
@@ -1621,7 +1751,7 @@ pub(crate) mod tests {
         let settings = settings(dir.path(), dir.path().join("absent.sock"));
         let in_process = RuntimeBackend::in_process(Arc::new(|_| {}));
         for (runner, starts_worker) in [(RunnerMode::InProcess, false), (RunnerMode::Uds, false)] {
-            let registration = Registration::new(settings.clone(), runner, starts_worker);
+            let registration = Registration::new(settings.clone(), runner, starts_worker, None);
             past_the_credential(stopped_at_the_credential, || {
                 registration.report(&in_process)
             })
@@ -1664,6 +1794,7 @@ pub(crate) mod tests {
                     protocol: WIRE_PROTOCOL,
                     registration,
                     admission: registration,
+                    launch: false,
                 };
                 let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
                 write_frame(&mut server, &reply).await.unwrap();
