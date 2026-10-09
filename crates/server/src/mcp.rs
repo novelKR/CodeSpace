@@ -3529,13 +3529,17 @@ mod devguard_tests {
                     control_held += 1;
                 }
             }
+            // Each round is admitted against what DevGuard still holds, and it releases a
+            // launched attempt only once its reconciler has seen the scope end: without this
+            // wait, rounds pile up attempts that a small host (three CPUs give 480 m of work,
+            // nine of these) cannot hold.
+            assert_eq!(released(&mut fixture), (Vec::new(), 0), "round {round}");
         }
         assert_eq!(
             control_held,
             rounds * 4,
             "the control must see the inheritable descriptor"
         );
-        assert_eq!(released(&mut fixture), (Vec::new(), 0));
         eprintln!(
             "u4 d6: {governed} governed launches and {ordinary} ordinary children held no \
              descriptor beyond stdio; the unguarded control held the inheritable descriptor \
