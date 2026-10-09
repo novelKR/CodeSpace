@@ -445,22 +445,6 @@ pub(crate) mod tests {
     use crate::{OwnerCredential, OwnerSettings};
     use std::os::unix::fs::PermissionsExt;
 
-    /// DevGuard's launch helper built from the pinned source, named by
-    /// `CODESPACE_DEVGUARD_LAUNCH_BIN`. Without it a test that needs it is skipped, unless
-    /// `CODESPACE_REQUIRE_DEVGUARD_BINS` says the stage built it, which then fails the test.
-    pub(crate) fn helper_bin() -> Option<PathBuf> {
-        match std::env::var_os("CODESPACE_DEVGUARD_LAUNCH_BIN") {
-            Some(path) => Some(PathBuf::from(path)),
-            None if std::env::var_os("CODESPACE_REQUIRE_DEVGUARD_BINS").is_some() => {
-                panic!("CODESPACE_DEVGUARD_LAUNCH_BIN is required by this stage")
-            }
-            None => {
-                eprintln!("skipped: CODESPACE_DEVGUARD_LAUNCH_BIN is not set");
-                None
-            }
-        }
-    }
-
     #[test]
     fn a_permit_never_shows_itself() {
         let text = "ab".repeat(32);
@@ -828,6 +812,22 @@ pub(crate) mod tests {
         use std::os::unix::process::CommandExt;
         use std::process::{Child, Command, Stdio};
         use std::time::{Duration, Instant};
+
+        /// DevGuard's launch helper built from the pinned source, named by
+        /// `CODESPACE_DEVGUARD_LAUNCH_BIN`. Without it a test that needs it is skipped, unless
+        /// `CODESPACE_REQUIRE_DEVGUARD_BINS` says the stage built it, which then fails the test.
+        fn helper_bin() -> Option<PathBuf> {
+            match std::env::var_os("CODESPACE_DEVGUARD_LAUNCH_BIN") {
+                Some(path) => Some(PathBuf::from(path)),
+                None if std::env::var_os("CODESPACE_REQUIRE_DEVGUARD_BINS").is_some() => {
+                    panic!("CODESPACE_DEVGUARD_LAUNCH_BIN is required by this stage")
+                }
+                None => {
+                    eprintln!("skipped: CODESPACE_DEVGUARD_LAUNCH_BIN is not set");
+                    None
+                }
+            }
+        }
 
         fn admitting() -> Provisioned {
             let provisioned = provision(2);
