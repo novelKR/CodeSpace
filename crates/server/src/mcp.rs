@@ -891,7 +891,7 @@ impl CodeSpace {
                     // so it is released with the answer whatever the attempt's own state.
                     let refused = self.prepare_governed(ws, req).await;
                     reservation.abort();
-                    return Err(refused);
+                    return Err(self.refused_governed(resume, refused));
                 }
                 // The owner may create a process from here on (CSRG-U4).
                 reservation.arm_dispatch();
@@ -915,7 +915,7 @@ impl CodeSpace {
                     Err(refused) => {
                         // The command did not start; a helper that existed was reaped.
                         reservation.abort();
-                        Err(refused)
+                        Err(self.refused_governed(resume, refused))
                     }
                 };
             }
@@ -942,6 +942,31 @@ impl CodeSpace {
                 reservation.abort();
                 Err(err.into_error_body())
             }
+        }
+    }
+}
+
+/// A governed execution that did not start, and whether the resource authority proves that it
+/// never started (CSRG-U5).
+#[cfg(feature = "devguard")]
+struct NotStarted {
+    body: ErrorBody,
+    proven: bool,
+}
+
+#[cfg(feature = "devguard")]
+impl NotStarted {
+    fn report(report: codespace_runner::admission::ManagedPreparation, workspace_id: &str) -> Self {
+        Self {
+            proven: report.proves_not_started(),
+            body: report.into_error_body(workspace_id),
+        }
+    }
+
+    fn unproven(body: ErrorBody) -> Self {
+        Self {
+            body,
+            proven: false,
         }
     }
 }
@@ -985,17 +1010,20 @@ impl CodeSpace {
     /// Have the execution owner prepare `req` without launching it (CSRG-U3): an owner that
     /// cannot launch cancels each preparation, so it ends in a refusal and nothing is started.
     #[cfg(feature = "devguard")]
-    async fn prepare_governed(&self, ws: &Workspace, req: RunnerExecRequest) -> ErrorBody {
+    async fn prepare_governed(&self, ws: &Workspace, req: RunnerExecRequest) -> NotStarted {
         let Some(registration) = &self.registration else {
-            return ErrorBody::new(ErrorCode::Internal, "no execution owner registration");
+            return NotStarted::unproven(ErrorBody::new(
+                ErrorCode::Internal,
+                "no execution owner registration",
+            ));
         };
         let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
         match registration
             .prepare(&self.runner, ws, req, attempt_id)
             .await
         {
-            Ok(report) => report.into_error_body(&ws.id.0),
-            Err(err) => err,
+            Ok(report) => NotStarted::report(report, &ws.id.0),
+            Err(err) => NotStarted::unproven(err),
         }
     }
 
@@ -1006,23 +1034,41 @@ impl CodeSpace {
         &self,
         ws: &Workspace,
         req: RunnerExecRequest,
-    ) -> Result<codespace_runner::launch::ManagedLaunch, ErrorBody> {
+    ) -> Result<codespace_runner::launch::ManagedLaunch, NotStarted> {
         let Some(registration) = &self.registration else {
-            return Err(ErrorBody::new(
+            return Err(NotStarted::unproven(ErrorBody::new(
                 ErrorCode::Internal,
                 "no execution owner registration",
-            ));
+            )));
         };
         let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
         match registration
             .launch(&self.runner, ws, req, attempt_id)
-            .await?
+            .await
+            .map_err(NotStarted::unproven)?
         {
             codespace_runner::launch::LaunchReport::Launched(launch) => Ok(launch),
             codespace_runner::launch::LaunchReport::NotLaunched(report) => {
-                Err(report.into_error_body(&ws.id.0))
+                Err(NotStarted::report(report, &ws.id.0))
             }
         }
+    }
+
+    /// The refusal of a governed execution. An approval being resumed gets its hold back when
+    /// the authority proves that the command never started (CSRG-U5); otherwise the resume
+    /// consumes it as before.
+    #[cfg(feature = "devguard")]
+    fn refused_governed(&self, resume: Option<&ApprovalId>, refused: NotStarted) -> ErrorBody {
+        if let (Some(approval_id), true) = (resume, refused.proven) {
+            if let Err(err) = self.store.return_resume(approval_id) {
+                tracing::warn!(
+                    approval_id = %approval_id.0,
+                    error = %err.message,
+                    "the approval could not be given back; its resume consumes it"
+                );
+            }
+        }
+        refused.body
     }
 
     #[cfg(not(feature = "devguard"))]
@@ -2389,8 +2435,9 @@ mod devguard_tests {
             ],
         )
         .await;
-        // Each preparation came from a session the owner opened for it.
-        assert_eq!(endpoint.accepted(), 3);
+        // Each preparation came from a session the owner opened for it: two executions, and
+        // two resumes of the one approval, which kept its hold after the first refusal (CSRG-U5).
+        assert_eq!(endpoint.accepted(), 4);
         // Existing process control never asks DevGuard.
         let started = handler
             .exec_command(Parameters(exec_params(
@@ -2402,7 +2449,7 @@ mod devguard_tests {
             .unwrap()
             .0;
         assert_process_control_needs_no_registration(&handler, started.process_id).await;
-        assert_eq!(endpoint.accepted(), 3);
+        assert_eq!(endpoint.accepted(), 4);
     }
 
     /// Status, termination and the outcome of a running process, without a registration.
@@ -2538,16 +2585,15 @@ mod devguard_tests {
             }
         };
         check(&body, &raw);
-        let replayed = cs
+        // The refusal proves the command never started, so the approval kept its hold
+        // (CSRG-U5): resumed again, it is refused again for a new attempt, never replayed.
+        let again = cs
             .operation_resume(Parameters(OperationResumeParams { approval_id }))
             .await
             .err()
             .expect("refused");
-        let replayed: ErrorBody = serde_json::from_str(&replayed).unwrap();
-        assert_eq!(
-            (replayed.code, replayed.message.as_str()),
-            (body.code, body.message.as_str())
-        );
+        let again_body: ErrorBody = serde_json::from_str(&again).unwrap();
+        check(&again_body, &again);
         drop(
             store
                 .try_acquire_write("gov-confirm")
@@ -3409,6 +3455,89 @@ mod devguard_tests {
             Some(codespace_domain::ProcessTermination::Terminated)
         );
         assert_eq!(released(&mut fixture), (Vec::new(), 0));
+    }
+
+    /// A resumed approval whose execution the resource authority denies keeps its hold
+    /// (CSRG-U5): the refusal proves the command never started, so resuming again asks for a
+    /// new attempt rather than replaying the refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_denied_resume_keeps_its_approval_for_another_resume() {
+        let Some(fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let config = serde_json::json!({"workspaces": {
+            "short-confirm": {
+                "root": dir.path(),
+                "profile": "workspace-write",
+                "approvals": "confirm",
+                "resources": {"participation": "required", "request": {
+                    "cpu_milli": 100, "memory_bytes": 1u64 << 60, "tasks": 4}},
+            },
+        }});
+        let cli = register_cli(&fixture.settings, &["--runner", "in-process"]);
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            Registry::load_json(&config.to_string()).unwrap(),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        let held = handler
+            .exec_command(Parameters(exec_params(
+                "short-confirm",
+                &["/usr/bin/true"],
+                false,
+            )))
+            .await
+            .err()
+            .expect("held");
+        let held: ErrorBody = serde_json::from_str(&held).unwrap();
+        assert_eq!(held.code, ErrorCode::ApprovalRequired);
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        handler
+            .approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let mut attempts = Vec::new();
+        for _ in 0..2 {
+            let raw = handler
+                .operation_resume(Parameters(OperationResumeParams {
+                    approval_id: approval_id.clone(),
+                }))
+                .await
+                .err()
+                .expect("denied");
+            let body: ErrorBody = serde_json::from_str(&raw).unwrap();
+            assert_eq!(body.code, ErrorCode::ResourceUnavailable, "{raw}");
+            assert!(
+                body.message.ends_with(": denied; nothing was started"),
+                "{raw}"
+            );
+            let attempt = body
+                .message
+                .split("attempt `")
+                .nth(1)
+                .and_then(|rest| rest.split('`').next())
+                .unwrap()
+                .to_owned();
+            assert!(
+                !attempts.contains(&attempt),
+                "the refusal was replayed: {raw}"
+            );
+            attempts.push(attempt);
+        }
+        drop(
+            store
+                .try_acquire_write("short-confirm")
+                .expect("the lease is released"),
+        );
     }
 
     /// Once a governed process has started, losing the resource authority does not take

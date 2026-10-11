@@ -366,6 +366,22 @@ pub struct ManagedPreparation {
 }
 
 impl ManagedPreparation {
+    /// Whether the resource authority's state of the attempt proves that its command never
+    /// started (CSRG-U5): never asked, refused, denied, cancelled or expired before any launch,
+    /// or released on this owner's report that it holds no helper. Only such a refusal lets the
+    /// execution's approval be used again; an unknown, launched or scope-ended attempt does not.
+    pub fn proves_not_started(&self) -> bool {
+        matches!(
+            self.attempt,
+            AttemptState::NotAsked
+                | AttemptState::NotRecorded
+                | AttemptState::Denied
+                | AttemptState::Cancelled
+                | AttemptState::Expired
+                | AttemptState::Released
+        )
+    }
+
     /// The tool error for a preparation that started nothing, or a launch whose command did not
     /// start (CSRG-U3, U4). Only enumerations, numbers and identifiers are stated.
     pub fn into_error_body(self, workspace_id: &str) -> ErrorBody {
