@@ -29,7 +29,7 @@
 
 ## 하위 패치
 
-CodeSpace는 `codex-utils-pty`에 대한 패치 하나를 유지합니다. 서브모듈은 `openai/codex`의 위 커밋에 그대로 두고 그 파일에 패치를 적용하며, 나머지 Codex crate는 모두 태그와 같습니다. `scripts/codex_patch.py`는 이 표에서 패치 파일, 그 digest, 패치를 적용한 tree를 읽습니다.
+CodeSpace는 [고정 버전의 Codex 수정 정책](upstream-patches.md)에 따라 `codex-utils-pty`에 대한 패치 하나를 유지합니다. 서브모듈은 `openai/codex`의 위 커밋에 그대로 두고 그 파일에 패치를 적용하며, 나머지 Codex crate는 모두 태그와 같습니다. `scripts/codex_patch.py`는 이 표에서 패치 파일, 그 digest, 패치를 적용한 tree를 읽습니다.
 
 | 항목 | 값 |
 | --- | --- |

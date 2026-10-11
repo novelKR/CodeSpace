@@ -17,7 +17,7 @@ Use CodeSpace as the execution layer beneath your own coding agent. Start with a
 | Understand module responsibilities | [Architecture](architecture.md) and [execution contracts](execution-substrate.md) |
 | Check permissions and isolation | [Security model](security-model.md) and [runner isolation](runner-isolation.md) |
 | Handle protocol and tool results | [Protocol compatibility](protocol-compatibility.md), [patch behavior](behavior-differences.md), [error codes](error-codes.md) |
-| Maintain Codex dependencies | [Reuse scope](codex-reuse.md), [pinned revision](upstream-lock.md), [update procedure](upstream-update.md) |
+| Maintain Codex dependencies | [Reuse scope](codex-reuse.md), [pinned revision](upstream-lock.md), [update procedure](upstream-update.md), [patch policy](upstream-patches.md) |
 | Edit or publish these guides | [Documentation maintenance](documentation.md) |
 
 The implementation defines supported behavior. A test description identifies coverage; it is not a claim that a particular installation or external account was tested. Read the execution contract returned by `workspace_info` for the workspace you actually use.

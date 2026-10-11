@@ -96,8 +96,8 @@
         "다음-단계",
         "목적에-맞는-문서-찾기"
       ],
-      "source_sha256": "2fb1f05b450ed1a948310d4fdafe1781ef14979990f2ecfebfae98f7ebdab7ca",
-      "translation_sha256": "d4ea3230b9f759e5bca3f59ca45a115341d901eb7d66758af935fe113ccb86b3"
+      "source_sha256": "a098986ba47c973d99934eb5a101cc224bb4a8379d772938604d82703cf70aa6",
+      "translation_sha256": "b9aafd2aa8cc5ce51c900c4c62adaace784a29dbc75632970f8292247628afa6"
     },
     {
       "id": "getting-started",
@@ -609,8 +609,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "53902d864401da1900b58086d0b92b5d437f843caacfd846f0ac7009a6406983",
-      "translation_sha256": "ff9eaae8c6b46111c2459a20d2707b01f396e5d15cac1b12ee68688ba123f3af"
+      "source_sha256": "121d4af8ffeecbe2cf1cf34c23046664637e6d906a38f7cfd2f7a7a0d5ebe656",
+      "translation_sha256": "fd1b6ffcc4f23f07caad0421546ee59fcae3b0ad6926a0b1900df16e8ac9c911"
     },
     {
       "id": "upstream-lock",
@@ -649,8 +649,8 @@
         "하위-패치",
         "확인과-갱신"
       ],
-      "source_sha256": "ea6677eadb9cd5e260a4a116af6f986b8620620242b5132f69cda9566fab6553",
-      "translation_sha256": "3dffdbdd89fa275b154dfd13b8c58e72fa851999aa27c65cbbf2124d4abc016f"
+      "source_sha256": "f6fe4106df84b502eaaea65d40c666ade982253f658a46e8de769f7911d80b7f",
+      "translation_sha256": "bcdcb7a4e9b1080f5b5a66159dd1d693b82ed6bf0dccc6e346e8dfc33be0ca16"
     },
     {
       "id": "upstream-update",
@@ -685,8 +685,70 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "473740c5f4d701e1f0d7bb3fb3e2486c2f8489250f718b30d2733f0bf2231786",
-      "translation_sha256": "cf0f60641c837ffe106c0a3f493fa06e0b792547cceb0460b3d94d0423e3d2be"
+      "source_sha256": "ddad4af90f67de89b70c93ff143b72386bc0227e66dadeba3cf73491dab1e853",
+      "translation_sha256": "070d7b0a63d6835df285bd8f8905c4a9c4e4ec0144b25d1e0ec527d9f5ee2985"
+    },
+    {
+      "id": "upstream-patches",
+      "section": "implementation",
+      "order": 3,
+      "route": "/guide/upstream-patches",
+      "source": "docs/upstream-patches.md",
+      "translation": "docs/ko/upstream-patches.md",
+      "anchors": [
+        "approval",
+        "building-inside-codexs-workspace",
+        "capabilities-missing-at-the-pin",
+        "case-defaults",
+        "case-graph",
+        "case-missing",
+        "case-open-points",
+        "case-patterns",
+        "case-pre-reap",
+        "case-taking-code",
+        "case-workspace",
+        "changing-codex-at-a-pin",
+        "codespace가-바꿔-쓰는-업스트림-기본값",
+        "codex-workspace-안에서-빌드하기",
+        "codex-의존성-그래프를-핵심-crate-밖에-두기",
+        "codex-코드를-가져오는-방식",
+        "earlier-cases",
+        "form",
+        "keeping-codexs-graph-out-of-the-core",
+        "observing-before-the-reap-the-first-patch",
+        "open-points",
+        "patch-approval",
+        "patch-form",
+        "patch-pin-changes",
+        "patch-policy",
+        "patch-record",
+        "patch-upstream",
+        "pin-changes",
+        "policy",
+        "record",
+        "taking-codex-code",
+        "upstream-defaults-that-codespace-overrides",
+        "upstream-first",
+        "upstream-patches",
+        "what-the-cases-show",
+        "when-a-patch-is-the-answer",
+        "when-to-patch",
+        "고정-버전에-없는-기능",
+        "고정-버전의-codex-수정",
+        "기록",
+        "남은-점",
+        "버전-변경",
+        "사례에서-드러난-원칙",
+        "승인",
+        "업스트림-우선",
+        "이전-사례",
+        "정책",
+        "패치를-쓰는-경우",
+        "형식",
+        "회수-전-관찰-첫-패치"
+      ],
+      "source_sha256": "f48b33c4789ba32780e63ac790c98c45fa69c21cf8398b7015168c73fcaa3272",
+      "translation_sha256": "7d84836d7c0e01504955e61ff72029b5650381811c71496cb31ed93622d0e5f1"
     },
     {
       "id": "documentation",

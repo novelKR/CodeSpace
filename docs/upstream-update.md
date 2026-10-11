@@ -16,7 +16,7 @@ Choose an explicit tag or commit and record the reason. Inspect relevant upstrea
 
 Revert the recorded Codex patches with `python3 scripts/codex_patch.py revert` before moving the submodule. Update the submodule, [pin record](upstream-lock.md), affected adapter locks, and attribution when needed. Preserve the separation between core types and Codex adapter types. Never copy a single upstream crate into the product to conceal an incompatible dependency.
 
-One limited adaptation of upstream code exists: the [downstream patch](upstream-lock.md#codex-downstream-patch) to `codex-utils-pty`, applied to the files of the pinned release. Review each adaptation under the [adaptation policy](codex-reuse.md) on every pin change: compare it with the candidate's upstream source against its recorded re-examination condition, update its recorded provenance and divergence, rerun its tests, and remove it or reconverge with upstream when its removal condition holds. Adopting a newer upstream API needs this separate pin update; it is never a side effect of another change.
+One limited adaptation of upstream code exists: the [downstream patch](upstream-lock.md#codex-downstream-patch) to `codex-utils-pty`, applied to the files of the pinned release. Review each patch on every pin change, as the [patch policy](upstream-patches.md#patch-pin-changes) requires: compare it with the candidate's upstream source against its recorded re-examination condition, update its recorded provenance and divergence, rerun its tests, and remove it or reconverge with upstream when its removal condition holds. Adopting a newer upstream API needs this separate pin update; it is never a side effect of another change.
 
 <a id="local-gate"></a>
 

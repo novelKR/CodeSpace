@@ -80,7 +80,7 @@ Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-lin
 
 ## 업데이트와 향후 검토
 
-재사용하는 구성 요소는 현재 모두 [같은 고정 버전](upstream-lock.md)에서 가져옵니다. 업스트림 수정은 버전 갱신과 검증을 거쳐야 반영되며 자동으로 들어오지 않습니다. [업데이트 검사](upstream-update.md)는 패치뿐 아니라 연결된 모든 어댑터를 포함합니다.
+재사용하는 구성 요소는 현재 모두 [같은 고정 버전](upstream-lock.md)에서 가져오며, 그 파일에 `codex-utils-pty`의 [기록된 패치](upstream-lock.md#codex-downstream-patch) 하나를 적용합니다. 업스트림 수정은 버전 갱신과 검증을 거쳐야 반영되며 자동으로 들어오지 않습니다. 고정 버전이 CodeSpace에 필요한 작업을 막으면 [고정 버전의 Codex 수정 정책](upstream-patches.md)을 따릅니다. [업데이트 검사](upstream-update.md)는 패치뿐 아니라 연결된 모든 어댑터를 포함합니다.
 
 `codex-file-search`, 셸 명령 파싱, worktree 준비, 범용 `codex-exec-server` 백엔드는 아직 연결되지 않은 후보입니다. 도입 시 제공하는 실행 기능, 빌드·업데이트 비용, 모델이나 권한 결정 책임이 어댑터 경계를 넘는지를 검토합니다. 사용자에게 영향을 주는 현재 제약은 [Agent Loop 연동](agent-integration.md)에 정리되어 있습니다.
 

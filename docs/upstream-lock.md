@@ -27,7 +27,7 @@ See [connected components](codex-reuse.md) for the exact adapter responsibilitie
 
 ## Downstream patch
 
-CodeSpace carries one patch to `codex-utils-pty`. The submodule stays on `openai/codex` at the commit above, and the patch is applied to its files; every other Codex crate is identical to the tag. `scripts/codex_patch.py` reads the patch file, its digest and the patched tree from this table.
+CodeSpace carries one patch to `codex-utils-pty`, under the [policy for changing Codex at a pin](upstream-patches.md). The submodule stays on `openai/codex` at the commit above, and the patch is applied to its files; every other Codex crate is identical to the tag. `scripts/codex_patch.py` reads the patch file, its digest and the patched tree from this table.
 
 | Field | Value |
 | --- | --- |
