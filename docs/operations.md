@@ -8,13 +8,15 @@ This guide sets up a personal, single-user server on macOS or Linux. For the too
 
 ## Install
 
-Install Git and a current Rust stable toolchain, matching CI. The root manifest declares Rust 1.88, but that is not a verified minimum for the full Codex adapter graph; the pinned upstream checkout selects Rust 1.95.0. On macOS, install the Xcode command-line tools. Linux command isolation additionally needs the sandbox helper, bubblewrap, and permission to create the required namespaces. Docker is only needed for the separate [container fixture](../deploy/README.md).
+Install Git, Python 3 and a current Rust stable toolchain, matching CI. The root manifest declares Rust 1.88, but that is not a verified minimum for the full Codex adapter graph; the pinned upstream checkout selects Rust 1.95.0. On macOS, install the Xcode command-line tools. Linux command isolation additionally needs the sandbox helper, bubblewrap, and permission to create the required namespaces. Docker is only needed for the separate [container fixture](../deploy/README.md).
 
 ```bash
 git clone --recurse-submodules https://github.com/novelKR/CodeSpace.git
 cd CodeSpace
 # For an existing clone:
 git submodule update --init --recursive
+# Apply CodeSpace's recorded Codex patch; repeat after every submodule update:
+python3 scripts/codex_patch.py apply
 cargo build --locked -p codespace-server --bin codespace-mcp --release
 cargo build --locked --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
 mkdir -p dist

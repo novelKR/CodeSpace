@@ -1,0 +1,914 @@
+From 4b5b05d549c439bdfe04156dcaff04bb255e49e9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 16:21:54 +0000
+Subject: [PATCH] utils/pty: let an observer see a PTY child's exit before its
+ reap
+
+Downstream patch by the CodeSpace project (novelKR/CodeSpace) on
+rust-v0.154.0 (6b9826e3aa83b1a5947db50f4332cb9c65f1b340). Not part of
+upstream Codex. It ports the generic observer of CodeSpace's W3
+experiment B (a scratch patch on rust-v0.159.0-alpha.11, see DevGuard's
+docs/handoff/2026-09-28-w3-decision-packet.md, section 3.2) to both Unix
+PTY paths of this release, Linux included, without the experiment's
+trace instrumentation.
+
+Both Unix PTY spawn paths reap the child in their waiter right after
+spawn, so a caller cannot look at what the exited child left behind
+(for example descendants still in its process group) while the child's
+PID and process group ID are still held.
+
+spawn_pty_process_observed takes an observe::ExitObserver, registered
+before the spawn. The child's single waiter then waits for the exit
+without consuming it (waitid with WNOWAIT), publishes one
+ExitOpportunity that carries no PID, waits until the observer
+acknowledges it or the observer's bound passes, and only then reaps
+through its original child object. After the reap it reports how the
+observation ended (Completed, TimedOut, Failed, Unavailable); an
+acknowledgement after the bound returns OpportunityExpired. A dropped
+opportunity, or an observer that stopped listening, ends the wait at
+once. Termination and Drop in the window still reach the process group,
+which the unreaped child keeps, and the child is reaped once.
+spawn_pty_process and every other path are unchanged. Other platforms
+refuse an observed spawn before creating a process.
+
+Tests, on both Unix paths: the observer sees the exited child unreaped
+and the exit code arrives after the acknowledgement; the bound reaps
+without one and refuses a late one; a dropped opportunity or observer
+does not hold the child; a descendant that ignores SIGHUP is still in
+the root's process group during the window; termination in the window
+kills the group and the child is reaped once; a handle dropped in the
+window leaves the reap to the waiter, after the acknowledgement; output
+written before the exit drains in full; a runtime shutdown in the
+window waits only for the bound.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ codex-rs/utils/pty/src/lib.rs           |   6 +
+ codex-rs/utils/pty/src/observe.rs       | 210 +++++++++++
+ codex-rs/utils/pty/src/observe_tests.rs | 456 ++++++++++++++++++++++++
+ codex-rs/utils/pty/src/pty.rs           |  93 ++++-
+ 4 files changed, 760 insertions(+), 5 deletions(-)
+ create mode 100644 codex-rs/utils/pty/src/observe.rs
+ create mode 100644 codex-rs/utils/pty/src/observe_tests.rs
+
+diff --git a/codex-rs/utils/pty/src/lib.rs b/codex-rs/utils/pty/src/lib.rs
+index 1200c114..9e7308f1 100644
+--- a/codex-rs/utils/pty/src/lib.rs
++++ b/codex-rs/utils/pty/src/lib.rs
+@@ -1,3 +1,7 @@
++// Modified by the CodeSpace project (https://github.com/novelKR/CodeSpace) as a downstream patch
++// to rust-v0.154.0: exports bounded pre-reap exit observation (see `observe.rs`).
++
++pub mod observe;
+ pub mod pipe;
+ mod process;
+ pub mod process_group;
+@@ -39,6 +43,8 @@ pub type SpawnedPty = SpawnedProcess;
+ pub use pty::conpty_supported;
+ /// Spawn a process attached to a PTY for interactive use.
+ pub use pty::spawn_process as spawn_pty_process;
++/// Spawn a PTY process whose exit an observer sees before the reap (Unix only).
++pub use pty::spawn_process_observed as spawn_pty_process_observed;
+ #[cfg(windows)]
+ pub use win::JobObject;
+ #[cfg(windows)]
+diff --git a/codex-rs/utils/pty/src/observe.rs b/codex-rs/utils/pty/src/observe.rs
+new file mode 100644
+index 00000000..3d19cfde
+--- /dev/null
++++ b/codex-rs/utils/pty/src/observe.rs
+@@ -0,0 +1,210 @@
++// Added by the CodeSpace project (https://github.com/novelKR/CodeSpace) as a downstream patch
++// to rust-v0.154.0: bounded observation of an exited child before its reap. Not part of
++// upstream Codex.
++
++//! Bounded observation of an exited child before it is reaped.
++//!
++//! A PTY spawn that registers an [`ExitObserver`] keeps its single waiter. When the child
++//! exits, the waiter sees the exit without consuming its status (`waitid` with `WNOWAIT`), so
++//! the child stays a zombie that still holds its process ID and process group ID. The waiter
++//! then publishes one [`ExitOpportunity`] and waits until the observer acknowledges it or the
++//! bound fixed at registration passes, whichever comes first. Only then does it reap the child,
++//! through the same child object as without an observer, and report how the observation ended.
++//! The opportunity carries no process ID: an observer that needs the process's identity takes
++//! it from its own records.
++//!
++//! Without a registration the waiter behaves exactly as before.
++
++use std::fmt;
++use std::sync::Arc;
++use std::sync::Condvar;
++use std::sync::Mutex;
++use std::time::Duration;
++use std::time::Instant;
++
++use tokio::sync::oneshot;
++
++/// How an observation ended. Reported once, after the child has been reaped.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ObservationOutcome {
++    /// The observer acknowledged the opportunity before the bound.
++    Completed,
++    /// The bound passed first; the child was reaped without an acknowledgement.
++    TimedOut,
++    /// The observer could not take the opportunity, or dropped it without acknowledging.
++    Failed,
++    /// The exit could not be seen without reaping, so no opportunity was published.
++    Unavailable,
++}
++
++/// Registered with an observed spawn, before the child exists.
++#[derive(Debug)]
++pub struct ExitObserver {
++    /// Gets the one opportunity once the child has exited, before it is reaped. Dropped unsent
++    /// when no opportunity can be published.
++    pub opportunity: oneshot::Sender<ExitOpportunity>,
++    /// How long the waiter keeps the exited child unreaped for the observer.
++    pub bound: Duration,
++    /// Gets how the observation ended, once the child has been reaped.
++    pub outcome: oneshot::Sender<ObservationOutcome>,
++}
++
++/// One chance to observe an exited child before it is reaped. Dropping it without
++/// acknowledging ends the observation as [`ObservationOutcome::Failed`].
++pub struct ExitOpportunity {
++    window: Arc<Window>,
++}
++
++impl fmt::Debug for ExitOpportunity {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("ExitOpportunity").finish()
++    }
++}
++
++impl ExitOpportunity {
++    /// Let the waiter reap the child now. Refused once the bound has passed.
++    pub fn acknowledge(self) -> Result<(), OpportunityExpired> {
++        self.window.close(WindowState::Acknowledged)
++    }
++}
++
++impl Drop for ExitOpportunity {
++    fn drop(&mut self) {
++        let _ = self.window.close(WindowState::Abandoned);
++    }
++}
++
++/// Returned when an opportunity is acknowledged after its bound had passed.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct OpportunityExpired;
++
++impl fmt::Display for OpportunityExpired {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str("the exit opportunity's bound had already passed")
++    }
++}
++
++impl std::error::Error for OpportunityExpired {}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum WindowState {
++    Open,
++    Acknowledged,
++    Abandoned,
++    Expired,
++}
++
++struct Window {
++    state: Mutex<WindowState>,
++    changed: Condvar,
++}
++
++impl Window {
++    /// Close an open window as `state`; refused when it was already closed.
++    fn close(&self, state: WindowState) -> Result<(), OpportunityExpired> {
++        let Ok(mut current) = self.state.lock() else {
++            return Err(OpportunityExpired);
++        };
++        if *current != WindowState::Open {
++            return Err(OpportunityExpired);
++        }
++        *current = state;
++        self.changed.notify_all();
++        Ok(())
++    }
++
++    /// Wait until the window is closed or `deadline` passes, which expires it.
++    fn wait(&self, deadline: Instant) -> ObservationOutcome {
++        let Ok(mut state) = self.state.lock() else {
++            return ObservationOutcome::Failed;
++        };
++        loop {
++            match *state {
++                WindowState::Acknowledged => return ObservationOutcome::Completed,
++                WindowState::Abandoned => return ObservationOutcome::Failed,
++                WindowState::Expired => return ObservationOutcome::TimedOut,
++                WindowState::Open => {
++                    let now = Instant::now();
++                    if now >= deadline {
++                        *state = WindowState::Expired;
++                        return ObservationOutcome::TimedOut;
++                    }
++                    state = match self.changed.wait_timeout(state, deadline - now) {
++                        Ok((state, _)) => state,
++                        Err(_) => return ObservationOutcome::Failed,
++                    };
++                }
++            }
++        }
++    }
++}
++
++/// The observed waiter body: wait until the child `pid` has exited without reaping it, publish
++/// the opportunity, and wait for the acknowledgement or the bound. Whatever happens, then reap
++/// the child once through `reap`, as without an observer, and report the outcome.
++pub(crate) fn observed_wait<T>(
++    pid: Option<u32>,
++    observer: ExitObserver,
++    reap: impl FnOnce() -> T,
++) -> T {
++    let ExitObserver {
++        opportunity: publish,
++        bound,
++        outcome: report,
++    } = observer;
++    let outcome = match pid.map(wait_exited_unreaped) {
++        Some(Ok(())) => {
++            let window = Arc::new(Window {
++                state: Mutex::new(WindowState::Open),
++                changed: Condvar::new(),
++            });
++            let opportunity = ExitOpportunity {
++                window: Arc::clone(&window),
++            };
++            // A refused opportunity comes back and is dropped, which abandons the window.
++            match publish.send(opportunity) {
++                Ok(()) => window.wait(Instant::now() + bound),
++                Err(_) => ObservationOutcome::Failed,
++            }
++        }
++        Some(Err(_)) | None => ObservationOutcome::Unavailable,
++    };
++    let status = reap();
++    let _ = report.send(outcome);
++    status
++}
++
++/// Block until the child `pid` has exited, leaving it waitable for its own waiter.
++#[cfg(unix)]
++fn wait_exited_unreaped(pid: u32) -> std::io::Result<()> {
++    loop {
++        // SAFETY: an all-zero `siginfo_t` is a valid value for `waitid` to fill.
++        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
++        // SAFETY: `info` is valid for writes; `WNOWAIT` leaves the child's status unconsumed.
++        let result = unsafe {
++            libc::waitid(
++                libc::P_PID,
++                pid as libc::id_t,
++                &mut info,
++                libc::WEXITED | libc::WNOWAIT,
++            )
++        };
++        if result == 0 {
++            return Ok(());
++        }
++        let err = std::io::Error::last_os_error();
++        if err.kind() != std::io::ErrorKind::Interrupted {
++            return Err(err);
++        }
++    }
++}
++
++/// Exits cannot be seen without reaping here.
++#[cfg(not(unix))]
++fn wait_exited_unreaped(_pid: u32) -> std::io::Result<()> {
++    Err(std::io::ErrorKind::Unsupported.into())
++}
++
++#[cfg(all(test, unix))]
++#[path = "observe_tests.rs"]
++mod tests;
+diff --git a/codex-rs/utils/pty/src/observe_tests.rs b/codex-rs/utils/pty/src/observe_tests.rs
+new file mode 100644
+index 00000000..d9b6a54b
+--- /dev/null
++++ b/codex-rs/utils/pty/src/observe_tests.rs
+@@ -0,0 +1,456 @@
++// Added by the CodeSpace project (https://github.com/novelKR/CodeSpace) as a downstream patch
++// to rust-v0.154.0. Not part of upstream Codex.
++
++use std::collections::HashMap;
++use std::fs::File;
++use std::os::fd::AsRawFd;
++use std::path::Path;
++use std::time::Duration;
++use std::time::Instant;
++
++use pretty_assertions::assert_eq;
++use tokio::sync::mpsc;
++use tokio::sync::oneshot;
++use tokio::time::timeout;
++
++use super::ExitObserver;
++use super::ExitOpportunity;
++use super::ObservationOutcome;
++use super::OpportunityExpired;
++use crate::SpawnedProcess;
++use crate::TerminalSize;
++use crate::spawn_pty_process_observed;
++
++const PATIENCE: Duration = Duration::from_secs(10);
++
++/// The two Unix spawn paths: without inherited descriptors, and preserving one.
++#[derive(Clone, Copy, Debug)]
++enum SpawnPath {
++    Portable,
++    PreservingFds,
++}
++
++const PATHS: [SpawnPath; 2] = [SpawnPath::Portable, SpawnPath::PreservingFds];
++
++/// The observer's ends of an observed spawn.
++struct Observed {
++    opportunity: oneshot::Receiver<ExitOpportunity>,
++    outcome: oneshot::Receiver<ObservationOutcome>,
++}
++
++async fn spawn_observed(
++    script: &str,
++    path: SpawnPath,
++    bound: Duration,
++) -> anyhow::Result<(SpawnedProcess, Observed)> {
++    let env: HashMap<String, String> = std::env::vars().collect();
++    let (opportunity_tx, opportunity) = oneshot::channel();
++    let (outcome_tx, outcome) = oneshot::channel();
++    let observer = ExitObserver {
++        opportunity: opportunity_tx,
++        bound,
++        outcome: outcome_tx,
++    };
++    let devnull = File::open("/dev/null")?;
++    let inherited_fds = match path {
++        SpawnPath::Portable => Vec::new(),
++        SpawnPath::PreservingFds => vec![devnull.as_raw_fd()],
++    };
++    let spawned = spawn_pty_process_observed(
++        "/bin/sh",
++        &["-c".to_string(), script.to_string()],
++        Path::new("."),
++        &env,
++        &None,
++        TerminalSize::default(),
++        &inherited_fds,
++        observer,
++    )
++    .await?;
++    Ok((
++        spawned,
++        Observed {
++            opportunity,
++            outcome,
++        },
++    ))
++}
++
++/// Read the child's output until it has printed each of `markers` followed by a number and a
++/// line end, and return those numbers in order.
++async fn marker_pids<const N: usize>(
++    output: &mut mpsc::Receiver<Vec<u8>>,
++    markers: [&str; N],
++) -> anyhow::Result<[i32; N]> {
++    let mut collected = String::new();
++    loop {
++        let found = markers.map(|marker| {
++            let start = collected.find(marker)?;
++            let rest = &collected[start + marker.len()..];
++            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
++            (!digits.is_empty() && rest.len() > digits.len())
++                .then(|| digits.parse::<i32>().ok())
++                .flatten()
++        });
++        if found.iter().all(Option::is_some) {
++            return Ok(found.map(Option::unwrap_or_default));
++        }
++        let chunk = timeout(PATIENCE, output.recv())
++            .await?
++            .ok_or_else(|| anyhow::anyhow!("output ended before {markers:?}: {collected:?}"))?;
++        collected.push_str(&String::from_utf8_lossy(&chunk));
++    }
++}
++
++/// Whether this process's child `pid` has exited and is still unreaped.
++fn exited_unreaped(pid: i32) -> bool {
++    // SAFETY: an all-zero `siginfo_t` is a valid value for `waitid` to fill.
++    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
++    // SAFETY: `info` is valid for writes; `WNOWAIT` leaves the child's status unconsumed.
++    let result = unsafe {
++        libc::waitid(
++            libc::P_PID,
++            pid as libc::id_t,
++            &mut info,
++            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
++        )
++    };
++    // SAFETY: `waitid` filled `info`, or left the zero it was given.
++    result == 0 && unsafe { info.si_pid() } == pid
++}
++
++/// Whether `pid` is no longer this process's child to wait for: it has been reaped.
++fn reaped(pid: i32) -> bool {
++    // SAFETY: an all-zero `siginfo_t` is a valid value for `waitid` to fill.
++    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
++    // SAFETY: `info` is valid for writes; `WNOWAIT` leaves any status unconsumed.
++    let result = unsafe {
++        libc::waitid(
++            libc::P_PID,
++            pid as libc::id_t,
++            &mut info,
++            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
++        )
++    };
++    result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
++}
++
++fn alive(pid: i32) -> bool {
++    // SAFETY: signal 0 only checks that `pid` can be signalled.
++    unsafe { libc::kill(pid, 0) == 0 }
++}
++
++async fn ended(pid: i32) -> bool {
++    let deadline = Instant::now() + PATIENCE;
++    while alive(pid) {
++        if Instant::now() >= deadline {
++            return false;
++        }
++        tokio::time::sleep(Duration::from_millis(20)).await;
++    }
++    true
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn the_observer_sees_the_exit_before_the_reap() -> anyhow::Result<()> {
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed("echo pid:$$; exit 3", path, PATIENCE).await?;
++        let SpawnedProcess {
++            session,
++            mut stdout_rx,
++            exit_rx,
++            ..
++        } = spawned;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let [pid] = marker_pids(&mut stdout_rx, ["pid:"]).await?;
++
++        let opportunity = timeout(PATIENCE, opportunity).await??;
++        assert!(exited_unreaped(pid), "{path:?}");
++        assert!(!session.has_exited(), "{path:?}");
++
++        opportunity.acknowledge()?;
++        assert_eq!(timeout(PATIENCE, exit_rx).await??, 3, "{path:?}");
++        assert_eq!(
++            timeout(PATIENCE, outcome).await??,
++            ObservationOutcome::Completed,
++            "{path:?}"
++        );
++        assert!(reaped(pid), "{path:?}");
++    }
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn the_bound_reaps_without_an_acknowledgement() -> anyhow::Result<()> {
++    let bound = Duration::from_millis(300);
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed("exit 0", path, bound).await?;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let opportunity = timeout(PATIENCE, opportunity).await??;
++        let published = Instant::now();
++
++        assert_eq!(timeout(PATIENCE, spawned.exit_rx).await??, 0, "{path:?}");
++        assert!(
++            published.elapsed() >= bound - Duration::from_millis(50),
++            "{path:?}"
++        );
++        assert_eq!(
++            timeout(PATIENCE, outcome).await??,
++            ObservationOutcome::TimedOut,
++            "{path:?}"
++        );
++        // An acknowledgement after the bound is refused.
++        assert_eq!(
++            opportunity.acknowledge(),
++            Err(OpportunityExpired),
++            "{path:?}"
++        );
++    }
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_dropped_opportunity_reaps_at_once() -> anyhow::Result<()> {
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed("exit 0", path, PATIENCE).await?;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let started = Instant::now();
++        drop(timeout(PATIENCE, opportunity).await??);
++
++        assert_eq!(timeout(PATIENCE, spawned.exit_rx).await??, 0, "{path:?}");
++        assert!(started.elapsed() < PATIENCE / 2, "{path:?}");
++        assert_eq!(
++            timeout(PATIENCE, outcome).await??,
++            ObservationOutcome::Failed,
++            "{path:?}"
++        );
++    }
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_dropped_observer_does_not_keep_the_child_unreaped() -> anyhow::Result<()> {
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed("sleep 0.2; exit 0", path, PATIENCE).await?;
++        let started = Instant::now();
++        drop(observed);
++
++        assert_eq!(timeout(PATIENCE, spawned.exit_rx).await??, 0, "{path:?}");
++        assert!(started.elapsed() < PATIENCE / 2, "{path:?}");
++    }
++    Ok(())
++}
++
++/// A descendant that ignores the terminal's hangup outlives the root. While the exited root is
++/// unreaped, the descendant's process group is still the root's ID, so an observer can still
++/// attribute it.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_surviving_descendant_still_has_the_roots_group_in_the_window() -> anyhow::Result<()> {
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed(
++            "trap '' HUP; sleep 30 & echo bg:$!; echo pid:$$; exit 0",
++            path,
++            PATIENCE,
++        )
++        .await?;
++        let SpawnedProcess {
++            mut stdout_rx,
++            exit_rx,
++            ..
++        } = spawned;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let [descendant, pid] = marker_pids(&mut stdout_rx, ["bg:", "pid:"]).await?;
++
++        let opportunity = timeout(PATIENCE, opportunity).await??;
++        assert!(exited_unreaped(pid), "{path:?}");
++        assert!(alive(descendant), "{path:?}");
++        // SAFETY: getpgid only reads the process group of `descendant`.
++        assert_eq!(unsafe { libc::getpgid(descendant) }, pid, "{path:?}");
++
++        opportunity.acknowledge()?;
++        assert_eq!(timeout(PATIENCE, exit_rx).await??, 0, "{path:?}");
++        assert_eq!(
++            timeout(PATIENCE, outcome).await??,
++            ObservationOutcome::Completed,
++            "{path:?}"
++        );
++        // The reap does not end the descendant.
++        assert!(alive(descendant), "{path:?}");
++        // SAFETY: SIGKILL to the test's own descendant.
++        unsafe { libc::kill(descendant, libc::SIGKILL) };
++        assert!(ended(descendant).await, "{path:?}");
++    }
++    Ok(())
++}
++
++/// Termination while the exited root is unreaped reaches the whole group, and the child is
++/// still reaped once, by its waiter.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn terminate_in_the_window_kills_the_group_and_reaps_once() -> anyhow::Result<()> {
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed(
++            "trap '' HUP; sleep 30 & echo bg:$!; echo pid:$$; exit 0",
++            path,
++            PATIENCE,
++        )
++        .await?;
++        let SpawnedProcess {
++            session,
++            mut stdout_rx,
++            exit_rx,
++            ..
++        } = spawned;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let [descendant, pid] = marker_pids(&mut stdout_rx, ["bg:", "pid:"]).await?;
++
++        let opportunity = timeout(PATIENCE, opportunity).await??;
++        session.terminate();
++        assert!(ended(descendant).await, "{path:?}");
++        assert!(exited_unreaped(pid), "{path:?}");
++
++        opportunity.acknowledge()?;
++        assert_eq!(timeout(PATIENCE, exit_rx).await??, 0, "{path:?}");
++        assert_eq!(
++            timeout(PATIENCE, outcome).await??,
++            ObservationOutcome::Completed,
++            "{path:?}"
++        );
++        assert!(reaped(pid), "{path:?}");
++    }
++    Ok(())
++}
++
++/// Dropping the process handle in the window leaves the waiter to it: the child is reaped once,
++/// after the acknowledgement.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_handle_dropped_in_the_window_still_reaps_after_the_acknowledgement() -> anyhow::Result<()>
++{
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed("echo pid:$$; exit 0", path, PATIENCE).await?;
++        let SpawnedProcess {
++            session,
++            mut stdout_rx,
++            exit_rx,
++            ..
++        } = spawned;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let [pid] = marker_pids(&mut stdout_rx, ["pid:"]).await?;
++
++        let opportunity = timeout(PATIENCE, opportunity).await??;
++        drop(session);
++        tokio::time::sleep(Duration::from_millis(200)).await;
++        assert!(exited_unreaped(pid), "{path:?}");
++
++        opportunity.acknowledge()?;
++        assert_eq!(timeout(PATIENCE, exit_rx).await??, 0, "{path:?}");
++        assert_eq!(
++            timeout(PATIENCE, outcome).await??,
++            ObservationOutcome::Completed,
++            "{path:?}"
++        );
++        assert!(reaped(pid), "{path:?}");
++    }
++    Ok(())
++}
++
++/// Output the child wrote before it exited still drains while the child is unreaped.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn the_output_drains_while_the_child_is_unreaped() -> anyhow::Result<()> {
++    const BYTES: usize = 262_144;
++    for path in PATHS {
++        let (spawned, observed) = spawn_observed(
++            &format!("head -c {BYTES} /dev/zero | tr '\\0' x"),
++            path,
++            PATIENCE,
++        )
++        .await?;
++        let SpawnedProcess {
++            mut stdout_rx,
++            exit_rx,
++            ..
++        } = spawned;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let drained = tokio::spawn(async move {
++            let mut count = 0;
++            while count < BYTES
++                && let Some(chunk) = stdout_rx.recv().await
++            {
++                count += chunk.iter().filter(|byte| **byte == b'x').count();
++            }
++            count
++        });
++
++        let opportunity = timeout(PATIENCE, opportunity).await??;
++        opportunity.acknowledge()?;
++        assert_eq!(timeout(PATIENCE, exit_rx).await??, 0, "{path:?}");
++        assert_eq!(
++            timeout(PATIENCE, outcome).await??,
++            ObservationOutcome::Completed,
++            "{path:?}"
++        );
++        assert_eq!(timeout(PATIENCE, drained).await??, BYTES, "{path:?}");
++    }
++    Ok(())
++}
++
++/// An observer that never acknowledges holds a shutdown of the spawning runtime for the bound,
++/// and no longer.
++#[test]
++fn a_runtime_shutdown_in_the_window_waits_only_for_the_bound() -> anyhow::Result<()> {
++    let bound = Duration::from_millis(500);
++    for path in PATHS {
++        let runtime = tokio::runtime::Builder::new_multi_thread()
++            .worker_threads(1)
++            .enable_all()
++            .build()?;
++        let (spawned, observed) = runtime.block_on(spawn_observed("exit 0", path, bound))?;
++        let Observed {
++            opportunity,
++            outcome,
++        } = observed;
++        let opportunity = runtime.block_on(async { timeout(PATIENCE, opportunity).await })??;
++
++        let started = Instant::now();
++        drop(spawned);
++        runtime.shutdown_timeout(PATIENCE);
++        let held = started.elapsed();
++        assert!(
++            held >= bound - Duration::from_millis(100),
++            "{path:?} {held:?}"
++        );
++        assert!(held < PATIENCE / 2, "{path:?} {held:?}");
++
++        assert_eq!(
++            outcome.blocking_recv()?,
++            ObservationOutcome::TimedOut,
++            "{path:?}"
++        );
++        assert_eq!(
++            opportunity.acknowledge(),
++            Err(OpportunityExpired),
++            "{path:?}"
++        );
++    }
++    Ok(())
++}
+diff --git a/codex-rs/utils/pty/src/pty.rs b/codex-rs/utils/pty/src/pty.rs
+index 1b848b33..d589366f 100644
+--- a/codex-rs/utils/pty/src/pty.rs
++++ b/codex-rs/utils/pty/src/pty.rs
+@@ -1,3 +1,7 @@
++// Modified by the CodeSpace project (https://github.com/novelKR/CodeSpace) as a downstream patch
++// to rust-v0.154.0: `spawn_process_observed` and both Unix waiters' bounded pre-reap exit
++// observation (see `observe.rs`).
++
+ use std::collections::HashMap;
+ #[cfg(unix)]
+ use std::fs::File;
+@@ -29,6 +33,8 @@ use tokio::sync::mpsc;
+ use tokio::sync::oneshot;
+ use tokio::task::JoinHandle;
+ 
++use crate::observe::ExitObserver;
++use crate::observe::observed_wait;
+ use crate::process::ChildTerminator;
+ use crate::process::ProcessHandle;
+ use crate::process::ProcessSignal;
+@@ -133,6 +139,61 @@ pub async fn spawn_process(
+     arg0: &Option<String>,
+     size: TerminalSize,
+     inherited_fds: &[i32],
++) -> Result<SpawnedProcess> {
++    spawn_process_with_observer(
++        program,
++        args,
++        cwd,
++        env,
++        arg0,
++        size,
++        inherited_fds,
++        /*observer*/ None,
++    )
++    .await
++}
++
++/// As [`spawn_process`], with `observer` registered before the spawn: once the child has exited,
++/// its waiter publishes one bounded opportunity while the child is still unreaped, then reaps it
++/// as usual (see [`crate::observe`]). Unix only; elsewhere the spawn is refused before any
++/// process is created.
++#[allow(clippy::too_many_arguments)]
++pub async fn spawn_process_observed(
++    program: &str,
++    args: &[String],
++    cwd: &Path,
++    env: &HashMap<String, String>,
++    arg0: &Option<String>,
++    size: TerminalSize,
++    inherited_fds: &[i32],
++    observer: ExitObserver,
++) -> Result<SpawnedProcess> {
++    if cfg!(not(unix)) {
++        anyhow::bail!("exit observation is not supported on this platform");
++    }
++    spawn_process_with_observer(
++        program,
++        args,
++        cwd,
++        env,
++        arg0,
++        size,
++        inherited_fds,
++        Some(observer),
++    )
++    .await
++}
++
++#[allow(clippy::too_many_arguments)]
++async fn spawn_process_with_observer(
++    program: &str,
++    args: &[String],
++    cwd: &Path,
++    env: &HashMap<String, String>,
++    arg0: &Option<String>,
++    size: TerminalSize,
++    inherited_fds: &[i32],
++    observer: Option<ExitObserver>,
+ ) -> Result<SpawnedProcess> {
+     if program.is_empty() {
+         anyhow::bail!("missing program for PTY spawn");
+@@ -143,11 +204,20 @@ pub async fn spawn_process(
+ 
+     #[cfg(unix)]
+     if !inherited_fds.is_empty() {
+-        return spawn_process_preserving_fds(program, args, cwd, env, arg0, size, inherited_fds)
+-            .await;
++        return spawn_process_preserving_fds(
++            program,
++            args,
++            cwd,
++            env,
++            arg0,
++            size,
++            inherited_fds,
++            observer,
++        )
++        .await;
+     }
+ 
+-    spawn_process_portable(program, args, cwd, env, arg0, size).await
++    spawn_process_portable(program, args, cwd, env, arg0, size, observer).await
+ }
+ 
+ async fn spawn_process_portable(
+@@ -157,6 +227,7 @@ async fn spawn_process_portable(
+     env: &HashMap<String, String>,
+     arg0: &Option<String>,
+     size: TerminalSize,
++    observer: Option<ExitObserver>,
+ ) -> Result<SpawnedProcess> {
+     let pty_system = platform_native_pty_system();
+     let pair = pty_system.openpty(size.into())?;
+@@ -242,7 +313,12 @@ async fn spawn_process_portable(
+     let exit_code = Arc::new(StdMutex::new(None));
+     let wait_exit_code = Arc::clone(&exit_code);
+     let wait_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
+-        let code = match child.wait() {
++        let status = match observer {
++            // The same single waiter, which gives the observer its opportunity before it reaps.
++            Some(observer) => observed_wait(child.process_id(), observer, || child.wait()),
++            None => child.wait(),
++        };
++        let code = match status {
+             Ok(status) => status.exit_code() as i32,
+             Err(_) => -1,
+         };
+@@ -288,6 +364,7 @@ async fn spawn_process_portable(
+ }
+ 
+ #[cfg(unix)]
++#[allow(clippy::too_many_arguments)]
+ async fn spawn_process_preserving_fds(
+     program: &str,
+     args: &[String],
+@@ -296,6 +373,7 @@ async fn spawn_process_preserving_fds(
+     arg0: &Option<String>,
+     size: TerminalSize,
+     inherited_fds: &[RawFd],
++    observer: Option<ExitObserver>,
+ ) -> Result<SpawnedProcess> {
+     let (master, slave) = open_unix_pty(size)?;
+     let io = crate::unix_io::PtyIo::new(master.as_raw_fd())?;
+@@ -376,7 +454,12 @@ async fn spawn_process_preserving_fds(
+     let exit_code = Arc::new(StdMutex::new(None));
+     let wait_exit_code = Arc::clone(&exit_code);
+     let wait_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
+-        let code = match child.wait() {
++        let status = match observer {
++            // The same single waiter, which gives the observer its opportunity before it reaps.
++            Some(observer) => observed_wait(Some(child.id()), observer, || child.wait()),
++            None => child.wait(),
++        };
++        let code = match status {
+             Ok(status) => exit_code_from_status(status),
+             Err(_) => -1,
+         };
+-- 
+2.43.0
+

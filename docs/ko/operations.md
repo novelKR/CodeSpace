@@ -11,13 +11,15 @@ macOS 또는 Linux에서 개인용 단일 사용자 서버를 준비하는 방�
 
 ## 설치
 
-Git과 CI에서 사용하는 최신 Rust stable 도구 체인을 준비하세요. 루트 manifest에는 Rust 1.88이 선언되어 있지만 Codex 어댑터 전체의 최소 빌드 버전으로 검증된 값은 아닙니다. 고정된 업스트림 소스는 Rust 1.95.0을 지정합니다. macOS에는 Xcode 명령줄 도구를 설치하세요. Linux 명령 격리에는 샌드박스 도우미, bubblewrap, 필요한 네임스페이스를 생성할 권한이 추가로 필요합니다. Docker는 별도의 [컨테이너 실험 구성](../../deploy/README.md)을 사용할 때만 필요합니다.
+Git, Python 3, CI에서 사용하는 최신 Rust stable 도구 체인을 준비하세요. 루트 manifest에는 Rust 1.88이 선언되어 있지만 Codex 어댑터 전체의 최소 빌드 버전으로 검증된 값은 아닙니다. 고정된 업스트림 소스는 Rust 1.95.0을 지정합니다. macOS에는 Xcode 명령줄 도구를 설치하세요. Linux 명령 격리에는 샌드박스 도우미, bubblewrap, 필요한 네임스페이스를 생성할 권한이 추가로 필요합니다. Docker는 별도의 [컨테이너 실험 구성](../../deploy/README.md)을 사용할 때만 필요합니다.
 
 ```bash
 git clone --recurse-submodules https://github.com/novelKR/CodeSpace.git
 cd CodeSpace
 # 이미 복제한 저장소에서도 서브모듈을 초기화합니다.
 git submodule update --init --recursive
+# CodeSpace가 기록한 Codex 패치를 적용합니다. 서브모듈을 갱신할 때마다 다시 실행합니다.
+python3 scripts/codex_patch.py apply
 cargo build --locked -p codespace-server --bin codespace-mcp --release
 cargo build --locked --manifest-path crates/patch/Cargo.toml --bin codespace-patch --release
 mkdir -p dist

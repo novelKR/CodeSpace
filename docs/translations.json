@@ -201,8 +201,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "004d143763000d45ac44ee5b95cd2f62810d8b89024488bc4aebada37e00b9a5",
-      "translation_sha256": "cfabfcac93d4f9d8fe68d67c7237fc9c0555543c4ce9459f8d52e71a8a942e1f"
+      "source_sha256": "de7bbd350892090e5fb352a06e47ce8e95f96b0c2b2dc6128a4edef5f1d9af2b",
+      "translation_sha256": "aed949328aff2698dbc138d4335ceb97f5c42f0fb1ed8499eb6c0e6469fdc90d"
     },
     {
       "id": "chatgpt-connector",
@@ -622,11 +622,13 @@
       "anchors": [
         "cargo-workspace와-잠금-파일",
         "check-and-update",
+        "codex-downstream-patch",
         "codex-고정-버전",
         "deployment-pin",
         "deployment-pin-w06",
         "devguard-client-pin",
         "devguard-client-고정-버전",
+        "downstream-patch",
         "pinned-codex-revision",
         "promotion-rule",
         "upstream-lock",
@@ -644,10 +646,11 @@
         "업스트림-고정",
         "재사용하는-것과-거절하는-것",
         "파일-복사-벤더가-금지인-이유",
+        "하위-패치",
         "확인과-갱신"
       ],
-      "source_sha256": "bcc3fe556188b33bddf52ffa3964639f34ec68f96d69f87995aad9c92bce04f2",
-      "translation_sha256": "203d196d391c41b436b9fb561082db7175bb0675c930addea0cd873eefc0530c"
+      "source_sha256": "ea6677eadb9cd5e260a4a116af6f986b8620620242b5132f69cda9566fab6553",
+      "translation_sha256": "3dffdbdd89fa275b154dfd13b8c58e72fa851999aa27c65cbbf2124d4abc016f"
     },
     {
       "id": "upstream-update",
@@ -682,8 +685,8 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "b9dc9fdb4f6634b9f149540513dbbb9ae72d490a0ab02adc579d1092ad689f56",
-      "translation_sha256": "6297a87a070817627e236efd49f7999034f84018d23db198880d2ef8c92e88f7"
+      "source_sha256": "473740c5f4d701e1f0d7bb3fb3e2486c2f8489250f718b30d2733f0bf2231786",
+      "translation_sha256": "cf0f60641c837ffe106c0a3f493fa06e0b792547cceb0460b3d94d0423e3d2be"
     },
     {
       "id": "documentation",

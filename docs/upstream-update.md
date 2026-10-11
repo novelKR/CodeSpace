@@ -14,15 +14,15 @@ Update the pinned revision through a reviewed PR. The change can affect every ad
 
 Choose an explicit tag or commit and record the reason. Inspect relevant upstream changes in patch handling, PTY, hardening, filesystem, sandbox, and proxy code. Check runtime and development dependencies separately; the presence of a development-only dependency is not proof that it enters the product binary.
 
-Update the submodule, [pin record](upstream-lock.md), affected adapter locks, and attribution when needed. Preserve the separation between core types and Codex adapter types. Never copy a single upstream crate into the product to conceal an incompatible dependency.
+Revert the recorded Codex patches with `python3 scripts/codex_patch.py revert` before moving the submodule. Update the submodule, [pin record](upstream-lock.md), affected adapter locks, and attribution when needed. Preserve the separation between core types and Codex adapter types. Never copy a single upstream crate into the product to conceal an incompatible dependency.
 
-No limited adaptation of upstream code exists today. If one is added under the [adaptation policy](codex-reuse.md), review it on every pin change: compare it with the candidate's upstream source against its recorded re-examination condition, update its recorded provenance and divergence, rerun its tests, and remove it or reconverge with upstream when its removal condition holds. Adopting a newer upstream API needs this separate pin update; it is never a side effect of another change.
+One limited adaptation of upstream code exists: the [downstream patch](upstream-lock.md#codex-downstream-patch) to `codex-utils-pty`, applied to the files of the pinned release. Review each adaptation under the [adaptation policy](codex-reuse.md) on every pin change: compare it with the candidate's upstream source against its recorded re-examination condition, update its recorded provenance and divergence, rerun its tests, and remove it or reconverge with upstream when its removal condition holds. Adopting a newer upstream API needs this separate pin update; it is never a side effect of another change.
 
 <a id="local-gate"></a>
 
 ## Validate before submission
 
-1. Check the pin with `PIN_ONLY=1 ./scripts/check-upstream-pin.sh`.
+1. Apply the recorded patches with `python3 scripts/codex_patch.py apply`, then check the pin and the patched tree with `PIN_ONLY=1 ./scripts/check-upstream-pin.sh`.
 2. Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and tests for the root workspace and each isolated adapter: patch, codex-runtime, pty, file-system, linux-sandbox.
 3. Build the patch, runtime, and Linux helper binaries; point integration tests at the intended binaries. Run workspace integration and protocol tests.
 4. On Linux with bubblewrap and namespace support, run the sandbox isolation tests with `CODESPACE_REQUIRE_LINUX_SANDBOX=1`. Include restricted denial and enabled proxy behavior.
