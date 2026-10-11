@@ -114,6 +114,7 @@ struct Slot {
     output: Arc<Mutex<OutputBuf>>,
     completed_at: Arc<Mutex<Option<Instant>>>,
     lifecycle: Arc<Mutex<Lifecycle>>,
+    on_kill: Option<KillHook>,
 }
 
 enum SessionIo {
@@ -147,6 +148,52 @@ pub(crate) mod inheritable_window {
             }
         }
     }
+}
+
+/// Lets a test hold a pipe child's reaper, so that an exited child stays unreaped while other
+/// paths act on it, and count the reaps.
+#[cfg(test)]
+pub(crate) mod reaper_gate {
+    use std::sync::Mutex;
+
+    static HELD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static REAPS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Hold `process_id`'s reaper until [`release`].
+    pub(crate) fn hold(process_id: &str) {
+        HELD.lock().unwrap().push(process_id.to_owned());
+    }
+
+    pub(crate) fn release(process_id: &str) {
+        HELD.lock().unwrap().retain(|id| id != process_id);
+    }
+
+    /// How many times `process_id`'s child was reaped.
+    pub(crate) fn reaps(process_id: &str) -> usize {
+        REAPS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| *id == process_id)
+            .count()
+    }
+
+    pub(super) fn held(process_id: &str) -> bool {
+        HELD.lock().unwrap().iter().any(|id| id == process_id)
+    }
+
+    pub(super) fn reaped(process_id: &str) {
+        REAPS.lock().unwrap().push(process_id.to_owned());
+    }
+}
+
+#[cfg(not(test))]
+mod reaper_gate {
+    pub(super) fn held(_process_id: &str) -> bool {
+        false
+    }
+
+    pub(super) fn reaped(_process_id: &str) {}
 }
 
 /// What a spawn starts: the request's own command, or a governed execution's launch helper.
@@ -229,6 +276,58 @@ impl Managed {
     }
 }
 
+/// When a process's reaper calls its exit observer (CSRG-U5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitPoint {
+    /// The root has exited and is not reaped yet, so it still holds its PID.
+    BeforeReap,
+    /// The root has been reaped.
+    AfterReap,
+}
+
+/// A hook that a process's one reaper calls while the exited root is still unreaped, and again
+/// once it has reaped it (CSRG-U5): for example to have a resource authority observe the
+/// process's scope while its group ID still provably names it. It runs on a blocking thread
+/// for at most [`OBSERVE_BOUND`]; when it fails or runs longer the reaper reaps anyway, and
+/// nothing else ever waits for the child. A PTY child is reaped inside the pinned Codex PTY,
+/// so its observer is called after the reap only.
+pub type ExitObserver = Arc<dyn Fn(ExitPoint) + Send + Sync>;
+
+/// How long a reaper waits for its exit observer.
+pub const OBSERVE_BOUND: Duration = Duration::from_secs(2);
+
+/// Call `observer` at `point`, for at most [`OBSERVE_BOUND`].
+async fn observe(observer: &Option<ExitObserver>, point: ExitPoint) {
+    let Some(observer) = observer.clone() else {
+        return;
+    };
+    let call = tokio::task::spawn_blocking(move || observer(point));
+    let _ = tokio::time::timeout(OBSERVE_BOUND, call).await;
+}
+
+/// A hook called when CodeSpace kills a process, on termination or timeout (CSRG-U5): on its
+/// own blocking thread and never awaited, so the process's own kill does not depend on it; for
+/// example to have a resource authority end the process's whole scope.
+pub type KillHook = Arc<dyn Fn() + Send + Sync>;
+
+/// What a spawn adds to its process (CSRG-U5): a governed execution's exit observer and kill
+/// hook. An ungoverned process has neither.
+#[derive(Clone, Default)]
+pub struct ProcessHooks {
+    pub observer: Option<ExitObserver>,
+    pub on_kill: Option<KillHook>,
+}
+
+/// Run `hook` after CodeSpace's own kill, without waiting for it.
+fn after_kill(hook: &Option<KillHook>) {
+    let Some(hook) = hook.clone() else {
+        return;
+    };
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn_blocking(move || hook());
+    }
+}
+
 struct SpawnCtx {
     cwd: PathBuf,
     cap: usize,
@@ -237,6 +336,7 @@ struct SpawnCtx {
     completed_at: Arc<Mutex<Option<Instant>>>,
     lifecycle: Arc<Mutex<Lifecycle>>,
     process_id: String,
+    hooks: ProcessHooks,
 }
 
 #[derive(Default)]
@@ -450,14 +550,17 @@ impl InProcessRunner {
         }
         // The slot first: no process is created without one.
         let slot = self.reserve_slot(&req.process_id.0)?;
-        self.spawn_slotted(ws, req, slot, How::Direct).await
+        self.spawn_slotted(ws, req, slot, How::Direct, ProcessHooks::default())
+            .await
     }
 
     /// Start a governed execution's launch helper through this runner's own pipe or PTY spawner
     /// (CSRG-U4), filling the slot its preparation took. The helper alone receives the
     /// invocation's two descriptors, and this process's copies are closed as soon as the spawn
     /// returns. The helper becomes the execution: from here it is a process like any other.
-    /// Returns the spawn's result and the owner's end of the helper's transcript.
+    /// Its reaper calls `hooks.observer` before and after the reap, and CodeSpace's kills call
+    /// `hooks.on_kill` (CSRG-U5). Returns the spawn's result and the owner's end of the helper's
+    /// transcript.
     #[cfg(feature = "devguard")]
     pub(crate) async fn spawn_managed(
         &self,
@@ -465,13 +568,14 @@ impl InProcessRunner {
         req: RunnerExecRequest,
         slot: SlotReservation,
         invocation: codespace_devguard::launch::HelperInvocation,
+        hooks: ProcessHooks,
     ) -> (
         Result<RunnerExecResult, ErrorBody>,
         codespace_devguard::launch::Transcript,
     ) {
         let managed = Arc::new(Managed::new(invocation));
         let result = self
-            .spawn_slotted(ws, req, slot, How::Managed(managed.clone()))
+            .spawn_slotted(ws, req, slot, How::Managed(managed.clone()), hooks)
             .await;
         (result, managed.finish())
     }
@@ -482,6 +586,7 @@ impl InProcessRunner {
         req: RunnerExecRequest,
         slot: SlotReservation,
         how: How,
+        hooks: ProcessHooks,
     ) -> Result<RunnerExecResult, ErrorBody> {
         let cap = req.output_bytes_cap.max(1) as usize;
         let timeout = Duration::from_millis(req.timeout_ms.max(1));
@@ -496,6 +601,7 @@ impl InProcessRunner {
             completed_at: Arc::new(Mutex::new(None)),
             lifecycle: Arc::new(Mutex::new(Lifecycle::new())),
             process_id: req.process_id.0.clone(),
+            hooks,
         };
         if req.tty {
             self.spawn_pty(ws, req, ctx, slot, how).await
@@ -520,7 +626,9 @@ impl InProcessRunner {
             completed_at,
             lifecycle,
             process_id,
+            hooks,
         } = ctx;
+        let ProcessHooks { observer, on_kill } = hooks;
         let (mut child, launch) = match &how {
             How::Direct => {
                 let launch = exec_launch(ws, &req)?;
@@ -579,6 +687,7 @@ impl InProcessRunner {
             output: output.clone(),
             completed_at: completed_at.clone(),
             lifecycle: lifecycle.clone(),
+            on_kill: on_kill.clone(),
         };
         {
             let mut map = self.inner.lock().expect("runner");
@@ -601,7 +710,7 @@ impl InProcessRunner {
         let wait_release = self.on_release.clone();
         let wait_process = process_id;
         tokio::spawn(async move {
-            reap_child(wait_child, wait_life).await;
+            reap_child(wait_child, wait_life, &wait_process, observer).await;
             join_pump(out_handle).await;
             join_pump(err_handle).await;
             if let Ok(mut buf) = wait_out.lock() {
@@ -620,27 +729,17 @@ impl InProcessRunner {
             tokio::time::sleep(timeout).await;
             let mut ch = timeout_child.lock().expect("child");
             let mut life = timeout_life.lock().expect("lifecycle");
-            if life.finished {
+            // Only the reaper waits: a child that has exited ended on its own, and the reaper
+            // records how; one that has not is still unreaped, so the kill reaches it alone.
+            if life.finished || exited_unreaped(&ch) {
                 return;
             }
-            match ch.try_wait() {
-                Ok(Some(status)) => life.finish_wait(status.code(), status.signal()),
-                Ok(None) => {
-                    life.note_kill(KillIntent::Timeout);
-                    let _ = ch.start_kill();
-                    drop(life);
-                    if let Ok(mut buf) = timeout_out.lock() {
-                        buf.timed_out = true;
-                    }
-                }
-                Err(_) => {
-                    life.note_kill(KillIntent::Timeout);
-                    life.finish_lost();
-                    drop(life);
-                    if let Ok(mut buf) = timeout_out.lock() {
-                        buf.timed_out = true;
-                    }
-                }
+            life.note_kill(KillIntent::Timeout);
+            let _ = ch.start_kill();
+            drop(life);
+            after_kill(&on_kill);
+            if let Ok(mut buf) = timeout_out.lock() {
+                buf.timed_out = true;
             }
         });
 
@@ -665,7 +764,9 @@ impl InProcessRunner {
             completed_at,
             lifecycle,
             process_id,
+            hooks,
         } = ctx;
+        let ProcessHooks { observer, on_kill } = hooks;
         let launch = match &how {
             How::Direct => Some(exec_launch(ws, &req)?),
             #[cfg(feature = "devguard")]
@@ -750,6 +851,7 @@ impl InProcessRunner {
             output: output.clone(),
             completed_at: completed_at.clone(),
             lifecycle: lifecycle.clone(),
+            on_kill: on_kill.clone(),
         };
         {
             let mut map = self.inner.lock().expect("runner");
@@ -776,6 +878,8 @@ impl InProcessRunner {
                     .finish_wait(Some(code), None),
                 Err(_) => wait_life.lock().expect("lifecycle").finish_lost(),
             }
+            // The pinned Codex PTY has reaped the root already: observed after the reap only.
+            observe(&observer, ExitPoint::AfterReap).await;
             join_pump(out_handle).await;
             if let Ok(mut buf) = wait_out.lock() {
                 buf.eof = true;
@@ -798,6 +902,7 @@ impl InProcessRunner {
             life.note_kill(KillIntent::Timeout);
             drop(life);
             timeout_session.kill();
+            after_kill(&on_kill);
             if let Ok(mut buf) = timeout_out.lock() {
                 buf.timed_out = true;
             }
@@ -979,28 +1084,80 @@ impl InProcessRunner {
     }
 }
 
-async fn reap_child(child: Arc<Mutex<Child>>, lifecycle: Arc<Mutex<Lifecycle>>) {
+/// A pipe child's one reaper (CSRG-U5): no other path waits for it. Timeout and termination
+/// record their intent and signal only a child this has not reaped yet, and a dropped child is
+/// left to tokio's orphan queue only once this task is gone (shutdown).
+async fn reap_child(
+    child: Arc<Mutex<Child>>,
+    lifecycle: Arc<Mutex<Lifecycle>>,
+    process_id: &str,
+    observer: Option<ExitObserver>,
+) {
     loop {
-        {
-            let mut ch = child.lock().expect("child");
-            let mut life = lifecycle.lock().expect("lifecycle");
-            if life.finished {
-                return;
-            }
-            match ch.try_wait() {
-                Ok(Some(status)) => {
-                    life.finish_wait(status.code(), status.signal());
+        if !reaper_gate::held(process_id) {
+            let exited = {
+                let ch = child.lock().expect("child");
+                if lifecycle.lock().expect("lifecycle").finished {
                     return;
                 }
-                Ok(None) => {}
-                Err(_) => {
-                    life.finish_lost();
+                exited_unreaped(&ch)
+            };
+            if exited {
+                // The exited root still holds its PID: observed now, then reaped, then
+                // observed again.
+                observe(&observer, ExitPoint::BeforeReap).await;
+                let reaped = {
+                    let mut ch = child.lock().expect("child");
+                    let mut life = lifecycle.lock().expect("lifecycle");
+                    match ch.try_wait() {
+                        Ok(Some(status)) => {
+                            reaper_gate::reaped(process_id);
+                            life.finish_wait(status.code(), status.signal());
+                            true
+                        }
+                        Ok(None) => false,
+                        Err(_) => {
+                            life.finish_lost();
+                            true
+                        }
+                    }
+                };
+                if reaped {
+                    observe(&observer, ExitPoint::AfterReap).await;
                     return;
                 }
             }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// Whether `child` has exited, seen without reaping it. Until its reaper waits, an exited child
+/// still holds its PID, so no other process can be reached through that PID.
+fn exited_unreaped(child: &Child) -> bool {
+    let Some(pid) = child.id() else {
+        // tokio has seen its exit.
+        return true;
+    };
+    // SAFETY: an all-zero `siginfo_t` is valid, and zero `si_pid` is how `waitid` with
+    // `WNOHANG` reports that no child has exited.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a valid `siginfo_t`; `WNOWAIT` leaves the child waitable for its
+    // reaper and `WNOHANG` returns at once.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result == -1 {
+        // Not this process's child any more: never signal that PID.
+        return std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
+    }
+    // SAFETY: `waitid` filled `info`, or left the zero it was given.
+    unsafe { info.si_pid() != 0 }
 }
 
 async fn join_pump(handle: Option<JoinHandle<()>>) {
@@ -1014,26 +1171,16 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
         SessionIo::Pipe { child, .. } => {
             let mut child = child.lock().expect("child");
             let mut life = slot.lifecycle.lock().expect("lifecycle");
-            if life.finished {
+            // Only the reaper waits (see `reap_child`): an exited child is left to it.
+            if life.finished || exited_unreaped(&child) {
                 return Ok(false);
             }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    life.finish_wait(status.code(), status.signal());
-                    Ok(false)
-                }
-                Ok(None) => {
-                    life.note_kill(KillIntent::Terminated);
-                    child
-                        .start_kill()
-                        .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
-                    Ok(true)
-                }
-                Err(_) => {
-                    life.finish_lost();
-                    Ok(false)
-                }
-            }
+            life.note_kill(KillIntent::Terminated);
+            child
+                .start_kill()
+                .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+            after_kill(&slot.on_kill);
+            Ok(true)
         }
         SessionIo::Pty { session, .. } => {
             let mut life = slot.lifecycle.lock().expect("lifecycle");
@@ -1042,6 +1189,7 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
             }
             life.note_kill(KillIntent::Terminated);
             session.kill();
+            after_kill(&slot.on_kill);
             Ok(true)
         }
     }
@@ -2042,6 +2190,450 @@ mod tests {
             err.as_execution().map(|body| body.code),
             Some(ErrorCode::Timeout)
         );
+    }
+
+    /// Wait until `process_id`'s pipe child has exited, while its reaper is held.
+    async fn exited_but_unreaped(runner: &InProcessRunner, process_id: &ProcessId) {
+        for _ in 0..250 {
+            let exited = {
+                let map = runner.inner.lock().unwrap();
+                match &map[&process_id.0].io {
+                    SessionIo::Pipe { child, .. } => exited_unreaped(&child.lock().unwrap()),
+                    SessionIo::Pty { .. } => panic!("{} is not a pipe child", process_id.0),
+                }
+            };
+            if exited {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("{} did not exit", process_id.0);
+    }
+
+    fn held_request(argv: &[&str], process_id: &ProcessId, timeout_ms: u64) -> RunnerExecRequest {
+        reaper_gate::hold(&process_id.0);
+        let mut req = RunnerExecRequest::for_host(
+            argv.iter().map(|arg| arg.to_string()).collect(),
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.timeout_ms = timeout_ms;
+        req
+    }
+
+    /// Spawn `argv` with `observer`, as a governed execution's spawn does.
+    async fn spawn_observed(
+        runner: &InProcessRunner,
+        ws: &Workspace,
+        process_id: &ProcessId,
+        argv: &[&str],
+        tty: bool,
+        observer: ExitObserver,
+    ) {
+        let mut req = RunnerExecRequest::for_host(
+            argv.iter().map(|arg| arg.to_string()).collect(),
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = tty;
+        let slot = runner.reserve_slot(&process_id.0).unwrap();
+        runner
+            .spawn_slotted(
+                ws,
+                req,
+                slot,
+                How::Direct,
+                ProcessHooks {
+                    observer: Some(observer),
+                    on_kill: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_observer_sees_the_exited_root_unreaped_then_reaped() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-observed-pipe".into());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observer: ExitObserver = {
+            let (runner, process_id, seen) = (runner.clone(), process_id.clone(), seen.clone());
+            Arc::new(move |point| {
+                let unreaped = {
+                    let map = runner.inner.lock().unwrap();
+                    match &map[&process_id.0].io {
+                        SessionIo::Pipe { child, .. } => {
+                            let child = child.lock().unwrap();
+                            child.id().is_some() && exited_unreaped(&child)
+                        }
+                        SessionIo::Pty { .. } => panic!("not a pipe child"),
+                    }
+                };
+                seen.lock().unwrap().push((point, unreaped));
+            })
+        };
+        spawn_observed(
+            &runner,
+            &ws,
+            &process_id,
+            &["/bin/sh", "-c", "exit 4"],
+            false,
+            observer,
+        )
+        .await;
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.exit_code, Some(4));
+        for _ in 0..250 {
+            if seen.lock().unwrap().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(ExitPoint::BeforeReap, true), (ExitPoint::AfterReap, false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_observer_that_does_not_return_does_not_keep_the_child_unreaped() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-observed-slow".into());
+        let observer: ExitObserver = Arc::new(|_| std::thread::sleep(Duration::from_secs(3)));
+        let started = Instant::now();
+        spawn_observed(
+            &runner,
+            &ws,
+            &process_id,
+            &["/bin/sh", "-c", "exit 5"],
+            false,
+            observer,
+        )
+        .await;
+        let status = wait_exited(&runner, &process_id).await;
+        // The reaper waited at most its bound for the observer, then reaped, once.
+        assert!(started.elapsed() < OBSERVE_BOUND + Duration::from_millis(900));
+        assert_eq!(status.exit_code, Some(5));
+        assert_eq!(reaper_gate::reaps(&process_id.0), 1);
+    }
+
+    #[tokio::test]
+    async fn a_pty_childs_observer_is_called_after_the_reap_only() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-observed-pty".into());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observer: ExitObserver = {
+            let seen = seen.clone();
+            Arc::new(move |point| seen.lock().unwrap().push(point))
+        };
+        spawn_observed(
+            &runner,
+            &ws,
+            &process_id,
+            &["/bin/sh", "-c", "exit 0"],
+            true,
+            observer,
+        )
+        .await;
+        wait_exited(&runner, &process_id).await;
+        for _ in 0..250 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // The pinned Codex PTY reaps inside its own task.
+        assert_eq!(*seen.lock().unwrap(), [ExitPoint::AfterReap]);
+    }
+
+    /// Spawn `argv` with a kill hook that counts its calls.
+    async fn spawn_counting_kills(
+        runner: &InProcessRunner,
+        ws: &Workspace,
+        process_id: &ProcessId,
+        argv: &[&str],
+        tty: bool,
+        timeout_ms: u64,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        let kills = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut req = RunnerExecRequest::for_host(
+            argv.iter().map(|arg| arg.to_string()).collect(),
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = tty;
+        req.timeout_ms = timeout_ms;
+        let slot = runner.reserve_slot(&process_id.0).unwrap();
+        let counted = kills.clone();
+        runner
+            .spawn_slotted(
+                ws,
+                req,
+                slot,
+                How::Direct,
+                ProcessHooks {
+                    observer: None,
+                    on_kill: Some(Arc::new(move || {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                },
+            )
+            .await
+            .unwrap();
+        kills
+    }
+
+    async fn counted(kills: &std::sync::atomic::AtomicUsize, expected: usize) -> usize {
+        for _ in 0..100 {
+            if kills.load(std::sync::atomic::Ordering::SeqCst) >= expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Long enough for a call that should not happen.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        kills.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn the_kill_hook_runs_once_for_each_kill_codespace_makes() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        for tty in [false, true] {
+            // A termination kills it once; a second one finds it gone.
+            let process_id = ProcessId(format!("proc-kill-hook-terminated-{tty}"));
+            let kills = spawn_counting_kills(
+                &runner,
+                &ws,
+                &process_id,
+                &["/bin/sleep", "30"],
+                tty,
+                30_000,
+            )
+            .await;
+            runner.terminate(&process_id).await.unwrap();
+            let status = wait_exited(&runner, &process_id).await;
+            assert_eq!(status.termination, Some(ProcessTermination::Terminated));
+            runner.terminate(&process_id).await.unwrap();
+            assert_eq!(counted(&kills, 1).await, 1, "tty={tty}");
+            // The timeout kills it once.
+            let process_id = ProcessId(format!("proc-kill-hook-timeout-{tty}"));
+            let kills =
+                spawn_counting_kills(&runner, &ws, &process_id, &["/bin/sleep", "30"], tty, 100)
+                    .await;
+            let status = wait_exited(&runner, &process_id).await;
+            assert_eq!(status.termination, Some(ProcessTermination::Timeout));
+            assert_eq!(counted(&kills, 1).await, 1, "tty={tty}");
+            // A process that ended on its own is not killed.
+            let process_id = ProcessId(format!("proc-kill-hook-exited-{tty}"));
+            let kills = spawn_counting_kills(
+                &runner,
+                &ws,
+                &process_id,
+                &["/bin/sh", "-c", "exit 0"],
+                tty,
+                30_000,
+            )
+            .await;
+            wait_exited(&runner, &process_id).await;
+            runner.terminate(&process_id).await.unwrap();
+            assert_eq!(counted(&kills, 0).await, 0, "tty={tty}");
+        }
+    }
+
+    /// At shutdown each child's reaper and handles go with the runtime (CSRG-U5): a running
+    /// child is killed, and it, like a child that exited just before and that CodeSpace has not
+    /// reaped yet, is left to tokio's orphan queue, which reaps it once. Nothing outlives the
+    /// runner. A governed child is then not observed before that reap.
+    #[test]
+    fn a_shutdown_leaves_each_child_to_one_reaper() {
+        for (name, argv, exited) in [
+            ("proc-shutdown-running", &["/bin/sleep", "30"][..], false),
+            (
+                "proc-shutdown-exited",
+                &["/bin/sh", "-c", "exit 0"][..],
+                true,
+            ),
+        ] {
+            let dir = tempdir().unwrap();
+            let ws = workspace(dir.path());
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let process_id = ProcessId(name.into());
+            let pid = runtime.block_on(async {
+                let runner = InProcessRunner::new(Arc::new(|_| {}));
+                let req = RunnerExecRequest::for_host(
+                    argv.iter().map(|arg| arg.to_string()).collect(),
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                );
+                if exited {
+                    // Its reaper is held, so the runtime goes while it is exited and unreaped.
+                    reaper_gate::hold(&process_id.0);
+                }
+                runner.exec(&ws, req).await.unwrap();
+                if exited {
+                    exited_but_unreaped(&runner, &process_id).await;
+                }
+                pipe_child_pid(&runner, &process_id)
+            });
+            drop(runtime);
+            reaper_gate::release(&process_id.0);
+            assert_eq!(reaper_gate::reaps(&process_id.0), 0, "{name}");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                // SAFETY: an all-zero `siginfo_t` is valid; `WNOWAIT` leaves the child waitable.
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                // SAFETY: `info` is a valid `siginfo_t` for `waitid` to fill.
+                let result = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    )
+                };
+                // Exited and not yet reaped, or already reaped by the orphan queue.
+                // SAFETY: `waitid` filled `info`, or left the zero it was given.
+                if (result == 0 && unsafe { info.si_pid() } != 0) || result == -1 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{name}: {pid} outlived the runner"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    /// Root exit, output EOF and the workspace's release are separate events (CSRG-U5): a
+    /// descendant that keeps the output open delays the EOF and the release, not the root's
+    /// exit.
+    #[tokio::test]
+    async fn root_exit_output_eof_and_release_are_separate_events() {
+        // The Linux command sandbox's helper outlives the command's descendants.
+        if crate::linux_sandbox_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let released = Arc::new(Mutex::new(Vec::<String>::new()));
+        let runner = {
+            let released = released.clone();
+            InProcessRunner::new(Arc::new(move |id: &str| {
+                released.lock().unwrap().push(id.to_owned())
+            }))
+        };
+        let process_id = ProcessId("proc-separate-events".into());
+        let req = RunnerExecRequest::for_host(
+            vec!["/bin/sh".into(), "-c".into(), "sleep 1 & echo root".into()],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        runner.exec(&ws, req).await.unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.exit_code, Some(0));
+        // The root has exited; its descendant still holds the output open.
+        let read = runner
+            .read_process(RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        assert!(!read.eof);
+        assert!(released.lock().unwrap().is_empty());
+        // Once the descendant has ended, the output ends and the workspace is released.
+        for _ in 0..250 {
+            if !released.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let read = runner
+            .read_process(RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        assert!(read.eof);
+        assert_eq!(read.chunk, "root\n");
+        assert_eq!(*released.lock().unwrap(), [process_id.0]);
+    }
+
+    #[tokio::test]
+    async fn an_exited_child_keeps_its_one_reaper_whatever_else_acts_on_it() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-one-reaper-exit".into());
+        let req = held_request(&["/bin/sh", "-c", "exit 3"], &process_id, 300);
+        runner.exec(&ws, req).await.unwrap();
+        exited_but_unreaped(&runner, &process_id).await;
+        // Termination and the timeout come while the exited child is still unreaped: neither
+        // waits for it, kills it or changes how it ended.
+        runner.terminate(&process_id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(reaper_gate::reaps(&process_id.0), 0);
+        let status = runner.process_status(&process_id).await.unwrap();
+        assert_eq!(status.state, ProcessState::Running);
+        reaper_gate::release(&process_id.0);
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(
+            (status.exit_code, status.termination),
+            (Some(3), Some(ProcessTermination::Exited))
+        );
+        assert_eq!(reaper_gate::reaps(&process_id.0), 1);
+    }
+
+    #[tokio::test]
+    async fn a_terminated_child_keeps_its_one_reaper() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-one-reaper-terminated".into());
+        let req = held_request(&["/bin/sleep", "30"], &process_id, 30_000);
+        runner.exec(&ws, req).await.unwrap();
+        runner.terminate(&process_id).await.unwrap();
+        exited_but_unreaped(&runner, &process_id).await;
+        // A second termination finds it exited and leaves it to the reaper.
+        runner.terminate(&process_id).await.unwrap();
+        assert_eq!(reaper_gate::reaps(&process_id.0), 0);
+        reaper_gate::release(&process_id.0);
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.termination, Some(ProcessTermination::Terminated));
+        assert_eq!(reaper_gate::reaps(&process_id.0), 1);
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_child_keeps_its_one_reaper() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let process_id = ProcessId("proc-one-reaper-timeout".into());
+        let req = held_request(&["/bin/sleep", "30"], &process_id, 100);
+        runner.exec(&ws, req).await.unwrap();
+        exited_but_unreaped(&runner, &process_id).await;
+        // Termination after the timeout's kill finds it exited and leaves it to the reaper.
+        runner.terminate(&process_id).await.unwrap();
+        assert_eq!(reaper_gate::reaps(&process_id.0), 0);
+        reaper_gate::release(&process_id.0);
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.termination, Some(ProcessTermination::Timeout));
+        assert_eq!(reaper_gate::reaps(&process_id.0), 1);
     }
 
     #[tokio::test]

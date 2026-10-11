@@ -256,13 +256,17 @@ impl Store {
         approval_id: &ApprovalId,
         result: Result<&OperationResumeResult, &ErrorBody>,
     ) -> Result<(), ErrorBody> {
-        let queued = {
+        let state = {
             let conn = self.conn.lock().expect("sqlite mutex");
             load(&conn, &approval_id.0)?
                 .ok_or_else(|| not_found(approval_id))?
                 .state
-                == ApprovalState::Queued.as_str()
         };
+        // A hold given back unconsumed (`return_resume`) stays granted: nothing to persist.
+        if state == ApprovalState::Granted.as_str() {
+            return Ok(());
+        }
+        let queued = state == ApprovalState::Queued.as_str();
         if queued
             && matches!(
                 &result,
@@ -308,6 +312,25 @@ impl Store {
                 "resume result could not be persisted",
                 None,
             ));
+        }
+        Ok(())
+    }
+
+    /// Give a resumed approval back unconsumed (CSRG-U5): its execution was refused with proof
+    /// that it never started, so the hold stays granted and may be resumed again. Only an
+    /// approval being resumed (`resuming`) is given back.
+    pub fn return_resume(&self, approval_id: &ApprovalId) -> Result<(), ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let updated = conn
+            .execute(
+                "UPDATE approvals
+                 SET state = 'granted'
+                 WHERE approval_id = ?1 AND state = 'resuming'",
+                params![approval_id.0],
+            )
+            .map_err(db_err)?;
+        if updated != 1 {
+            return Err(conflict("approval is not being resumed"));
         }
         Ok(())
     }
@@ -695,6 +718,47 @@ mod tests {
         let (state, _, result_json) = store.inspect_approval(&created.approval_id).unwrap();
         assert_eq!(state, ApprovalState::Resuming);
         assert!(result_json.is_none());
+    }
+
+    /// A resume refused with proof that its execution never started gives the hold back
+    /// (CSRG-U5): the approval stays granted, nothing is persisted, and it can be resumed again.
+    #[test]
+    fn a_hold_given_back_stays_granted_and_resumes_again() {
+        let store = Store::memory().unwrap();
+        let params = patch_params();
+        let created = store
+            .create_approval(
+                "demo",
+                ApprovalTargetTool::ApplyPatch,
+                &Store::fingerprint(&params),
+                serde_json::to_value(&params).unwrap(),
+            )
+            .unwrap();
+        store
+            .resolve_approval(&created.approval_id, ApprovalDecision::Grant)
+            .unwrap();
+        let refused = ErrorBody::new(ErrorCode::ResourceUnavailable, "denied");
+        {
+            let _guard = match store.claim_resume(&created.approval_id).unwrap() {
+                ResumeClaim::Execute(_, guard) => guard,
+                other => panic!("expected execute, got {other:?}"),
+            };
+            // Only an approval being resumed is given back.
+            assert!(store.return_resume(&created.approval_id).is_err());
+            store.mark_resuming(&created.approval_id).unwrap();
+            store.return_resume(&created.approval_id).unwrap();
+            store
+                .finish_resume(&created.approval_id, Err(&refused))
+                .unwrap();
+        }
+        let (state, _, result_json) = store.inspect_approval(&created.approval_id).unwrap();
+        assert_eq!(state, ApprovalState::Granted);
+        assert!(result_json.is_none());
+        // Resumed again, it executes again rather than replaying the refusal.
+        assert!(matches!(
+            store.claim_resume(&created.approval_id).unwrap(),
+            ResumeClaim::Execute(_, _)
+        ));
     }
 
     #[test]

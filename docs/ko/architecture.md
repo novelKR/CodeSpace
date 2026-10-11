@@ -64,7 +64,7 @@ MCP 요청이 끝나도 관리 중인 프로세스는 유지됩니다. 클라이
 
 > **상태: 구현 지시로서 효력 중지.** CS-RG 통합 경계 재검증이 끝날 때까지 이 절의 목표 CS-RG 구조를 구현하지 않습니다. 현재 동작 문단은 구현된 코드를 설명합니다. 대체 구조는 승인되지 않았습니다. 내용은 이력 추적을 위해 바꾸지 않고 남깁니다.
 
-**현재 동작.** Runner의 프로세스 관리는 파이프 명령을 Tokio(`tokio::process`)로 시작하고, `tty: true` 명령은 [고정 버전](upstream-lock.md) `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`(`rust-v0.154.0`)의 Codex `codex-utils-pty` 위에 있는 `codespace-pty` 어댑터로 시작합니다. 고정 버전의 PTY spawn은 자식 프로세스를 내부에서 reap합니다. 파이프 경로에서는 종료 대기, 제한 시간 작업, 종료 요청이 각각 `try_wait`를 호출합니다.
+**현재 동작.** Runner의 프로세스 관리는 파이프 명령을 Tokio(`tokio::process`)로 시작하고, `tty: true` 명령은 [고정 버전](upstream-lock.md) `6b9826e3aa83b1a5947db50f4332cb9c65f1b340`(`rust-v0.154.0`)의 Codex `codex-utils-pty` 위에 있는 `codespace-pty` 어댑터로 시작합니다. 고정 버전의 PTY spawn은 자식 프로세스를 내부에서 reap합니다. 파이프 경로에서는 자식마다 작업 하나가 reap하고, 제한 시간과 종료 요청은 자식이 아직 reap되지 않았을 때 signal만 보냅니다(CSRG-U5). 관리 대상 파이프 실행에서는 그 작업이 reap하지 않고 종료를 감지해 DevGuard에 scope를 관찰하게 한 뒤 reap합니다([실행 뒤 생명주기](devguard-integration.md#devguard-lifecycle)).
 
 **CS-RG 목표 구조.** DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)은 모든 실행에 대해 CodeSpace가 소유하는 Runner 조정 계층 하나를 계획합니다. 이 계층은 실행 식별자, 승인과 실행의 연결, 상태 전이, 제한 시간, 종료 요청, 출력 기록, 정리 조정을 담당합니다. 플랫폼별 차이인 자식 프로세스 생성, 터미널 설정, 입출력 연결, 종료 관측, 실제 reap은 좁은 백엔드 경계 뒤에 둡니다. 이 구조는 구현되지 않았으며 아래 이름은 현재 API가 아니라 설계 개념입니다. DevGuard client 타입과 Codex 타입은 공개 MCP 타입에 들어가지 않습니다.
 

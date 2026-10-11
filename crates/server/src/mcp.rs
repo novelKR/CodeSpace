@@ -891,7 +891,7 @@ impl CodeSpace {
                     // so it is released with the answer whatever the attempt's own state.
                     let refused = self.prepare_governed(ws, req).await;
                     reservation.abort();
-                    return Err(refused);
+                    return Err(self.refused_governed(resume, refused));
                 }
                 // The owner may create a process from here on (CSRG-U4).
                 reservation.arm_dispatch();
@@ -915,7 +915,7 @@ impl CodeSpace {
                     Err(refused) => {
                         // The command did not start; a helper that existed was reaped.
                         reservation.abort();
-                        Err(refused)
+                        Err(self.refused_governed(resume, refused))
                     }
                 };
             }
@@ -942,6 +942,31 @@ impl CodeSpace {
                 reservation.abort();
                 Err(err.into_error_body())
             }
+        }
+    }
+}
+
+/// A governed execution that did not start, and whether the resource authority proves that it
+/// never started (CSRG-U5).
+#[cfg(feature = "devguard")]
+struct NotStarted {
+    body: ErrorBody,
+    proven: bool,
+}
+
+#[cfg(feature = "devguard")]
+impl NotStarted {
+    fn report(report: codespace_runner::admission::ManagedPreparation, workspace_id: &str) -> Self {
+        Self {
+            proven: report.proves_not_started(),
+            body: report.into_error_body(workspace_id),
+        }
+    }
+
+    fn unproven(body: ErrorBody) -> Self {
+        Self {
+            body,
+            proven: false,
         }
     }
 }
@@ -985,17 +1010,20 @@ impl CodeSpace {
     /// Have the execution owner prepare `req` without launching it (CSRG-U3): an owner that
     /// cannot launch cancels each preparation, so it ends in a refusal and nothing is started.
     #[cfg(feature = "devguard")]
-    async fn prepare_governed(&self, ws: &Workspace, req: RunnerExecRequest) -> ErrorBody {
+    async fn prepare_governed(&self, ws: &Workspace, req: RunnerExecRequest) -> NotStarted {
         let Some(registration) = &self.registration else {
-            return ErrorBody::new(ErrorCode::Internal, "no execution owner registration");
+            return NotStarted::unproven(ErrorBody::new(
+                ErrorCode::Internal,
+                "no execution owner registration",
+            ));
         };
         let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
         match registration
             .prepare(&self.runner, ws, req, attempt_id)
             .await
         {
-            Ok(report) => report.into_error_body(&ws.id.0),
-            Err(err) => err,
+            Ok(report) => NotStarted::report(report, &ws.id.0),
+            Err(err) => NotStarted::unproven(err),
         }
     }
 
@@ -1006,23 +1034,41 @@ impl CodeSpace {
         &self,
         ws: &Workspace,
         req: RunnerExecRequest,
-    ) -> Result<codespace_runner::launch::ManagedLaunch, ErrorBody> {
+    ) -> Result<codespace_runner::launch::ManagedLaunch, NotStarted> {
         let Some(registration) = &self.registration else {
-            return Err(ErrorBody::new(
+            return Err(NotStarted::unproven(ErrorBody::new(
                 ErrorCode::Internal,
                 "no execution owner registration",
-            ));
+            )));
         };
         let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
         match registration
             .launch(&self.runner, ws, req, attempt_id)
-            .await?
+            .await
+            .map_err(NotStarted::unproven)?
         {
             codespace_runner::launch::LaunchReport::Launched(launch) => Ok(launch),
             codespace_runner::launch::LaunchReport::NotLaunched(report) => {
-                Err(report.into_error_body(&ws.id.0))
+                Err(NotStarted::report(report, &ws.id.0))
             }
         }
+    }
+
+    /// The refusal of a governed execution. An approval being resumed gets its hold back when
+    /// the authority proves that the command never started (CSRG-U5); otherwise the resume
+    /// consumes it as before.
+    #[cfg(feature = "devguard")]
+    fn refused_governed(&self, resume: Option<&ApprovalId>, refused: NotStarted) -> ErrorBody {
+        if let (Some(approval_id), true) = (resume, refused.proven) {
+            if let Err(err) = self.store.return_resume(approval_id) {
+                tracing::warn!(
+                    approval_id = %approval_id.0,
+                    error = %err.message,
+                    "the approval could not be given back; its resume consumes it"
+                );
+            }
+        }
+        refused.body
     }
 
     #[cfg(not(feature = "devguard"))]
@@ -2389,8 +2435,9 @@ mod devguard_tests {
             ],
         )
         .await;
-        // Each preparation came from a session the owner opened for it.
-        assert_eq!(endpoint.accepted(), 3);
+        // Each preparation came from a session the owner opened for it: two executions, and
+        // two resumes of the one approval, which kept its hold after the first refusal (CSRG-U5).
+        assert_eq!(endpoint.accepted(), 4);
         // Existing process control never asks DevGuard.
         let started = handler
             .exec_command(Parameters(exec_params(
@@ -2402,7 +2449,7 @@ mod devguard_tests {
             .unwrap()
             .0;
         assert_process_control_needs_no_registration(&handler, started.process_id).await;
-        assert_eq!(endpoint.accepted(), 3);
+        assert_eq!(endpoint.accepted(), 4);
     }
 
     /// Status, termination and the outcome of a running process, without a registration.
@@ -2538,16 +2585,15 @@ mod devguard_tests {
             }
         };
         check(&body, &raw);
-        let replayed = cs
+        // The refusal proves the command never started, so the approval kept its hold
+        // (CSRG-U5): resumed again, it is refused again for a new attempt, never replayed.
+        let again = cs
             .operation_resume(Parameters(OperationResumeParams { approval_id }))
             .await
             .err()
             .expect("refused");
-        let replayed: ErrorBody = serde_json::from_str(&replayed).unwrap();
-        assert_eq!(
-            (replayed.code, replayed.message.as_str()),
-            (body.code, body.message.as_str())
-        );
+        let again_body: ErrorBody = serde_json::from_str(&again).unwrap();
+        check(&again_body, &again);
         drop(
             store
                 .try_acquire_write("gov-confirm")
@@ -2828,6 +2874,100 @@ mod devguard_tests {
         );
     }
 
+    /// A worker lost after it took a governed launch may have started the command (CSRG-U5):
+    /// the gateway reports the dispatch unknown, never sends the launch again, keeps the
+    /// workspace busy, and the resumed approval keeps that answer, so resuming it again returns
+    /// the same process rather than a new attempt.
+    #[tokio::test]
+    async fn a_launch_lost_with_the_worker_is_unknown_and_never_sent_again() {
+        use codespace_runner::{
+            read_frame, write_frame, RunnerOp, RunnerOpResult, UdsRunner, WireEnvelope,
+            WIRE_PROTOCOL,
+        };
+        use std::sync::atomic::AtomicUsize;
+        let dir = short_directory();
+        let (client, mut worker) = tokio::net::UnixStream::pair().unwrap();
+        let launches = Arc::new(AtomicUsize::new(0));
+        let seen = launches.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(frame)) = read_frame(&mut worker).await {
+                let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+                match request.op {
+                    Some(RunnerOp::Hello) => {
+                        let hello = RunnerOpResult::Hello {
+                            protocol: WIRE_PROTOCOL,
+                            registration: true,
+                            admission: true,
+                            launch: true,
+                        };
+                        let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
+                        write_frame(&mut worker, &reply).await.unwrap();
+                    }
+                    // Lost with the worker before it answers.
+                    Some(RunnerOp::Launch { .. }) => {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        });
+        let store = Arc::new(Store::memory().unwrap());
+        let runner = UdsRunner::from_stream(client, release(&store));
+        runner.handshake().await.unwrap();
+        let handler = CodeSpace::with_store_and_runner(
+            participation_registry(dir.path(), "required"),
+            store.clone(),
+            RuntimeBackend::Uds(runner),
+        )
+        .with_registration(crate::devguard::Registration::new(
+            settings(dir.path(), dir.path().join("absent.sock")),
+            crate::config::RunnerMode::Uds,
+            true,
+            None,
+        ));
+        let held = handler
+            .exec_command(Parameters(exec_params(
+                "gov-confirm",
+                &["/usr/bin/true"],
+                false,
+            )))
+            .await
+            .err()
+            .expect("held");
+        let held: ErrorBody = serde_json::from_str(&held).unwrap();
+        assert_eq!(held.code, ErrorCode::ApprovalRequired);
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        handler
+            .approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let mut answers = Vec::new();
+        for _ in 0..2 {
+            let resumed = handler
+                .operation_resume(Parameters(OperationResumeParams {
+                    approval_id: approval_id.clone(),
+                }))
+                .await
+                .unwrap()
+                .0
+                .exec_command
+                .expect("an exec result");
+            assert_eq!(resumed.dispatch_status, ExecDispatchStatus::Unknown);
+            answers.push(resumed.process_id);
+        }
+        assert_eq!(answers[0], answers[1]);
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
+        let busy = store
+            .try_acquire_write("gov-confirm")
+            .err()
+            .expect("the workspace stays busy");
+        assert_eq!(busy.code, ErrorCode::WorkspaceBusy);
+    }
+
     /// The UDS worker registers itself and the gateway does not, against DevGuard's fixture
     /// authority in its own process.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3074,6 +3214,30 @@ mod devguard_tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("{process_id:?} did not exit: {output:?}");
+    }
+
+    /// `operation_resume`, again while it stops at the credential (see `past_the_credential`):
+    /// a resume refused before any admission keeps its approval (CSRG-U5).
+    async fn resumed(
+        handler: &CodeSpace,
+        approval_id: &ApprovalId,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        past_the_credential(
+            |result: &Result<OperationResumeResult, ErrorBody>| {
+                matches!(result, Err(body)
+                    if body.message.contains("(registration: credential_unavailable"))
+            },
+            || async move {
+                handler
+                    .operation_resume(Parameters(OperationResumeParams {
+                        approval_id: approval_id.clone(),
+                    }))
+                    .await
+                    .map(|result| result.0)
+                    .map_err(|raw| serde_json::from_str(&raw).unwrap())
+            },
+        )
+        .await
     }
 
     /// Wait until DevGuard holds nothing for CodeSpace: it releases a launched attempt once its
@@ -3409,6 +3573,330 @@ mod devguard_tests {
             Some(codespace_domain::ProcessTermination::Terminated)
         );
         assert_eq!(released(&mut fixture), (Vec::new(), 0));
+    }
+
+    /// A resumed approval whose execution the resource authority denies keeps its hold
+    /// (CSRG-U5): the refusal proves the command never started, so resuming again asks for a
+    /// new attempt rather than replaying the refusal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_denied_resume_keeps_its_approval_for_another_resume() {
+        let Some(fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let config = serde_json::json!({"workspaces": {
+            "short-confirm": {
+                "root": dir.path(),
+                "profile": "workspace-write",
+                "approvals": "confirm",
+                "resources": {"participation": "required", "request": {
+                    "cpu_milli": 100, "memory_bytes": 1u64 << 60, "tasks": 4}},
+            },
+        }});
+        let cli = register_cli(&fixture.settings, &["--runner", "in-process"]);
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            Registry::load_json(&config.to_string()).unwrap(),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        let held = handler
+            .exec_command(Parameters(exec_params(
+                "short-confirm",
+                &["/usr/bin/true"],
+                false,
+            )))
+            .await
+            .err()
+            .expect("held");
+        let held: ErrorBody = serde_json::from_str(&held).unwrap();
+        assert_eq!(held.code, ErrorCode::ApprovalRequired);
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        handler
+            .approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let mut attempts = Vec::new();
+        for _ in 0..2 {
+            let raw = handler
+                .operation_resume(Parameters(OperationResumeParams {
+                    approval_id: approval_id.clone(),
+                }))
+                .await
+                .err()
+                .expect("denied");
+            let body: ErrorBody = serde_json::from_str(&raw).unwrap();
+            assert_eq!(body.code, ErrorCode::ResourceUnavailable, "{raw}");
+            assert!(
+                body.message.ends_with(": denied; nothing was started"),
+                "{raw}"
+            );
+            let attempt = body
+                .message
+                .split("attempt `")
+                .nth(1)
+                .and_then(|rest| rest.split('`').next())
+                .unwrap()
+                .to_owned();
+            assert!(
+                !attempts.contains(&attempt),
+                "the refusal was replayed: {raw}"
+            );
+            attempts.push(attempt);
+        }
+        drop(
+            store
+                .try_acquire_write("short-confirm")
+                .expect("the lease is released"),
+        );
+    }
+
+    /// Once a governed process has started, losing the resource authority does not take
+    /// CodeSpace's own control of it (CSRG-U5): its status comes from CodeSpace's handle, it is
+    /// terminated as any other process, and its workspace is free again afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lost_authority_leaves_a_governed_process_under_codespaces_control() {
+        let Some(fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry_with(dir.path(), 2),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        let mut running = Vec::new();
+        for (workspace, tty) in [("gov-0", false), ("gov-1", true)] {
+            let result = executed(&handler, exec_params(workspace, &["/bin/sleep", "30"], tty))
+                .await
+                .unwrap();
+            running.push((workspace, result.process_id));
+        }
+        // The authority goes away while both processes run.
+        drop(fixture);
+        let started = std::time::Instant::now();
+        for (workspace, process_id) in &running {
+            let status = handler
+                .process_status(Parameters(ProcessStatusParams {
+                    process_id: process_id.clone(),
+                }))
+                .await
+                .unwrap()
+                .0;
+            assert_eq!(status.state, ProcessState::Running, "{workspace}");
+            handler
+                .terminate_process(Parameters(TerminateProcessParams {
+                    process_id: process_id.clone(),
+                }))
+                .await
+                .unwrap();
+        }
+        for (workspace, process_id) in &running {
+            let (_, status) = finished(&handler, process_id).await;
+            assert_eq!(
+                status.termination,
+                Some(codespace_domain::ProcessTermination::Terminated),
+                "{workspace}"
+            );
+            drop(
+                store
+                    .try_acquire_write(workspace)
+                    .expect("the lease is released"),
+            );
+        }
+        // At most the reaper's two-second bound for an observation that cannot be answered.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A governed pipe execution whose root exits leaving a descendant (CSRG-U5): CodeSpace's
+    /// one reaper has DevGuard observe the scope while the exited root still holds its PID, so
+    /// the descendant keeps the attempt charged, and DevGuard releases it once the descendant
+    /// ends. Reaped before any observation, the attempt would have stayed charged for good.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_surviving_descendant_keeps_a_governed_attempt_charged_until_it_ends() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(dir.path()),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        let script = "sleep 3 </dev/null >/dev/null 2>&1 & echo started";
+        let result = executed(
+            &handler,
+            exec_params("gov", &["/bin/sh", "-c", script], false),
+        )
+        .await
+        .unwrap();
+        let (output, status) = finished(&handler, &result.process_id).await;
+        assert_eq!((output.as_str(), status.exit_code), ("started\n", Some(0)));
+        // The root has exited and been reaped; its descendant still runs in the scope.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert_eq!(
+            fixture.charged().0.len(),
+            1,
+            "the descendant keeps the attempt charged"
+        );
+        // Once it has ended, DevGuard releases the attempt.
+        assert_eq!(released(&mut fixture), (Vec::new(), 0));
+    }
+
+    /// The resource authority restarts while a governed process runs (CSRG-U5). CodeSpace keeps
+    /// the process, its status and its workspace's lease, and the owner registers again for new
+    /// work. DevGuard no longer knows the scope, so the attempt stays charged as Suspect after
+    /// the process ends: uncertain, so never released, and never replayed: resuming its
+    /// approval again returns the same process.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_authority_restart_keeps_a_running_attempt_charged_and_never_replays_it() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(dir.path()),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        // Held for approval, granted and resumed: a process that runs until the test lets it end.
+        let go = dir.path().join("go");
+        let script = format!(
+            "while [ ! -e '{}' ]; do sleep 0.05; done; echo done",
+            go.display()
+        );
+        let held = handler
+            .exec_command(Parameters(exec_params(
+                "gov-confirm",
+                &["/bin/sh", "-c", &script],
+                false,
+            )))
+            .await
+            .err()
+            .expect("held");
+        let held: ErrorBody = serde_json::from_str(&held).unwrap();
+        assert_eq!(held.code, ErrorCode::ApprovalRequired);
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        handler
+            .approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let launched = resumed(&handler, &approval_id)
+            .await
+            .unwrap()
+            .exec_command
+            .expect("an exec result");
+        assert_eq!(launched.dispatch_status, ExecDispatchStatus::Confirmed);
+        let (attempts, _) = fixture.charged();
+        assert_eq!(attempts.len(), 1);
+        fixture.restart();
+        let status = handler
+            .process_status(Parameters(ProcessStatusParams {
+                process_id: launched.process_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(status.state, ProcessState::Running);
+        std::fs::write(&go, b"").unwrap();
+        let (output, status) = finished(&handler, &launched.process_id).await;
+        assert_eq!((output.as_str(), status.exit_code), ("done\n", Some(0)));
+        // The process and its lease have ended; its attempt has not. Later reconciler passes
+        // cannot release it either.
+        drop(
+            store
+                .try_acquire_write("gov-confirm")
+                .expect("the lease is released"),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert_eq!(
+            fixture.phases(),
+            [(attempts[0].clone(), "suspect".to_owned())]
+        );
+        let again = resumed(&handler, &approval_id).await.unwrap();
+        assert_eq!(
+            again.exec_command.map(|result| result.process_id),
+            Some(launched.process_id)
+        );
+        // A new execution after the restart is admitted, and released once it ends.
+        let fresh = executed(&handler, exec_params("gov", &["/bin/echo", "after"], false))
+            .await
+            .unwrap();
+        assert_eq!(finished(&handler, &fresh.process_id).await.0, "after\n");
+        let mut charged = fixture.charged().0;
+        for _ in 0..100 {
+            if charged == attempts {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            charged = fixture.charged().0;
+        }
+        assert_eq!(charged, attempts);
     }
 
     /// D6 for the launch carriers: governed launches run concurrently with ordinary pipe and PTY

@@ -62,6 +62,11 @@ pub trait AttemptAuthority: Send + Sync + 'static {
     fn begin_launch(&self, admission: &Admission) -> LaunchAnswer;
     /// Report that this owner holds no helper for the attempt's grant (CSRG-U4).
     fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer;
+    /// Have DevGuard observe the attempt's scope now (CSRG-U5): while its exited root is still
+    /// unreaped, so that members left in its group stay tracked, and again after the reap.
+    fn observe(&self, admission: &Admission) -> Answer;
+    /// Have DevGuard kill the attempt's whole scope (CSRG-U5). Delivery is not release evidence.
+    fn terminate(&self, admission: &Admission) -> dg::Termination;
     /// The launch helper's invocation for the attempt's grant (CSRG-U4).
     fn helper(
         &self,
@@ -94,6 +99,12 @@ impl AttemptAuthority for devguard::Owner {
     }
     fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer {
         devguard::Owner::abandon_launch(self, admission, reason)
+    }
+    fn observe(&self, admission: &Admission) -> Answer {
+        devguard::Owner::observe(self, admission)
+    }
+    fn terminate(&self, admission: &Admission) -> dg::Termination {
+        devguard::Owner::terminate(self, admission)
     }
     fn helper(
         &self,
@@ -355,6 +366,22 @@ pub struct ManagedPreparation {
 }
 
 impl ManagedPreparation {
+    /// Whether the resource authority's state of the attempt proves that its command never
+    /// started (CSRG-U5): never asked, refused, denied, cancelled or expired before any launch,
+    /// or released on this owner's report that it holds no helper. Only such a refusal lets the
+    /// execution's approval be used again; an unknown, launched or scope-ended attempt does not.
+    pub fn proves_not_started(&self) -> bool {
+        matches!(
+            self.attempt,
+            AttemptState::NotAsked
+                | AttemptState::NotRecorded
+                | AttemptState::Denied
+                | AttemptState::Cancelled
+                | AttemptState::Expired
+                | AttemptState::Released
+        )
+    }
+
     /// The tool error for a preparation that started nothing, or a launch whose command did not
     /// start (CSRG-U3, U4). Only enumerations, numbers and identifiers are stated.
     pub fn into_error_body(self, workspace_id: &str) -> ErrorBody {
@@ -1088,7 +1115,9 @@ pub(crate) mod tests {
         grants: Mutex<VecDeque<Grant>>,
         abandons: Mutex<VecDeque<Answer>>,
         admit_delay: Mutex<Duration>,
-        calls: [AtomicUsize; 5],
+        /// How long `observe` and `terminate` take, as an authority that stopped answering.
+        stall: Mutex<Duration>,
+        calls: [AtomicUsize; 7],
         seen: Mutex<Vec<Admission>>,
         pub(crate) abandoned_for: Mutex<Vec<Abandon>>,
     }
@@ -1119,6 +1148,11 @@ pub(crate) mod tests {
             *self.admit_delay.lock().unwrap() = delay;
             self
         }
+        /// An authority that stops answering once the launch has been granted.
+        pub(crate) fn stalling(self: Arc<Self>, stall: Duration) -> Arc<Self> {
+            *self.stall.lock().unwrap() = stall;
+            self
+        }
         pub(crate) fn count(&self, call: usize) -> usize {
             self.calls[call].load(Ordering::SeqCst)
         }
@@ -1132,6 +1166,8 @@ pub(crate) mod tests {
     pub(crate) const CANCEL: usize = 2;
     pub(crate) const BEGIN: usize = 3;
     pub(crate) const ABANDON: usize = 4;
+    pub(crate) const OBSERVE: usize = 5;
+    pub(crate) const TERMINATE: usize = 6;
 
     /// A permit as a test authority would grant one.
     pub(crate) const PERMIT: &str =
@@ -1190,6 +1226,21 @@ pub(crate) mod tests {
                     Some(dg::Release::NoHelperCreated),
                 )),
             )
+        }
+        fn observe(&self, admission: &Admission) -> Answer {
+            self.calls[OBSERVE].fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(admission.clone());
+            std::thread::sleep(*self.stall.lock().unwrap());
+            Answer::Unknown
+        }
+        fn terminate(&self, admission: &Admission) -> dg::Termination {
+            self.calls[TERMINATE].fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(admission.clone());
+            std::thread::sleep(*self.stall.lock().unwrap());
+            dg::Termination::Signalled {
+                signalled: 1,
+                complete: true,
+            }
         }
         fn helper(
             &self,
@@ -1717,6 +1768,76 @@ pub(crate) mod tests {
         assert_eq!(report.outcome, PreparationOutcome::Invalid);
         assert_eq!(fake.count(ADMIT), 0);
         assert_nothing_started(dir.path(), &runner);
+    }
+
+    /// Only the authority's states that prove a command never started let its approval be used
+    /// again (CSRG-U5): a timeout, a lost answer, a launched or settled scope, or any state the
+    /// owner cannot read, does not.
+    #[test]
+    fn only_a_state_that_proves_no_start_releases_an_approval() {
+        let report = |attempt| ManagedPreparation {
+            attempt_id: "cs-attempt-1".into(),
+            process_id: ProcessId("proc-1".into()),
+            outcome: PreparationOutcome::Unknown,
+            attempt,
+            account: None,
+        };
+        for attempt in [
+            AttemptState::NotAsked,
+            AttemptState::NotRecorded,
+            AttemptState::Denied,
+            AttemptState::Cancelled,
+            AttemptState::Expired,
+            AttemptState::Released,
+        ] {
+            assert!(report(attempt).proves_not_started(), "{attempt:?}");
+        }
+        for attempt in [
+            AttemptState::Launched,
+            AttemptState::ScopeEnded,
+            AttemptState::Other,
+            AttemptState::Unknown,
+        ] {
+            assert!(!report(attempt).proves_not_started(), "{attempt:?}");
+        }
+    }
+
+    /// What DevGuard's record of a possibly launched attempt shows (CSRG-U5): only a release on
+    /// the owner's no-helper report proves no start. A suspect attempt (after an authority
+    /// restart, or with lost tracking) is launched as far as the owner knows, and a release by
+    /// scope end or after a reboot proves nothing about the start.
+    #[test]
+    fn only_a_no_helper_release_reads_as_never_started() {
+        let record = |phase, release| dg::Attempt {
+            release,
+            ..record(phase, None)
+        };
+        for (phase, release, expected) in [
+            (
+                dg::Phase::Released,
+                Some(dg::Release::NoHelperCreated),
+                AttemptState::Released,
+            ),
+            (
+                dg::Phase::Released,
+                Some(dg::Release::ScopeTerminated),
+                AttemptState::ScopeEnded,
+            ),
+            (
+                dg::Phase::Released,
+                Some(dg::Release::PreviousBoot),
+                AttemptState::ScopeEnded,
+            ),
+            (dg::Phase::Suspect, None, AttemptState::Launched),
+            (dg::Phase::RunAuthorized, None, AttemptState::Launched),
+            (dg::Phase::LaunchCommitted, None, AttemptState::Launched),
+        ] {
+            assert_eq!(
+                attempt_state(&record(phase, release)),
+                expected,
+                "{phase:?} {release:?}"
+            );
+        }
     }
 
     #[test]

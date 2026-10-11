@@ -985,6 +985,184 @@ pub(crate) mod tests {
             assert_eq!(charged(&provisioned), Budget::ZERO);
         }
 
+        /// Wait until the child `pid` has exited, without reaping it.
+        fn exited_unreaped(pid: u32) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                // SAFETY: an all-zero `siginfo_t` is valid; `WNOWAIT` leaves the child waitable.
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                // SAFETY: `info` is a valid `siginfo_t` for `waitid` to fill.
+                let result = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid,
+                        &mut info,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    )
+                };
+                assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+                // SAFETY: `waitid` filled `info`, or left the zero it was given.
+                if unsafe { info.si_pid() } != 0 {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "{pid} did not exit");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn observed(owner: &Owner, admission: &Admission) -> crate::admission::Attempt {
+            match owner.observe(admission) {
+                crate::admission::Answer::Attempt(attempt) => attempt,
+                other => panic!("not observed: {other:?}"),
+            }
+        }
+
+        /// A started helper whose executable exits at once, leaving a descendant in its group
+        /// for two seconds. DevGuard's background reconciler is paused, so only this owner's
+        /// observations settle the scope.
+        fn started_with_a_survivor(
+            provisioned: &Provisioned,
+            owner: &Owner,
+            id: &str,
+        ) -> Option<(Admission, Child)> {
+            let helper = helper_bin()?;
+            provisioned.authority.pause_reconciler(true);
+            let script = "sleep 2 </dev/null >/dev/null 2>&1 & exit 0";
+            let admission = admission(id, &["/bin/sh", "-c", script]);
+            admitted(owner, &admission);
+            let permit = granted(owner, &admission);
+            let invocation = owner
+                .helper(
+                    &helper,
+                    &admission,
+                    permit,
+                    Path::new("/bin/sh"),
+                    &["-c".into(), script.into()],
+                )
+                .unwrap();
+            let child = spawn(&invocation, Stdio::null());
+            assert_eq!(invocation.into_transcript().read(), TranscriptEnd::Started);
+            exited_unreaped(child.id());
+            Some((admission, child))
+        }
+
+        #[test]
+        fn an_observation_before_the_reap_keeps_a_surviving_descendant_tracked() {
+            let provisioned = admitting();
+            let owner = provisioned.owner();
+            let Some((admission, mut child)) =
+                started_with_a_survivor(&provisioned, &owner, "cs-observe-1")
+            else {
+                return;
+            };
+            // While the exited root still holds its PID, DevGuard adopts what is left in its
+            // group, and keeps tracking it after the reap.
+            let before = observed(&owner, &admission);
+            assert!(
+                before.phase != Phase::Released && !before.tracking_lost,
+                "{before:?}"
+            );
+            child.wait().unwrap();
+            let after = observed(&owner, &admission);
+            assert!(
+                after.phase != Phase::Released && !after.tracking_lost,
+                "{after:?}"
+            );
+            assert_ne!(charged(&provisioned), Budget::ZERO);
+            // Once the descendant has ended, an observation releases the scope.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let ended = loop {
+                let attempt = observed(&owner, &admission);
+                if attempt.phase == Phase::Released || Instant::now() > deadline {
+                    break attempt;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            };
+            assert_eq!(
+                (ended.phase, ended.release, ended.tracking_lost),
+                (Phase::Released, Some(Release::ScopeTerminated), false)
+            );
+            assert_eq!(charged(&provisioned), Budget::ZERO);
+        }
+
+        #[test]
+        fn a_reap_before_any_observation_loses_a_surviving_descendant() {
+            let provisioned = admitting();
+            let owner = provisioned.owner();
+            let Some((admission, mut child)) =
+                started_with_a_survivor(&provisioned, &owner, "cs-observe-2")
+            else {
+                return;
+            };
+            // Reaped first: what is left in the group can no longer be proven the scope's.
+            child.wait().unwrap();
+            let after = observed(&owner, &admission);
+            assert!(
+                after.tracking_lost && after.phase != Phase::Released,
+                "{after:?}"
+            );
+            // It stays charged even once the descendant has ended.
+            std::thread::sleep(Duration::from_secs(3));
+            let later = observed(&owner, &admission);
+            assert!(
+                later.tracking_lost && later.phase != Phase::Released,
+                "{later:?}"
+            );
+            assert_ne!(charged(&provisioned), Budget::ZERO);
+        }
+
+        #[test]
+        fn terminate_kills_the_whole_scope_and_it_is_released() {
+            let Some(helper) = helper_bin() else { return };
+            let provisioned = admitting();
+            let owner = provisioned.owner();
+            let script = "sleep 30 </dev/null >/dev/null 2>&1 & exec sleep 30";
+            let admission = admission("cs-terminate-1", &["/bin/sh", "-c", script]);
+            admitted(&owner, &admission);
+            let permit = granted(&owner, &admission);
+            let invocation = owner
+                .helper(
+                    &helper,
+                    &admission,
+                    permit,
+                    Path::new("/bin/sh"),
+                    &["-c".into(), script.into()],
+                )
+                .unwrap();
+            let mut child = spawn(&invocation, Stdio::null());
+            assert_eq!(invocation.into_transcript().read(), TranscriptEnd::Started);
+            // Until the root has exec'd its last command, its background child may not exist.
+            std::thread::sleep(Duration::from_millis(300));
+            // The root and its descendant both: a kill of the root alone would leave the other.
+            let termination = owner.terminate(&admission);
+            assert!(
+                matches!(
+                    termination,
+                    crate::admission::Termination::Signalled {
+                        signalled: 2..,
+                        complete: true
+                    }
+                ),
+                "{termination:?}"
+            );
+            exited_unreaped(child.id());
+            let _ = observed(&owner, &admission);
+            child.wait().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let ended = loop {
+                let attempt = observed(&owner, &admission);
+                if attempt.phase == Phase::Released || Instant::now() > deadline {
+                    break attempt;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            };
+            assert_eq!(
+                (ended.phase, ended.release, ended.tracking_lost),
+                (Phase::Released, Some(Release::ScopeTerminated), false)
+            );
+            assert_eq!(charged(&provisioned), Budget::ZERO);
+        }
+
         #[test]
         fn a_lost_grant_is_found_committed_and_released_as_never_received() {
             let provisioned = admitting();

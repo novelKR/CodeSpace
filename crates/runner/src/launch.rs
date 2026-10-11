@@ -369,9 +369,25 @@ impl PreparedExecution {
             let attempt = self.abandon(Abandon::SpawnFailed).await;
             return self.not_launched(PreparationOutcome::HelperNotCreated, attempt);
         };
+        // DevGuard observes the scope while the exited root still holds its PID, so members left
+        // in its group stay tracked, and again after the reap; and when CodeSpace kills the
+        // process, DevGuard is asked to kill the whole scope (CSRG-U5). Neither answer changes
+        // what CodeSpace does with the process.
+        let hooks = {
+            let (authority, admission) = (self.authority.clone(), self.admission.clone());
+            let (killer, killed) = (self.authority.clone(), self.admission.clone());
+            crate::process::ProcessHooks {
+                observer: Some(Arc::new(move |_| {
+                    let _ = authority.observe(&admission);
+                })),
+                on_kill: Some(Arc::new(move || {
+                    let _ = killer.terminate(&killed);
+                })),
+            }
+        };
         let (spawned, transcript) = self
             .runner
-            .spawn_managed(&self.ws, request.clone(), slot, invocation)
+            .spawn_managed(&self.ws, request.clone(), slot, invocation, hooks)
             .await;
         if spawned.is_err() {
             // No helper exists, and none will be created for this grant.
@@ -663,7 +679,7 @@ mod tests {
     use super::*;
     use crate::admission::tests::{
         attempt, governed, prepared, record, request, runner, Fake, Grant, ABANDON, ADMIT, BEGIN,
-        CANCEL, LOOKUP,
+        CANCEL, LOOKUP, OBSERVE, TERMINATE,
     };
     use crate::admission::Preparer;
     use crate::{InProcessRunner, Runner, RunnerReadProcess};
@@ -881,6 +897,54 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
                 ),
                 (1, 1, 1, 0, 0)
             );
+            assert_eq!(settled_slots(&runner).await, 0);
+            // DevGuard is asked to observe the scope before the reap and after it on a pipe;
+            // the pinned Codex PTY reaps first, so after it only (CSRG-U5).
+            let observes = if tty { 1 } else { 2 };
+            for _ in 0..250 {
+                if fake.count(OBSERVE) >= observes {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(fake.count(OBSERVE), observes, "tty={tty}");
+        }
+    }
+
+    /// A request cancelled after the launch was committed (CSRG-U5): the launch runs on, so a
+    /// helper that never runs the command is still reaped and reported, and nothing replays it.
+    #[tokio::test]
+    async fn a_cancelled_request_does_not_drop_a_committed_launch() {
+        let helpers = helper_directory();
+        let late = r#"sleep 1; report '{"phase":"refused","code":"invalid_transition","message":"fenced"}'; exit 125"#;
+        let helper = stand_in(helpers.path(), "late", "", late);
+        let dir = tempfile::tempdir().unwrap();
+        let ws = governed(dir.path());
+        for tty in [false, true] {
+            let runner = runner();
+            let fake = Fake::admitting([prepared()]);
+            let (marker, mut req) = marker_request(dir.path(), &format!("proc-cancelled-{tty}"));
+            req.tty = tty;
+            let cancelled = tokio::time::timeout(
+                Duration::from_millis(300),
+                launch(&fake, &runner, &ws, req, Some(launcher(helper.clone()))),
+            )
+            .await;
+            assert!(cancelled.is_err(), "the request was not cancelled");
+            // The launch, committed before the cancellation, still settles its helper.
+            for _ in 0..500 {
+                if fake.count(ABANDON) == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                *fake.abandoned_for.lock().unwrap(),
+                [Abandon::HelperExited],
+                "tty={tty}"
+            );
+            assert_eq!(fake.count(BEGIN), 1);
+            assert!(!marker.exists(), "the command ran");
             assert_eq!(settled_slots(&runner).await, 0);
         }
     }
@@ -1450,6 +1514,55 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
         );
     }
 
+    /// Once a governed process has started, an authority that stops answering does not take
+    /// CodeSpace's control of it (CSRG-U5): status comes from CodeSpace's own state, termination
+    /// and the timeout kill it at once, and its reaper waits at most its bound for an
+    /// observation before reaping it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_authority_that_stops_answering_leaves_process_control_to_codespace() {
+        let helpers = helper_directory();
+        let helper = stand_in(helpers.path(), "ready", "", READY);
+        let dir = tempfile::tempdir().unwrap();
+        let ws = governed(dir.path());
+        for (tty, timeout_ms) in [(false, 30_000), (true, 30_000), (false, 300), (true, 300)] {
+            let runner = runner();
+            let fake = Fake::admitting([prepared()]).stalling(Duration::from_secs(5));
+            let process = format!("proc-stalled-{tty}-{timeout_ms}");
+            let mut req = request(&["/bin/sleep", "30"], &process);
+            req.tty = tty;
+            req.timeout_ms = timeout_ms;
+            let launch =
+                launched(launch(&fake, &runner, &ws, req, Some(launcher(helper.clone()))).await);
+            let status = runner.process_status(&launch.process_id).await.unwrap();
+            assert_eq!(status.state, ProcessState::Running);
+            let started = std::time::Instant::now();
+            let expected = if timeout_ms == 300 {
+                codespace_domain::ProcessTermination::Timeout
+            } else {
+                runner.terminate(&launch.process_id).await.unwrap();
+                codespace_domain::ProcessTermination::Terminated
+            };
+            let mut status = runner.process_status(&launch.process_id).await.unwrap();
+            for _ in 0..500 {
+                if status.state == ProcessState::Exited {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                status = runner.process_status(&launch.process_id).await.unwrap();
+            }
+            assert_eq!(
+                (status.state, status.termination),
+                (ProcessState::Exited, Some(expected)),
+                "tty={tty} timeout={timeout_ms}"
+            );
+            // Not held by the stalled authority beyond the observer's bound.
+            let bound = Duration::from_millis(timeout_ms.min(1_000))
+                + crate::process::OBSERVE_BOUND
+                + Duration::from_secs(1);
+            assert!(started.elapsed() < bound, "{:?}", started.elapsed());
+        }
+    }
+
     /// A governed process times out as any other: CodeSpace's own timeout kills it, and its
     /// status says so.
     #[tokio::test]
@@ -1486,6 +1599,14 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
                 "tty={tty}"
             );
             assert_eq!(fake.count(ABANDON), 0);
+            // CodeSpace's kill also asked DevGuard to kill the whole scope, once (CSRG-U5).
+            for _ in 0..100 {
+                if fake.count(TERMINATE) == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(fake.count(TERMINATE), 1, "tty={tty}");
         }
     }
 

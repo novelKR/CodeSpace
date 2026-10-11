@@ -46,11 +46,13 @@
         "devguard-integration",
         "devguard-integration-roadmap",
         "devguard-launch",
+        "devguard-lifecycle",
         "devguard-owner-registration",
         "devguard-status-connection",
         "devguard-결합-로드맵",
         "execution-owner-registration-csrg-u2",
         "initial-gateway-recovery-scope",
+        "lifecycle-after-launch-csrg-u5",
         "managed-launch-csrg-u4",
         "minimum-adoption-conditions",
         "plan-and-evidence-references",
@@ -67,13 +69,14 @@
         "선행-조건과-우선순위",
         "설계-개정-1-참조",
         "소비-경계",
+        "실행-뒤-생명주기csrg-u5",
         "실행-소유자-등록csrg-u2",
         "실행-허용과-spawn-전-준비csrg-u3",
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "945abaa05fb2da9ff17045670fabc83d0e4a20719281c9b5815dc40354198e73",
-      "translation_sha256": "c7f9aba3d8ffb3876a7b5a196dd327c6f6d8a114df49d99e9c449b56d6640b41"
+      "source_sha256": "7c67aaf956dd4ef71abd7d3f778b2aaf40792efaed55c9fef8bdacbe11f5e6d7",
+      "translation_sha256": "7af753ee9c0b54ac17753db23dea09fbafcb7a1c52a3f83f48286228cd2dfe21"
     },
     {
       "id": "overview",
@@ -288,8 +291,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "15fb1388e62eb8dadc7fc92cdc23e1d6ad19ddf11b31a0ba1c68480a912e846d",
-      "translation_sha256": "ae5c9419d4147e29c40e57d55d1b8ac19747ded5afe4884eedf7bb3442a142eb"
+      "source_sha256": "524cd7d63660e54377bd3916b461cf1d3efa92308feadaab6ce332cde4b68625",
+      "translation_sha256": "5e88314d135b2184fe06255ec1fd323f972c7475e33bd2f4fd6d9fc503a65cf2"
     },
     {
       "id": "execution-substrate",
@@ -353,8 +356,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "3b7d6bb20ebda7f707e31f366c7722d4bd3dc9a4506efd3172b3c10625926a41",
-      "translation_sha256": "d2826b3d8be52425302bab7ba47659da79fa1f56f13f553675c4d4670e206d26"
+      "source_sha256": "be934715cd35e1d90c81bbe881681a889592de3a28ff56455b9e448b997bf2e5",
+      "translation_sha256": "b307eb918b5be50b4a7ec79f78d1ce1dd7d1a05a0ff81fc6f2c21fe382b571f1"
     },
     {
       "id": "protocol-compatibility",

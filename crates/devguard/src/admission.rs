@@ -259,6 +259,39 @@ impl Owner {
         )
     }
 
+    /// Ask DevGuard to observe the attempt's scope now and settle it by its usual rules
+    /// (CSRG-U5). Sent while the scope's exited root is still unreaped, it lets DevGuard keep
+    /// tracking the members left in the root's group; sent after the reap, it settles what
+    /// DevGuard can prove. It never releases a scope that cannot be proven ended. Answers the
+    /// attempt's record.
+    pub fn observe(&self, admission: &Admission) -> Answer {
+        self.attempt_request(admission, Request::Observe, effective_uid(), self.pid())
+    }
+
+    /// Ask DevGuard to send SIGKILL to every identity of the attempt's scope that it can
+    /// recheck (CSRG-U5): the group's members while the group provably is still the scope's, and
+    /// the escapes it knows. Delivery is not release evidence: DevGuard releases the scope only
+    /// once it has observed it ended.
+    pub fn terminate(&self, admission: &Admission) -> Termination {
+        let Some(wire) = self.wire(admission) else {
+            return Termination::NotSignalled;
+        };
+        let Ok((mut client, _)) = self.open_with(
+            effective_uid(),
+            crate::launch::launch_compatibility(),
+            self.pid(),
+        ) else {
+            return Termination::NotSignalled;
+        };
+        match client.terminate(wire.key, devguard_client::protocol::StopSignal::Kill) {
+            Ok(result) => Termination::Signalled {
+                signalled: result.signalled,
+                complete: result.complete,
+            },
+            Err(_) => Termination::NotSignalled,
+        }
+    }
+
     pub(crate) fn admit_with(&self, admission: &Admission, uid: u32, pid: u32) -> Answer {
         self.attempt_request(admission, Request::Admit, uid, pid)
     }
@@ -289,7 +322,7 @@ impl Owner {
             return Answer::Refused(ErrorCode::InvalidRequest);
         };
         let compatibility = match request {
-            Request::Abandon(_) => crate::launch::launch_compatibility(),
+            Request::Abandon(_) | Request::Observe => crate::launch::launch_compatibility(),
             Request::Admit | Request::Lookup | Request::Cancel => admission_compatibility(),
         };
         let (mut client, _) = match self.open_with(authority_uid, compatibility, owner_pid) {
@@ -303,6 +336,7 @@ impl Owner {
             Request::Lookup => client.lookup(key.clone()),
             Request::Cancel => client.cancel(key.clone()),
             Request::Abandon(reason) => client.abandon_launch(key.clone(), reason.wire()),
+            Request::Observe => client.observe(key.clone()),
         };
         match answered {
             Ok(record) => self.attempt(&record, &key, &fingerprint),
@@ -366,6 +400,16 @@ impl Owner {
     }
 }
 
+/// What DevGuard did for [`Owner::terminate`] (CSRG-U5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Termination {
+    /// DevGuard signalled this many identities of the scope; `complete` when it could observe
+    /// and signal every target.
+    Signalled { signalled: u32, complete: bool },
+    /// DevGuard refused, or the request did not reach it: nothing is known to be signalled.
+    NotSignalled,
+}
+
 /// Why this owner holds no helper for a launch grant (CSRG-U4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Abandon {
@@ -394,6 +438,7 @@ enum Request {
     Lookup,
     Cancel,
     Abandon(Abandon),
+    Observe,
 }
 
 /// An error answer is definite, except DevGuard's client's own code for a transport failure.
