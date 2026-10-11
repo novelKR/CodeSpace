@@ -1770,6 +1770,76 @@ pub(crate) mod tests {
         assert_nothing_started(dir.path(), &runner);
     }
 
+    /// Only the authority's states that prove a command never started let its approval be used
+    /// again (CSRG-U5): a timeout, a lost answer, a launched or settled scope, or any state the
+    /// owner cannot read, does not.
+    #[test]
+    fn only_a_state_that_proves_no_start_releases_an_approval() {
+        let report = |attempt| ManagedPreparation {
+            attempt_id: "cs-attempt-1".into(),
+            process_id: ProcessId("proc-1".into()),
+            outcome: PreparationOutcome::Unknown,
+            attempt,
+            account: None,
+        };
+        for attempt in [
+            AttemptState::NotAsked,
+            AttemptState::NotRecorded,
+            AttemptState::Denied,
+            AttemptState::Cancelled,
+            AttemptState::Expired,
+            AttemptState::Released,
+        ] {
+            assert!(report(attempt).proves_not_started(), "{attempt:?}");
+        }
+        for attempt in [
+            AttemptState::Launched,
+            AttemptState::ScopeEnded,
+            AttemptState::Other,
+            AttemptState::Unknown,
+        ] {
+            assert!(!report(attempt).proves_not_started(), "{attempt:?}");
+        }
+    }
+
+    /// What DevGuard's record of a possibly launched attempt shows (CSRG-U5): only a release on
+    /// the owner's no-helper report proves no start. A suspect attempt (after an authority
+    /// restart, or with lost tracking) is launched as far as the owner knows, and a release by
+    /// scope end or after a reboot proves nothing about the start.
+    #[test]
+    fn only_a_no_helper_release_reads_as_never_started() {
+        let record = |phase, release| dg::Attempt {
+            release,
+            ..record(phase, None)
+        };
+        for (phase, release, expected) in [
+            (
+                dg::Phase::Released,
+                Some(dg::Release::NoHelperCreated),
+                AttemptState::Released,
+            ),
+            (
+                dg::Phase::Released,
+                Some(dg::Release::ScopeTerminated),
+                AttemptState::ScopeEnded,
+            ),
+            (
+                dg::Phase::Released,
+                Some(dg::Release::PreviousBoot),
+                AttemptState::ScopeEnded,
+            ),
+            (dg::Phase::Suspect, None, AttemptState::Launched),
+            (dg::Phase::RunAuthorized, None, AttemptState::Launched),
+            (dg::Phase::LaunchCommitted, None, AttemptState::Launched),
+        ] {
+            assert_eq!(
+                attempt_state(&record(phase, release)),
+                expected,
+                "{phase:?} {release:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_meaning_follows_the_command_workspace_and_request() {
         let dir = tempfile::tempdir().unwrap();

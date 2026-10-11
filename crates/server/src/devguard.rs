@@ -1296,15 +1296,20 @@ pub(crate) mod tests {
             })
         }
 
-        /// The authority's registered `codespace` instances: identity and process ID.
-        pub(crate) fn instances(&mut self) -> Vec<(String, u32)> {
+        /// The fixture's one-line answer to `command`.
+        fn ask(&mut self, command: &str) -> serde_json::Value {
             use std::io::BufRead;
             let stdin = self.stdin.as_mut().unwrap();
-            stdin.write_all(b"instances\n").unwrap();
+            writeln!(stdin, "{command}").unwrap();
             stdin.flush().unwrap();
             let mut line = String::new();
             self.stdout.read_line(&mut line).unwrap();
-            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+
+        /// The authority's registered `codespace` instances: identity and process ID.
+        pub(crate) fn instances(&mut self) -> Vec<(String, u32)> {
+            let value = self.ask("instances");
             let mut instances: Vec<_> = value
                 .as_array()
                 .unwrap()
@@ -1322,13 +1327,7 @@ pub(crate) mod tests {
 
         /// The attempts that still hold resources, and the tasks they hold.
         pub(crate) fn charged(&mut self) -> (Vec<String>, u64) {
-            use std::io::BufRead;
-            let stdin = self.stdin.as_mut().unwrap();
-            stdin.write_all(b"charged\n").unwrap();
-            stdin.flush().unwrap();
-            let mut line = String::new();
-            self.stdout.read_line(&mut line).unwrap();
-            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let value = self.ask("charged");
             let attempts = value["attempts"]
                 .as_array()
                 .unwrap()
@@ -1336,6 +1335,27 @@ pub(crate) mod tests {
                 .map(|attempt| attempt["attempt_id"].as_str().unwrap().to_owned())
                 .collect();
             (attempts, value["committed"]["tasks"].as_u64().unwrap())
+        }
+
+        /// The attempts that still hold resources, each with its phase (CSRG-U5).
+        pub(crate) fn phases(&mut self) -> Vec<(String, String)> {
+            let value = self.ask("charged");
+            value["attempts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|attempt| {
+                    (
+                        attempt["attempt_id"].as_str().unwrap().to_owned(),
+                        attempt["phase"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect()
+        }
+
+        /// Stop the authority and serve its journal again, as after a restart (CSRG-U5).
+        pub(crate) fn restart(&mut self) {
+            assert_eq!(self.ask("restart"), serde_json::json!({"restarted": true}));
         }
     }
 

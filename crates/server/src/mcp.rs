@@ -2874,6 +2874,100 @@ mod devguard_tests {
         );
     }
 
+    /// A worker lost after it took a governed launch may have started the command (CSRG-U5):
+    /// the gateway reports the dispatch unknown, never sends the launch again, keeps the
+    /// workspace busy, and the resumed approval keeps that answer, so resuming it again returns
+    /// the same process rather than a new attempt.
+    #[tokio::test]
+    async fn a_launch_lost_with_the_worker_is_unknown_and_never_sent_again() {
+        use codespace_runner::{
+            read_frame, write_frame, RunnerOp, RunnerOpResult, UdsRunner, WireEnvelope,
+            WIRE_PROTOCOL,
+        };
+        use std::sync::atomic::AtomicUsize;
+        let dir = short_directory();
+        let (client, mut worker) = tokio::net::UnixStream::pair().unwrap();
+        let launches = Arc::new(AtomicUsize::new(0));
+        let seen = launches.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(frame)) = read_frame(&mut worker).await {
+                let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+                match request.op {
+                    Some(RunnerOp::Hello) => {
+                        let hello = RunnerOpResult::Hello {
+                            protocol: WIRE_PROTOCOL,
+                            registration: true,
+                            admission: true,
+                            launch: true,
+                        };
+                        let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
+                        write_frame(&mut worker, &reply).await.unwrap();
+                    }
+                    // Lost with the worker before it answers.
+                    Some(RunnerOp::Launch { .. }) => {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        });
+        let store = Arc::new(Store::memory().unwrap());
+        let runner = UdsRunner::from_stream(client, release(&store));
+        runner.handshake().await.unwrap();
+        let handler = CodeSpace::with_store_and_runner(
+            participation_registry(dir.path(), "required"),
+            store.clone(),
+            RuntimeBackend::Uds(runner),
+        )
+        .with_registration(crate::devguard::Registration::new(
+            settings(dir.path(), dir.path().join("absent.sock")),
+            crate::config::RunnerMode::Uds,
+            true,
+            None,
+        ));
+        let held = handler
+            .exec_command(Parameters(exec_params(
+                "gov-confirm",
+                &["/usr/bin/true"],
+                false,
+            )))
+            .await
+            .err()
+            .expect("held");
+        let held: ErrorBody = serde_json::from_str(&held).unwrap();
+        assert_eq!(held.code, ErrorCode::ApprovalRequired);
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        handler
+            .approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let mut answers = Vec::new();
+        for _ in 0..2 {
+            let resumed = handler
+                .operation_resume(Parameters(OperationResumeParams {
+                    approval_id: approval_id.clone(),
+                }))
+                .await
+                .unwrap()
+                .0
+                .exec_command
+                .expect("an exec result");
+            assert_eq!(resumed.dispatch_status, ExecDispatchStatus::Unknown);
+            answers.push(resumed.process_id);
+        }
+        assert_eq!(answers[0], answers[1]);
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
+        let busy = store
+            .try_acquire_write("gov-confirm")
+            .err()
+            .expect("the workspace stays busy");
+        assert_eq!(busy.code, ErrorCode::WorkspaceBusy);
+    }
+
     /// The UDS worker registers itself and the gateway does not, against DevGuard's fixture
     /// authority in its own process.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3120,6 +3214,30 @@ mod devguard_tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("{process_id:?} did not exit: {output:?}");
+    }
+
+    /// `operation_resume`, again while it stops at the credential (see `past_the_credential`):
+    /// a resume refused before any admission keeps its approval (CSRG-U5).
+    async fn resumed(
+        handler: &CodeSpace,
+        approval_id: &ApprovalId,
+    ) -> Result<OperationResumeResult, ErrorBody> {
+        past_the_credential(
+            |result: &Result<OperationResumeResult, ErrorBody>| {
+                matches!(result, Err(body)
+                    if body.message.contains("(registration: credential_unavailable"))
+            },
+            || async move {
+                handler
+                    .operation_resume(Parameters(OperationResumeParams {
+                        approval_id: approval_id.clone(),
+                    }))
+                    .await
+                    .map(|result| result.0)
+                    .map_err(|raw| serde_json::from_str(&raw).unwrap())
+            },
+        )
+        .await
     }
 
     /// Wait until DevGuard holds nothing for CodeSpace: it releases a launched attempt once its
@@ -3668,6 +3786,117 @@ mod devguard_tests {
         );
         // Once it has ended, DevGuard releases the attempt.
         assert_eq!(released(&mut fixture), (Vec::new(), 0));
+    }
+
+    /// The resource authority restarts while a governed process runs (CSRG-U5). CodeSpace keeps
+    /// the process, its status and its workspace's lease, and the owner registers again for new
+    /// work. DevGuard no longer knows the scope, so the attempt stays charged as Suspect after
+    /// the process ends: uncertain, so never released, and never replayed: resuming its
+    /// approval again returns the same process.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_authority_restart_keeps_a_running_attempt_charged_and_never_replays_it() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(dir.path()),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        // Held for approval, granted and resumed: a process that runs until the test lets it end.
+        let go = dir.path().join("go");
+        let script = format!(
+            "while [ ! -e '{}' ]; do sleep 0.05; done; echo done",
+            go.display()
+        );
+        let held = handler
+            .exec_command(Parameters(exec_params(
+                "gov-confirm",
+                &["/bin/sh", "-c", &script],
+                false,
+            )))
+            .await
+            .err()
+            .expect("held");
+        let held: ErrorBody = serde_json::from_str(&held).unwrap();
+        assert_eq!(held.code, ErrorCode::ApprovalRequired);
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        handler
+            .approval_resolve(Parameters(codespace_domain::ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: codespace_domain::ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let launched = resumed(&handler, &approval_id)
+            .await
+            .unwrap()
+            .exec_command
+            .expect("an exec result");
+        assert_eq!(launched.dispatch_status, ExecDispatchStatus::Confirmed);
+        let (attempts, _) = fixture.charged();
+        assert_eq!(attempts.len(), 1);
+        fixture.restart();
+        let status = handler
+            .process_status(Parameters(ProcessStatusParams {
+                process_id: launched.process_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(status.state, ProcessState::Running);
+        std::fs::write(&go, b"").unwrap();
+        let (output, status) = finished(&handler, &launched.process_id).await;
+        assert_eq!((output.as_str(), status.exit_code), ("done\n", Some(0)));
+        // The process and its lease have ended; its attempt has not. Later reconciler passes
+        // cannot release it either.
+        drop(
+            store
+                .try_acquire_write("gov-confirm")
+                .expect("the lease is released"),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert_eq!(
+            fixture.phases(),
+            [(attempts[0].clone(), "suspect".to_owned())]
+        );
+        let again = resumed(&handler, &approval_id).await.unwrap();
+        assert_eq!(
+            again.exec_command.map(|result| result.process_id),
+            Some(launched.process_id)
+        );
+        // A new execution after the restart is admitted, and released once it ends.
+        let fresh = executed(&handler, exec_params("gov", &["/bin/echo", "after"], false))
+            .await
+            .unwrap();
+        assert_eq!(finished(&handler, &fresh.process_id).await.0, "after\n");
+        let mut charged = fixture.charged().0;
+        for _ in 0..100 {
+            if charged == attempts {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            charged = fixture.charged().0;
+        }
+        assert_eq!(charged, attempts);
     }
 
     /// D6 for the launch carriers: governed launches run concurrently with ordinary pipe and PTY

@@ -9,8 +9,9 @@
 //! It prints one JSON line with the settings (none is a secret: the secret stays in its file)
 //! once the authority admits, then answers each `instances` line on standard input with a JSON
 //! line listing the consumer's registered instances, and each `charged` line with one listing
-//! the attempts that still hold resources and the budget they hold (CSRG-U3). It stops at the
-//! end of its input. Built only as an
+//! the attempts that still hold resources and the budget they hold (CSRG-U3). A `restart` line
+//! stops the authority and serves its journal again, as after a restart, and is answered once
+//! it admits again (CSRG-U5). It stops at the end of its input. Built only as an
 //! example, from this crate's development dependencies; no product links it.
 
 use std::io::{BufRead, Write};
@@ -33,7 +34,7 @@ fn main() {
         .map(|limit| limit.to_str().unwrap().parse().unwrap())
         .unwrap_or(2);
     let paths = AuthorityPaths::fixture(&base);
-    let fixture = Fixture::start(&base, &paths, max_instances);
+    let mut fixture = Fixture::start(&base, &paths, max_instances);
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", fixture.settings).unwrap();
     out.flush().unwrap();
@@ -41,6 +42,10 @@ fn main() {
         match line.unwrap().trim() {
             "instances" => writeln!(out, "{}", fixture.instances()).unwrap(),
             "charged" => writeln!(out, "{}", fixture.charged()).unwrap(),
+            "restart" => {
+                fixture = fixture.restart(&base);
+                writeln!(out, "{}", json!({"restarted": true})).unwrap()
+            }
             other => panic!("unknown command {other:?}"),
         }
         out.flush().unwrap();
@@ -146,6 +151,31 @@ impl Fixture {
         }
         #[cfg(not(target_os = "macos"))]
         json!({"attempts": [], "committed": {"cpu_milli": 0, "memory_bytes": 0, "tasks": 0}})
+    }
+
+    /// Stop serving and serve the same journal again, as after a restart: DevGuard turns
+    /// every committed attempt and registered instance Suspect.
+    #[cfg(target_os = "macos")]
+    fn restart(self, base: &Path) -> Self {
+        let Self {
+            settings,
+            authority,
+        } = self;
+        authority.stop().unwrap();
+        let authority = devguard_daemon::fixture::TestAuthority::restart(base).unwrap();
+        authority
+            .wait_until_admitting(std::time::Duration::from_secs(10))
+            .unwrap();
+        Self {
+            settings,
+            authority,
+        }
+    }
+
+    /// Without native evidence nothing is launched, so no test restarts this authority.
+    #[cfg(not(target_os = "macos"))]
+    fn restart(self, _base: &Path) -> Self {
+        panic!("a restart is only exercised with native evidence");
     }
 
     fn stop(self) {

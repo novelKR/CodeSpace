@@ -2449,6 +2449,75 @@ mod tests {
         }
     }
 
+    /// At shutdown each child's reaper and handles go with the runtime (CSRG-U5): a running
+    /// child is killed, and it, like a child that exited just before and that CodeSpace has not
+    /// reaped yet, is left to tokio's orphan queue, which reaps it once. Nothing outlives the
+    /// runner. A governed child is then not observed before that reap.
+    #[test]
+    fn a_shutdown_leaves_each_child_to_one_reaper() {
+        for (name, argv, exited) in [
+            ("proc-shutdown-running", &["/bin/sleep", "30"][..], false),
+            (
+                "proc-shutdown-exited",
+                &["/bin/sh", "-c", "exit 0"][..],
+                true,
+            ),
+        ] {
+            let dir = tempdir().unwrap();
+            let ws = workspace(dir.path());
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let process_id = ProcessId(name.into());
+            let pid = runtime.block_on(async {
+                let runner = InProcessRunner::new(Arc::new(|_| {}));
+                let req = RunnerExecRequest::for_host(
+                    argv.iter().map(|arg| arg.to_string()).collect(),
+                    process_id.clone(),
+                    Profile::WorkspaceWrite,
+                );
+                if exited {
+                    // Its reaper is held, so the runtime goes while it is exited and unreaped.
+                    reaper_gate::hold(&process_id.0);
+                }
+                runner.exec(&ws, req).await.unwrap();
+                if exited {
+                    exited_but_unreaped(&runner, &process_id).await;
+                }
+                pipe_child_pid(&runner, &process_id)
+            });
+            drop(runtime);
+            reaper_gate::release(&process_id.0);
+            assert_eq!(reaper_gate::reaps(&process_id.0), 0, "{name}");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                // SAFETY: an all-zero `siginfo_t` is valid; `WNOWAIT` leaves the child waitable.
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                // SAFETY: `info` is a valid `siginfo_t` for `waitid` to fill.
+                let result = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    )
+                };
+                // Exited and not yet reaped, or already reaped by the orphan queue.
+                // SAFETY: `waitid` filled `info`, or left the zero it was given.
+                if (result == 0 && unsafe { info.si_pid() } != 0) || result == -1 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{name}: {pid} outlived the runner"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
     /// Root exit, output EOF and the workspace's release are separate events (CSRG-U5): a
     /// descendant that keeps the output open delays the EOF and the release, not the root's
     /// exit.
