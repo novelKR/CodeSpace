@@ -1112,6 +1112,58 @@ pub(crate) mod tests {
         }
 
         #[test]
+        fn terminate_kills_the_whole_scope_and_it_is_released() {
+            let Some(helper) = helper_bin() else { return };
+            let provisioned = admitting();
+            let owner = provisioned.owner();
+            let script = "sleep 30 </dev/null >/dev/null 2>&1 & exec sleep 30";
+            let admission = admission("cs-terminate-1", &["/bin/sh", "-c", script]);
+            admitted(&owner, &admission);
+            let permit = granted(&owner, &admission);
+            let invocation = owner
+                .helper(
+                    &helper,
+                    &admission,
+                    permit,
+                    Path::new("/bin/sh"),
+                    &["-c".into(), script.into()],
+                )
+                .unwrap();
+            let mut child = spawn(&invocation, Stdio::null());
+            assert_eq!(invocation.into_transcript().read(), TranscriptEnd::Started);
+            // Until the root has exec'd its last command, its background child may not exist.
+            std::thread::sleep(Duration::from_millis(300));
+            // The root and its descendant both: a kill of the root alone would leave the other.
+            let termination = owner.terminate(&admission);
+            assert!(
+                matches!(
+                    termination,
+                    crate::admission::Termination::Signalled {
+                        signalled: 2..,
+                        complete: true
+                    }
+                ),
+                "{termination:?}"
+            );
+            exited_unreaped(child.id());
+            let _ = observed(&owner, &admission);
+            child.wait().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let ended = loop {
+                let attempt = observed(&owner, &admission);
+                if attempt.phase == Phase::Released || Instant::now() > deadline {
+                    break attempt;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            };
+            assert_eq!(
+                (ended.phase, ended.release, ended.tracking_lost),
+                (Phase::Released, Some(Release::ScopeTerminated), false)
+            );
+            assert_eq!(charged(&provisioned), Budget::ZERO);
+        }
+
+        #[test]
         fn a_lost_grant_is_found_committed_and_released_as_never_received() {
             let provisioned = admitting();
             let owner = provisioned.owner();

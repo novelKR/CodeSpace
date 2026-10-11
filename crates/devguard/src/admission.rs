@@ -268,6 +268,30 @@ impl Owner {
         self.attempt_request(admission, Request::Observe, effective_uid(), self.pid())
     }
 
+    /// Ask DevGuard to send SIGKILL to every identity of the attempt's scope that it can
+    /// recheck (CSRG-U5): the group's members while the group provably is still the scope's, and
+    /// the escapes it knows. Delivery is not release evidence: DevGuard releases the scope only
+    /// once it has observed it ended.
+    pub fn terminate(&self, admission: &Admission) -> Termination {
+        let Some(wire) = self.wire(admission) else {
+            return Termination::NotSignalled;
+        };
+        let Ok((mut client, _)) = self.open_with(
+            effective_uid(),
+            crate::launch::launch_compatibility(),
+            self.pid(),
+        ) else {
+            return Termination::NotSignalled;
+        };
+        match client.terminate(wire.key, devguard_client::protocol::StopSignal::Kill) {
+            Ok(result) => Termination::Signalled {
+                signalled: result.signalled,
+                complete: result.complete,
+            },
+            Err(_) => Termination::NotSignalled,
+        }
+    }
+
     pub(crate) fn admit_with(&self, admission: &Admission, uid: u32, pid: u32) -> Answer {
         self.attempt_request(admission, Request::Admit, uid, pid)
     }
@@ -374,6 +398,16 @@ impl Owner {
             known_not_started: record.known_not_started(),
         })
     }
+}
+
+/// What DevGuard did for [`Owner::terminate`] (CSRG-U5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Termination {
+    /// DevGuard signalled this many identities of the scope; `complete` when it could observe
+    /// and signal every target.
+    Signalled { signalled: u32, complete: bool },
+    /// DevGuard refused, or the request did not reach it: nothing is known to be signalled.
+    NotSignalled,
 }
 
 /// Why this owner holds no helper for a launch grant (CSRG-U4).

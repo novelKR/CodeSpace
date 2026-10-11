@@ -3411,6 +3411,84 @@ mod devguard_tests {
         assert_eq!(released(&mut fixture), (Vec::new(), 0));
     }
 
+    /// Once a governed process has started, losing the resource authority does not take
+    /// CodeSpace's own control of it (CSRG-U5): its status comes from CodeSpace's handle, it is
+    /// terminated as any other process, and its workspace is free again afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lost_authority_leaves_a_governed_process_under_codespaces_control() {
+        let Some(fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry_with(dir.path(), 2),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        let mut running = Vec::new();
+        for (workspace, tty) in [("gov-0", false), ("gov-1", true)] {
+            let result = executed(&handler, exec_params(workspace, &["/bin/sleep", "30"], tty))
+                .await
+                .unwrap();
+            running.push((workspace, result.process_id));
+        }
+        // The authority goes away while both processes run.
+        drop(fixture);
+        let started = std::time::Instant::now();
+        for (workspace, process_id) in &running {
+            let status = handler
+                .process_status(Parameters(ProcessStatusParams {
+                    process_id: process_id.clone(),
+                }))
+                .await
+                .unwrap()
+                .0;
+            assert_eq!(status.state, ProcessState::Running, "{workspace}");
+            handler
+                .terminate_process(Parameters(TerminateProcessParams {
+                    process_id: process_id.clone(),
+                }))
+                .await
+                .unwrap();
+        }
+        for (workspace, process_id) in &running {
+            let (_, status) = finished(&handler, process_id).await;
+            assert_eq!(
+                status.termination,
+                Some(codespace_domain::ProcessTermination::Terminated),
+                "{workspace}"
+            );
+            drop(
+                store
+                    .try_acquire_write(workspace)
+                    .expect("the lease is released"),
+            );
+        }
+        // At most the reaper's two-second bound for an observation that cannot be answered.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
     /// A governed pipe execution whose root exits leaving a descendant (CSRG-U5): CodeSpace's
     /// one reaper has DevGuard observe the scope while the exited root still holds its PID, so
     /// the descendant keeps the attempt charged, and DevGuard releases it once the descendant

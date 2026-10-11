@@ -65,6 +65,8 @@ pub trait AttemptAuthority: Send + Sync + 'static {
     /// Have DevGuard observe the attempt's scope now (CSRG-U5): while its exited root is still
     /// unreaped, so that members left in its group stay tracked, and again after the reap.
     fn observe(&self, admission: &Admission) -> Answer;
+    /// Have DevGuard kill the attempt's whole scope (CSRG-U5). Delivery is not release evidence.
+    fn terminate(&self, admission: &Admission) -> dg::Termination;
     /// The launch helper's invocation for the attempt's grant (CSRG-U4).
     fn helper(
         &self,
@@ -100,6 +102,9 @@ impl AttemptAuthority for devguard::Owner {
     }
     fn observe(&self, admission: &Admission) -> Answer {
         devguard::Owner::observe(self, admission)
+    }
+    fn terminate(&self, admission: &Admission) -> dg::Termination {
+        devguard::Owner::terminate(self, admission)
     }
     fn helper(
         &self,
@@ -1094,7 +1099,9 @@ pub(crate) mod tests {
         grants: Mutex<VecDeque<Grant>>,
         abandons: Mutex<VecDeque<Answer>>,
         admit_delay: Mutex<Duration>,
-        calls: [AtomicUsize; 6],
+        /// How long `observe` and `terminate` take, as an authority that stopped answering.
+        stall: Mutex<Duration>,
+        calls: [AtomicUsize; 7],
         seen: Mutex<Vec<Admission>>,
         pub(crate) abandoned_for: Mutex<Vec<Abandon>>,
     }
@@ -1125,6 +1132,11 @@ pub(crate) mod tests {
             *self.admit_delay.lock().unwrap() = delay;
             self
         }
+        /// An authority that stops answering once the launch has been granted.
+        pub(crate) fn stalling(self: Arc<Self>, stall: Duration) -> Arc<Self> {
+            *self.stall.lock().unwrap() = stall;
+            self
+        }
         pub(crate) fn count(&self, call: usize) -> usize {
             self.calls[call].load(Ordering::SeqCst)
         }
@@ -1139,6 +1151,7 @@ pub(crate) mod tests {
     pub(crate) const BEGIN: usize = 3;
     pub(crate) const ABANDON: usize = 4;
     pub(crate) const OBSERVE: usize = 5;
+    pub(crate) const TERMINATE: usize = 6;
 
     /// A permit as a test authority would grant one.
     pub(crate) const PERMIT: &str =
@@ -1201,7 +1214,17 @@ pub(crate) mod tests {
         fn observe(&self, admission: &Admission) -> Answer {
             self.calls[OBSERVE].fetch_add(1, Ordering::SeqCst);
             self.seen.lock().unwrap().push(admission.clone());
+            std::thread::sleep(*self.stall.lock().unwrap());
             Answer::Unknown
+        }
+        fn terminate(&self, admission: &Admission) -> dg::Termination {
+            self.calls[TERMINATE].fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(admission.clone());
+            std::thread::sleep(*self.stall.lock().unwrap());
+            dg::Termination::Signalled {
+                signalled: 1,
+                complete: true,
+            }
         }
         fn helper(
             &self,

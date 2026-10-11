@@ -114,6 +114,7 @@ struct Slot {
     output: Arc<Mutex<OutputBuf>>,
     completed_at: Arc<Mutex<Option<Instant>>>,
     lifecycle: Arc<Mutex<Lifecycle>>,
+    on_kill: Option<KillHook>,
 }
 
 enum SessionIo {
@@ -304,6 +305,29 @@ async fn observe(observer: &Option<ExitObserver>, point: ExitPoint) {
     let _ = tokio::time::timeout(OBSERVE_BOUND, call).await;
 }
 
+/// A hook called when CodeSpace kills a process, on termination or timeout (CSRG-U5): on its
+/// own blocking thread and never awaited, so the process's own kill does not depend on it; for
+/// example to have a resource authority end the process's whole scope.
+pub type KillHook = Arc<dyn Fn() + Send + Sync>;
+
+/// What a spawn adds to its process (CSRG-U5): a governed execution's exit observer and kill
+/// hook. An ungoverned process has neither.
+#[derive(Clone, Default)]
+pub struct ProcessHooks {
+    pub observer: Option<ExitObserver>,
+    pub on_kill: Option<KillHook>,
+}
+
+/// Run `hook` after CodeSpace's own kill, without waiting for it.
+fn after_kill(hook: &Option<KillHook>) {
+    let Some(hook) = hook.clone() else {
+        return;
+    };
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn_blocking(move || hook());
+    }
+}
+
 struct SpawnCtx {
     cwd: PathBuf,
     cap: usize,
@@ -312,7 +336,7 @@ struct SpawnCtx {
     completed_at: Arc<Mutex<Option<Instant>>>,
     lifecycle: Arc<Mutex<Lifecycle>>,
     process_id: String,
-    observer: Option<ExitObserver>,
+    hooks: ProcessHooks,
 }
 
 #[derive(Default)]
@@ -526,15 +550,17 @@ impl InProcessRunner {
         }
         // The slot first: no process is created without one.
         let slot = self.reserve_slot(&req.process_id.0)?;
-        self.spawn_slotted(ws, req, slot, How::Direct, None).await
+        self.spawn_slotted(ws, req, slot, How::Direct, ProcessHooks::default())
+            .await
     }
 
     /// Start a governed execution's launch helper through this runner's own pipe or PTY spawner
     /// (CSRG-U4), filling the slot its preparation took. The helper alone receives the
     /// invocation's two descriptors, and this process's copies are closed as soon as the spawn
     /// returns. The helper becomes the execution: from here it is a process like any other.
-    /// Its reaper calls `observer` before and after the reap (CSRG-U5). Returns the spawn's
-    /// result and the owner's end of the helper's transcript.
+    /// Its reaper calls `hooks.observer` before and after the reap, and CodeSpace's kills call
+    /// `hooks.on_kill` (CSRG-U5). Returns the spawn's result and the owner's end of the helper's
+    /// transcript.
     #[cfg(feature = "devguard")]
     pub(crate) async fn spawn_managed(
         &self,
@@ -542,14 +568,14 @@ impl InProcessRunner {
         req: RunnerExecRequest,
         slot: SlotReservation,
         invocation: codespace_devguard::launch::HelperInvocation,
-        observer: ExitObserver,
+        hooks: ProcessHooks,
     ) -> (
         Result<RunnerExecResult, ErrorBody>,
         codespace_devguard::launch::Transcript,
     ) {
         let managed = Arc::new(Managed::new(invocation));
         let result = self
-            .spawn_slotted(ws, req, slot, How::Managed(managed.clone()), Some(observer))
+            .spawn_slotted(ws, req, slot, How::Managed(managed.clone()), hooks)
             .await;
         (result, managed.finish())
     }
@@ -560,7 +586,7 @@ impl InProcessRunner {
         req: RunnerExecRequest,
         slot: SlotReservation,
         how: How,
-        observer: Option<ExitObserver>,
+        hooks: ProcessHooks,
     ) -> Result<RunnerExecResult, ErrorBody> {
         let cap = req.output_bytes_cap.max(1) as usize;
         let timeout = Duration::from_millis(req.timeout_ms.max(1));
@@ -575,7 +601,7 @@ impl InProcessRunner {
             completed_at: Arc::new(Mutex::new(None)),
             lifecycle: Arc::new(Mutex::new(Lifecycle::new())),
             process_id: req.process_id.0.clone(),
-            observer,
+            hooks,
         };
         if req.tty {
             self.spawn_pty(ws, req, ctx, slot, how).await
@@ -600,8 +626,9 @@ impl InProcessRunner {
             completed_at,
             lifecycle,
             process_id,
-            observer,
+            hooks,
         } = ctx;
+        let ProcessHooks { observer, on_kill } = hooks;
         let (mut child, launch) = match &how {
             How::Direct => {
                 let launch = exec_launch(ws, &req)?;
@@ -660,6 +687,7 @@ impl InProcessRunner {
             output: output.clone(),
             completed_at: completed_at.clone(),
             lifecycle: lifecycle.clone(),
+            on_kill: on_kill.clone(),
         };
         {
             let mut map = self.inner.lock().expect("runner");
@@ -709,6 +737,7 @@ impl InProcessRunner {
             life.note_kill(KillIntent::Timeout);
             let _ = ch.start_kill();
             drop(life);
+            after_kill(&on_kill);
             if let Ok(mut buf) = timeout_out.lock() {
                 buf.timed_out = true;
             }
@@ -735,8 +764,9 @@ impl InProcessRunner {
             completed_at,
             lifecycle,
             process_id,
-            observer,
+            hooks,
         } = ctx;
+        let ProcessHooks { observer, on_kill } = hooks;
         let launch = match &how {
             How::Direct => Some(exec_launch(ws, &req)?),
             #[cfg(feature = "devguard")]
@@ -821,6 +851,7 @@ impl InProcessRunner {
             output: output.clone(),
             completed_at: completed_at.clone(),
             lifecycle: lifecycle.clone(),
+            on_kill: on_kill.clone(),
         };
         {
             let mut map = self.inner.lock().expect("runner");
@@ -871,6 +902,7 @@ impl InProcessRunner {
             life.note_kill(KillIntent::Timeout);
             drop(life);
             timeout_session.kill();
+            after_kill(&on_kill);
             if let Ok(mut buf) = timeout_out.lock() {
                 buf.timed_out = true;
             }
@@ -1147,6 +1179,7 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
             child
                 .start_kill()
                 .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
+            after_kill(&slot.on_kill);
             Ok(true)
         }
         SessionIo::Pty { session, .. } => {
@@ -1156,6 +1189,7 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
             }
             life.note_kill(KillIntent::Terminated);
             session.kill();
+            after_kill(&slot.on_kill);
             Ok(true)
         }
     }
@@ -2204,7 +2238,16 @@ mod tests {
         req.tty = tty;
         let slot = runner.reserve_slot(&process_id.0).unwrap();
         runner
-            .spawn_slotted(ws, req, slot, How::Direct, Some(observer))
+            .spawn_slotted(
+                ws,
+                req,
+                slot,
+                How::Direct,
+                ProcessHooks {
+                    observer: Some(observer),
+                    on_kill: None,
+                },
+            )
             .await
             .unwrap();
     }
@@ -2308,6 +2351,158 @@ mod tests {
         }
         // The pinned Codex PTY reaps inside its own task.
         assert_eq!(*seen.lock().unwrap(), [ExitPoint::AfterReap]);
+    }
+
+    /// Spawn `argv` with a kill hook that counts its calls.
+    async fn spawn_counting_kills(
+        runner: &InProcessRunner,
+        ws: &Workspace,
+        process_id: &ProcessId,
+        argv: &[&str],
+        tty: bool,
+        timeout_ms: u64,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        let kills = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut req = RunnerExecRequest::for_host(
+            argv.iter().map(|arg| arg.to_string()).collect(),
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = tty;
+        req.timeout_ms = timeout_ms;
+        let slot = runner.reserve_slot(&process_id.0).unwrap();
+        let counted = kills.clone();
+        runner
+            .spawn_slotted(
+                ws,
+                req,
+                slot,
+                How::Direct,
+                ProcessHooks {
+                    observer: None,
+                    on_kill: Some(Arc::new(move || {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                },
+            )
+            .await
+            .unwrap();
+        kills
+    }
+
+    async fn counted(kills: &std::sync::atomic::AtomicUsize, expected: usize) -> usize {
+        for _ in 0..100 {
+            if kills.load(std::sync::atomic::Ordering::SeqCst) >= expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Long enough for a call that should not happen.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        kills.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn the_kill_hook_runs_once_for_each_kill_codespace_makes() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        for tty in [false, true] {
+            // A termination kills it once; a second one finds it gone.
+            let process_id = ProcessId(format!("proc-kill-hook-terminated-{tty}"));
+            let kills = spawn_counting_kills(
+                &runner,
+                &ws,
+                &process_id,
+                &["/bin/sleep", "30"],
+                tty,
+                30_000,
+            )
+            .await;
+            runner.terminate(&process_id).await.unwrap();
+            let status = wait_exited(&runner, &process_id).await;
+            assert_eq!(status.termination, Some(ProcessTermination::Terminated));
+            runner.terminate(&process_id).await.unwrap();
+            assert_eq!(counted(&kills, 1).await, 1, "tty={tty}");
+            // The timeout kills it once.
+            let process_id = ProcessId(format!("proc-kill-hook-timeout-{tty}"));
+            let kills =
+                spawn_counting_kills(&runner, &ws, &process_id, &["/bin/sleep", "30"], tty, 100)
+                    .await;
+            let status = wait_exited(&runner, &process_id).await;
+            assert_eq!(status.termination, Some(ProcessTermination::Timeout));
+            assert_eq!(counted(&kills, 1).await, 1, "tty={tty}");
+            // A process that ended on its own is not killed.
+            let process_id = ProcessId(format!("proc-kill-hook-exited-{tty}"));
+            let kills = spawn_counting_kills(
+                &runner,
+                &ws,
+                &process_id,
+                &["/bin/sh", "-c", "exit 0"],
+                tty,
+                30_000,
+            )
+            .await;
+            wait_exited(&runner, &process_id).await;
+            runner.terminate(&process_id).await.unwrap();
+            assert_eq!(counted(&kills, 0).await, 0, "tty={tty}");
+        }
+    }
+
+    /// Root exit, output EOF and the workspace's release are separate events (CSRG-U5): a
+    /// descendant that keeps the output open delays the EOF and the release, not the root's
+    /// exit.
+    #[tokio::test]
+    async fn root_exit_output_eof_and_release_are_separate_events() {
+        // The Linux command sandbox's helper outlives the command's descendants.
+        if crate::linux_sandbox_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let released = Arc::new(Mutex::new(Vec::<String>::new()));
+        let runner = {
+            let released = released.clone();
+            InProcessRunner::new(Arc::new(move |id: &str| {
+                released.lock().unwrap().push(id.to_owned())
+            }))
+        };
+        let process_id = ProcessId("proc-separate-events".into());
+        let req = RunnerExecRequest::for_host(
+            vec!["/bin/sh".into(), "-c".into(), "sleep 1 & echo root".into()],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        runner.exec(&ws, req).await.unwrap();
+        let status = wait_exited(&runner, &process_id).await;
+        assert_eq!(status.exit_code, Some(0));
+        // The root has exited; its descendant still holds the output open.
+        let read = runner
+            .read_process(RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        assert!(!read.eof);
+        assert!(released.lock().unwrap().is_empty());
+        // Once the descendant has ended, the output ends and the workspace is released.
+        for _ in 0..250 {
+            if !released.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let read = runner
+            .read_process(RunnerReadProcess {
+                process_id: process_id.clone(),
+                cursor: 0,
+            })
+            .await
+            .unwrap();
+        assert!(read.eof);
+        assert_eq!(read.chunk, "root\n");
+        assert_eq!(*released.lock().unwrap(), [process_id.0]);
     }
 
     #[tokio::test]
