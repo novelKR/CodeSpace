@@ -2,13 +2,13 @@
 
 # DevGuard 결합 로드맵
 
-> **상태: 구현 지시로서 효력 중지.** 이 페이지의 ‘CS-RG 작업 순서’, ‘소비 경계’, ‘설계 개정 1 참조’ 절은 적힌 대로 구현하지 않습니다. 현재 상태와 선행 조건은 영향이 없습니다. CodeSpace 통합 계획에 대해 소유자가 지시한 검토인 CS-RG 통합 경계 재검증(작업 단위가 아닙니다)이 끝날 때까지 적용됩니다. 대체 구조는 승인되지 않았으며, 소유자가 재검증 결과를 검토한 뒤 결정합니다. 이 표기는 지시의 효력만 중지하며 어떤 안전 요구도 완화하지 않습니다. 아래 내용은 이력 추적을 위해 바꾸지 않고 남깁니다. 다만 현재 상태, 소유자가 2026-10-02에 이 효력 중지와 별도로 승인한 CSRG-U1의 [상태 전용 연결](#devguard-status-connection), 소유자가 2026-10-03에 지시한 CSRG-U2의 [실행 소유자 등록](#devguard-owner-registration), 소유자가 2026-10-07에 지시한 CSRG-U3의 [실행 허용과 spawn 전 준비](#devguard-admission), 소유자가 2026-10-08에 지시한 CSRG-U4의 [관리형 실행](#devguard-launch)은 예외입니다.
+> **상태: 구현 지시로서 효력 중지.** 이 페이지의 ‘CS-RG 작업 순서’, ‘소비 경계’, ‘설계 개정 1 참조’ 절은 적힌 대로 구현하지 않습니다. 현재 상태와 선행 조건은 영향이 없습니다. CodeSpace 통합 계획에 대해 소유자가 지시한 검토인 CS-RG 통합 경계 재검증(작업 단위가 아닙니다)이 끝날 때까지 적용됩니다. 대체 구조는 승인되지 않았으며, 소유자가 재검증 결과를 검토한 뒤 결정합니다. 이 표기는 지시의 효력만 중지하며 어떤 안전 요구도 완화하지 않습니다. 아래 내용은 이력 추적을 위해 바꾸지 않고 남깁니다. 다만 현재 상태, 소유자가 2026-10-02에 이 효력 중지와 별도로 승인한 CSRG-U1의 [상태 전용 연결](#devguard-status-connection), 소유자가 2026-10-03에 지시한 CSRG-U2의 [실행 소유자 등록](#devguard-owner-registration), 소유자가 2026-10-07에 지시한 CSRG-U3의 [실행 허용과 spawn 전 준비](#devguard-admission), 소유자가 2026-10-08에 지시한 CSRG-U4의 [관리형 실행](#devguard-launch), 소유자가 2026-10-09에 지시한 CSRG-U5의 [실행 뒤 생명주기](#devguard-lifecycle)는 예외입니다.
 
 [English](../devguard-integration.md) | [한국어](devguard-integration.md)
 
 [DevGuard](https://github.com/novelKR/DevGuard)는 개발 작업의 자원을 중앙에서 관리하는 독립 시스템이며 CodeSpace와 동일한 Apache-2.0 라이선스를 적용한다. 승인된 결합 경로에 따라 실행 허용과 자원 회계를 공통 계층에 맡기고, CodeSpace는 프로세스 소유권, PTY, 입출력, 권한, 승인 hold와 workspace 조정을 계속 담당한다.
 
-**현재 상태:** DevGuard는 독립 저장소에서 DG-1을 완료했다([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). DG-0 계약 위에 macOS 실제 호스트 증거, 현재 사용자의 LaunchAgent로 설치하는 인증 daemon, fenced launch helper와 대조, Cargo adapter를 갖춘 `devguard` 명령행 owner, 후보 시험용 parent lease, upgrade와 repair를 제공한다. 측정한 호스트와 정책에서 release `0.1.0-5daee5d-b3fa569e`(Git tag가 아닌 release ID)의 macOS SLO qualification을 마쳤으며 Linux 강제 보호는 qualification하지 않았다. CodeSpace 소비(CS-RG)는 진행 중이며 qualification을 마치지 않았다. CSRG-U1은 opt-in 상태 전용 연결을 추가했다. `devguard` feature로 빌드하고 `--devguard status`로 시작한 gateway는 [`6e7e065`](upstream-lock.md#devguard-client-pin)에 고정한 DevGuard client로 DevGuard의 상태를 `workspace_info`에 보고한다. CSRG-U2부터는 CodeSpace의 실행을 소유한 프로세스가 스스로를 DevGuard에 등록하며(`--devguard register`), workspace의 `resources` 설정으로 자원 참여를 필수로 지정할 수 있다. CSRG-U3부터 그 소유자는 이런 실행마다 무엇을 만들기 전에 프로세스 slot을 잡고 DevGuard의 실행 허용을 받는다. CSRG-U4부터는 launch helper를 설정했으면(`--devguard-launch-helper`) 그 실행을 DevGuard의 launch helper로 한 번 실행한다. DevGuard는 helper의 scope를 묶고 정책을 적용한 뒤에 실행을 승인한다. helper가 없으면 시작하지 않은 attempt를 취소하고 실행을 거부한다. DevGuard 없이 실행하는 것은 없다. reap 전 관찰, 해제, qualification은 이후 단위(CSRG-U5, U6)다. qualification을 마친 release는 실행에 쓸 후보로 남으며 선택된 pin이 아니다. client pin은 client crate의 소스 pin이다.
+**현재 상태:** DevGuard는 독립 저장소에서 DG-1을 완료했다([`395315d`](https://github.com/novelKR/DevGuard/tree/395315d34b5d458ea1774446727f0cb14bd8a120), [마일스톤 원장](https://github.com/novelKR/DevGuard/blob/395315d34b5d458ea1774446727f0cb14bd8a120/milestones.json)). DG-0 계약 위에 macOS 실제 호스트 증거, 현재 사용자의 LaunchAgent로 설치하는 인증 daemon, fenced launch helper와 대조, Cargo adapter를 갖춘 `devguard` 명령행 owner, 후보 시험용 parent lease, upgrade와 repair를 제공한다. 측정한 호스트와 정책에서 release `0.1.0-5daee5d-b3fa569e`(Git tag가 아닌 release ID)의 macOS SLO qualification을 마쳤으며 Linux 강제 보호는 qualification하지 않았다. CodeSpace 소비(CS-RG)는 진행 중이며 qualification을 마치지 않았다. CSRG-U1은 opt-in 상태 전용 연결을 추가했다. `devguard` feature로 빌드하고 `--devguard status`로 시작한 gateway는 [`6e7e065`](upstream-lock.md#devguard-client-pin)에 고정한 DevGuard client로 DevGuard의 상태를 `workspace_info`에 보고한다. CSRG-U2부터는 CodeSpace의 실행을 소유한 프로세스가 스스로를 DevGuard에 등록하며(`--devguard register`), workspace의 `resources` 설정으로 자원 참여를 필수로 지정할 수 있다. CSRG-U3부터 그 소유자는 이런 실행마다 무엇을 만들기 전에 프로세스 slot을 잡고 DevGuard의 실행 허용을 받는다. CSRG-U4부터는 launch helper를 설정했으면(`--devguard-launch-helper`) 그 실행을 DevGuard의 launch helper로 한 번 실행한다. DevGuard는 helper의 scope를 묶고 정책을 적용한 뒤에 실행을 승인한다. helper가 없으면 시작하지 않은 attempt를 취소하고 실행을 거부한다. DevGuard 없이 실행하는 것은 없다. CSRG-U5부터 프로세스마다 reaper는 하나다. DevGuard는 관리 대상 pipe 실행의 scope를 CodeSpace가 root를 reap하기 전에 관찰하고, PTY 실행은 당분간 고정된 Codex PTY가 reap한 뒤에만 관찰한다. 관리 대상 프로세스를 죽이면 그 scope도 종료하며, 시작하지 않았음이 증명된 관리 대상 실행의 승인은 다시 재개할 수 있다. qualification은 이후 단위(CSRG-U6)다. qualification을 마친 release는 실행에 쓸 후보로 남으며 선택된 pin이 아니다. client pin은 client crate의 소스 pin이다.
 
 DevGuard [설계 개정 1](https://github.com/novelKR/DevGuard/blob/d4981b4c241cff42687f5c2c681b583c7847776e/docs/ko/design-revision-1.md)은 [DevGuard PR #8](https://github.com/novelKR/DevGuard/pull/8)의 병합 `d4981b4c241cff42687f5c2c681b583c7847776e`로 반영되었으며 CS-RG의 실행 계층과 작업 순서를 개정했다. 이 개정은 계획과 이후 구현을 구속하는 설계 결정을 바꾼다. 현재 CodeSpace 동작이나 구현·qualification 상태는 바꾸지 않는다.
 
@@ -226,7 +226,31 @@ DevGuard는 helper의 부모가 등록된 소유자이기를 요구하므로 실
 
 **지원.** 실제 호스트 증거를 가진 DevGuard 서비스가 있는 macOS에서 `in-process`와 `--runtime-bin`을 쓴 `uds`를 각각 pipe와 PTY로 지원한다. 지원하지 않는 것: 소유자가 등록할 수 없는 `--runner-socket`을 쓴 `uds`와 DG-LINUX 전의 Linux, 무엇을 확정하기 전에 거부되는 Linux 명령 sandbox와 `Enabled` network.
 
-**아직 하지 않는 일(CSRG-U5).** CodeSpace는 DevGuard에 scope를 관찰하거나 signal하게 하지 않고 이전처럼 프로세스를 reap하고 종료한다. pipe에서 `terminate_process`와 timeout은 root만 죽인다. DevGuard는 모든 구성원이 root와 함께 끝난 scope를 해제한다. root보다 오래 사는 자손은 실행되는 동안 attempt를 계속 차지하게 하고, DevGuard가 관찰하기 전에 CodeSpace의 reap 뒤에 남은 자손은 attempt를 suspect로 남긴다. 승인 dispatch 상태, 모든 종료 경로의 해제, qualification은 주장하지 않는다.
+**생명주기(CSRG-U5).** reap, reap 전 관찰, scope 종료, 승인, 다시 실행하지 않는 경우는 [실행 뒤 생명주기](#devguard-lifecycle)에 있다.
+
+<a id="devguard-lifecycle"></a>
+
+## 실행 뒤 생명주기(CSRG-U5)
+
+CSRG-U5는 관리 대상 실행의 실행 뒤 생명주기를 완성한다. 누가 reap하는지, DevGuard가 언제 scope를 관찰하는지, kill이 scope에 어떻게 닿는지, DevGuard 없이 CodeSpace가 무엇을 제어하는지, 승인을 언제 다시 쓸 수 있는지를 정한다.
+
+**reaper 하나.** pipe 자식의 reaper는 그 자식을 기다리는 task 하나다. timeout, `terminate_process`, workspace 종료, 실패한 실행의 정리는 의도를 기록하고 자식이 아직 reap되지 않았을 때만 signal을 보내며, 자식을 기다리지 않는다. 종료 시 reaper는 runtime과 함께 사라진다. 실행 중인 자식은 죽고, tokio의 orphan queue가 한 번 reap한다. PTY 자식은 이전처럼 고정된 Codex PTY의 waiter가 reap한다.
+
+**reap 전 관찰.** 관리 대상 pipe 실행에서 reaper는 root의 종료를 reap하지 않고 감지하며(`WNOWAIT`를 준 `waitid`), 종료한 root가 아직 PID를 갖고 있는 동안 DevGuard에 scope를 `Observe`하게 한다. 그다음 root를 reap하고 종료를 기록한 뒤 DevGuard에 한 번 더 관찰하게 한다. 그래서 scope에 남은 자손은 계속 그 scope의 것이다. 자손이 실행되는 동안 attempt는 계속 자원을 차지하고, 자손이 끝나면 DevGuard가 해제한다. 관찰마다 상한(2초)이 있으므로 reap 전 관찰이 종료 상태를 늦추는 시간도 그 이하다. 시간이 지나거나 실패한 관찰은 건너뛰고 reap을 진행한다. 관찰은 reaper를 늘리지 않고 자식을 reap하지 않은 채로 두지도 않는다. 관리하지 않는 실행은 관찰하지 않는다.
+
+**당분간의 PTY.** 고정된 Codex PTY는 자신의 waiter에서 reap하며 reap 전에 끼어들 hook이 없다. 그래서 관리 대상 PTY 실행은 reap한 뒤에만 관찰한다. root가 PID를 갖고 있는 동안 DevGuard의 reconciler가 이미 본 자손은 Codex가 reap한 뒤에도 계속 추적된다. 추적을 잃는 것은 어떤 관찰도 보기 전에 나타났고, 그 root도 그 전에 종료한 자손뿐이다. 그 attempt는 재부팅 때까지 suspect로 자원을 차지한다. 이는 최종 한계가 아닌 임시 상태다. PTY 실행의 reap 전 관찰은 소유자가 2026-10-11에 고른 별도의 Codex pin 변경으로 들어올 예정이다. 그 변경이 먼저 병합되면 CSRG-U5는 그것과 함께 병합하고, 그렇지 않으면 병합 전에 소유자에게 다시 묻는다.
+
+**종료.** CodeSpace가 관리 대상 프로세스를 죽이면(`terminate_process`, workspace 종료, timeout) DevGuard에도 scope를 `Terminate`하게 한다. DevGuard가 다시 확인할 수 있는 모든 identity, 즉 구성원과 알려진 이탈 프로세스에 SIGKILL을 보낸다. 이 요청은 자신의 thread에서 돌고 기다리지 않으므로 CodeSpace 자신의 kill은 DevGuard를 기다리지 않는다. signal을 보낸 것은 해제가 아니다. DevGuard는 scope의 끝을 관찰한 뒤에 attempt를 해제한다.
+
+**authority 없이.** 관리 대상 프로세스가 실행된 뒤에는 `process_status`, `read_process`, `write_stdin`, `process_resize`, `terminate_process`, timeout이 DevGuard에 묻지 않는다. 멈추거나 내려간 authority가 더하는 비용은 상한 있는 관찰뿐이다. 새 관리 대상 실행은 이전처럼 거부된다.
+
+**별개의 사건.** root 종료, 출력 EOF, 프로세스 handle 제거, workspace lease 해제, DevGuard scope의 끝, 그 회계의 해제는 별개의 사건이다. 출력을 열어 둔 자손은 EOF와 lease를 늦추지만 root의 종료 상태는 늦추지 않는다. attempt는 CodeSpace 자신의 상태와 관계없이 DevGuard가 scope의 끝을 관찰할 때까지 자원을 차지한다.
+
+**승인.** 재개한 승인의 관리 대상 실행이 명령을 시작하지 않았다는 증거와 함께 거부되면 승인은 홀드를 돌려받아(다시 `granted`) 새 attempt로 다시 재개할 수 있다. 증거는 DevGuard가 가진 attempt의 상태다. 묻지 않음, 기록되지 않음, 거부됨, 취소됨, 만료됨, 또는 소유자가 helper를 갖고 있지 않다고 보고해 해제됨이다. 그 밖의 결과는 모두 이전처럼 결과와 함께 승인을 소비한다. 알 수 없는 dispatch, 실행되었거나 suspect이거나 scope가 끝난 attempt, 잃어버린 답, 없는 프로세스 handle도 그렇다. 소비된 승인을 재개하면 저장된 결과를 돌려주며 아무것도 실행하지 않는다.
+
+**재실행 없음.** 첫 attempt가 시작하지 않았다는 증거가 없으면 아무것도 다시 시작하지 않는다. 제때 끝나지 않은 transcript, 잃어버렸거나 알 수 없는 `BeginLaunch` 답, 실행 요청을 받은 뒤 잃은 worker, 취소된 요청, 관찰 전에 reap된 root, authority 재시작, 반복된 재개 모두 그렇다. authority가 재시작하면 DevGuard는 실행 중인 scope를 더는 알지 못한다. 프로세스는 계속 CodeSpace의 것이고, 소유자는 새 작업을 위해 다시 등록하며, attempt는 프로세스가 끝난 뒤에도 suspect로 자원을 차지한다.
+
+**지원**은 CSRG-U4와 같다. **주장하지 않는 것:** CS-RG qualification(CSRG-U6), PTY 실행의 reap 전 관찰(위), DG-LINUX 전의 Linux.
 
 ## CS-RG 작업 순서
 
