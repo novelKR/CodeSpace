@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Fail the deploy if the Codex submodule does not match docs/upstream-lock.md
-# or if the isolated patch adapter tests fail. Never treat a red parity run
-# as success.
+# Fail the deploy if the Codex submodule does not match docs/upstream-lock.md,
+# if its files are not exactly the recorded patched tree, or if the isolated
+# patch adapter tests fail. Never treat a red parity run as success.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -38,6 +38,9 @@ if [[ "$actual" != "$expected" ]]; then
   echo "Do not git submodule update --remote onto Codex main. See docs/upstream-update.md." >&2
   exit 1
 fi
+
+# The recorded downstream patches must be applied, and nothing else changed.
+python3 scripts/codex_patch.py check
 
 echo "upstream pin ok $actual"
 

@@ -19,6 +19,11 @@ under the Apache License, Version 2.0.
   apply) via git submodule `third_party/codex` at
   `6b9826e3aa83b1a5947db50f4332cb9c65f1b340` (`rust-v0.154.0`).
   The pin is recorded in docs/upstream-lock.md.
+  CodeSpace modifies one pinned crate, `codex-utils-pty`, with the
+  patch in third_party/codex-patches/ (bounded observation of an
+  exited PTY child before its reap), which is applied to the
+  submodule's files before building. Each file the patch modifies
+  carries a notice saying so.
   File-copy vendoring of a single crate is not used because the crate
   depends on other Codex workspace crates (including
   `codex-exec-server`, path utilities, and tree-sitter bindings).

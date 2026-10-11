@@ -62,7 +62,7 @@ Current entrypoints do not embed `codex-core`, `codex-exec`, or Codex App Server
 
 ## Updates and future work
 
-All reused components currently come from the [same pinned revision](upstream-lock.md). Upstream fixes arrive only after an explicit pin update and validation; they are not automatically inherited. [Update checks](upstream-update.md) include each connected adapter, not only patch tests.
+All reused components currently come from the [same pinned revision](upstream-lock.md), and one [recorded patch](upstream-lock.md#codex-downstream-patch) to `codex-utils-pty` is applied to its files. Upstream fixes arrive only after an explicit pin update and validation; they are not automatically inherited. When the pinned revision blocks work CodeSpace needs, follow the [policy for changing Codex at a pin](upstream-patches.md). [Update checks](upstream-update.md) include each connected adapter, not only patch tests.
 
 `codex-file-search`, shell-command parsing, worktree provisioning, and a general `codex-exec-server` backend remain candidates, not connected features. Evaluate a candidate by the execution function it supplies, its build/upgrade cost, and whether model or permission authority would cross the adapter boundary. Current user-facing limitations are listed in [Agent Loop integration](agent-integration.md).
 

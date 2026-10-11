@@ -16,16 +16,16 @@
 
 태그나 커밋을 명시적으로 선택하고 이유를 기록합니다. 패치 처리, PTY, 프로세스 보호, 파일 시스템, 샌드박스, 프록시의 관련 변경을 확인하세요. 런타임 의존성과 개발용 의존성은 구분합니다. 개발용 의존성이 있다는 사실만으로 제품 실행 파일에 포함된다고 볼 수는 없습니다.
 
-서브모듈, [버전 기록](upstream-lock.md), 영향받는 어댑터 잠금 파일, 필요한 출처 고지를 함께 갱신합니다. 핵심 타입과 Codex 어댑터 타입의 분리를 유지하세요. 호환되지 않는 의존성을 감추기 위해 업스트림 crate 하나를 제품에 복사하지 않습니다.
+서브모듈을 옮기기 전에 `python3 scripts/codex_patch.py revert`로 기록된 Codex 패치를 되돌립니다. 서브모듈, [버전 기록](upstream-lock.md), 영향받는 어댑터 잠금 파일, 필요한 출처 고지를 함께 갱신합니다. 핵심 타입과 Codex 어댑터 타입의 분리를 유지하세요. 호환되지 않는 의존성을 감추기 위해 업스트림 crate 하나를 제품에 복사하지 않습니다.
 
-현재 업스트림 코드의 제한적 adaptation은 없습니다. [adaptation 정책](codex-reuse.md)에 따라 추가한다면 고정 버전을 바꿀 때마다 검토합니다. 기록된 재검토 조건에 따라 후보의 업스트림 소스와 비교하고, 출처와 달라진 동작 기록을 갱신하고, 테스트를 다시 실행하며, 제거 조건을 충족하면 제거하거나 업스트림으로 다시 수렴합니다. 새 업스트림 API를 도입하려면 이 별도의 버전 갱신이 필요하며 다른 변경의 부수 효과로 도입하지 않습니다.
+업스트림 코드의 제한적 adaptation은 하나 있습니다. 고정한 릴리스의 파일에 적용하는 `codex-utils-pty`의 [하위 패치](upstream-lock.md#codex-downstream-patch)입니다. 패치는 [패치 정책](upstream-patches.md#patch-pin-changes)에 따라 고정 버전을 바꿀 때마다 검토합니다. 기록된 재검토 조건에 따라 후보의 업스트림 소스와 비교하고, 출처와 달라진 동작 기록을 갱신하고, 테스트를 다시 실행하며, 제거 조건을 충족하면 제거하거나 업스트림으로 다시 수렴합니다. 새 업스트림 API를 도입하려면 이 별도의 버전 갱신이 필요하며 다른 변경의 부수 효과로 도입하지 않습니다.
 
 <a id="로컬-게이트"></a>
 <a id="로컬-게이트"></a>
 
 ## 제출 전 검증
 
-1. `PIN_ONLY=1 ./scripts/check-upstream-pin.sh`로 고정 커밋을 확인합니다.
+1. `python3 scripts/codex_patch.py apply`로 기록된 패치를 적용한 뒤 `PIN_ONLY=1 ./scripts/check-upstream-pin.sh`로 고정 커밋과 패치 적용 tree를 확인합니다.
 2. 루트 workspace와 분리된 patch, codex-runtime, pty, file-system, linux-sandbox 어댑터에서 `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, 테스트를 수행합니다.
 3. 패치·런타임·Linux 도우미를 빌드하고 통합 테스트가 의도한 실행 파일을 사용하게 설정합니다. workspace 통합·프로토콜 테스트를 실행합니다.
 4. bubblewrap과 네임스페이스를 지원하는 Linux에서 `CODESPACE_REQUIRE_LINUX_SANDBOX=1`로 격리 테스트를 실행합니다. restricted 차단과 enabled 프록시 동작을 포함합니다.

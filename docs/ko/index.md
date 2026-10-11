@@ -21,7 +21,7 @@ CodeSpace를 직접 구성한 코딩 에이전트의 실행 계층으로 연결�
 | 모듈별 책임 이해 | [아키텍처](architecture.md), [실행 계약](execution-substrate.md) |
 | 권한과 격리 조건 확인 | [보안 모델](security-model.md), [러너 격리](runner-isolation.md) |
 | 프로토콜과 도구 결과 처리 | [프로토콜 호환성](protocol-compatibility.md), [패치 동작](behavior-differences.md), [오류 코드](error-codes.md) |
-| Codex 의존성 유지보수 | [재사용 범위](codex-reuse.md), [고정 버전](upstream-lock.md), [업데이트 절차](upstream-update.md) |
+| Codex 의존성 유지보수 | [재사용 범위](codex-reuse.md), [고정 버전](upstream-lock.md), [업데이트 절차](upstream-update.md), [패치 정책](upstream-patches.md) |
 | 문서 수정과 게시 | [문서 유지보수](documentation.md) |
 
 지원 동작은 실제 구현을 기준으로 설명합니다. 테스트 안내는 검사 범위를 나타내며, 특정 설치 환경이나 외부 계정에서 검증을 마쳤다는 뜻은 아닙니다. 실제 사용할 작업 공간의 실행 조건은 `workspace_info` 응답에서 확인하세요.

@@ -184,6 +184,7 @@ class RunnerTests(unittest.TestCase):
     def test_report_and_platform_skip(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(validation, 'fingerprint', return_value={'head': 'a', 'codex_sha': 'pin'}), \
+             patch.object(validation, 'apply_codex_patches', return_value=None), \
              patch.object(validation, 'capture', return_value='host: aarch64-apple-darwin'), \
              patch.object(validation.platform, 'system', return_value='Darwin'):
             self.assertEqual(validation.run(['linux-isolation'], Path(tmp)), 0)
@@ -194,6 +195,7 @@ class RunnerTests(unittest.TestCase):
     def test_changed_inputs_fail(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(validation, 'fingerprint', side_effect=[{'head': 'a', 'codex_sha': 'pin'}, {'head': 'b', 'codex_sha': 'pin'}]), \
+             patch.object(validation, 'apply_codex_patches', return_value=None), \
              patch.object(validation, 'capture', return_value='host: x86_64-unknown-linux-gnu'):
             self.assertEqual(validation.run([], Path(tmp)), 1)
             report = json.loads((Path(tmp) / 'report.json').read_text())
@@ -202,6 +204,7 @@ class RunnerTests(unittest.TestCase):
     def test_failure_report(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(validation, 'fingerprint', return_value={'head': 'a', 'codex_sha': 'pin'}), \
+             patch.object(validation, 'apply_codex_patches', return_value=None), \
              patch.object(validation, 'capture', return_value='host: x86_64-unknown-linux-gnu'), \
              patch.object(validation, 'execute', side_effect=RuntimeError('failure')):
             self.assertEqual(validation.run(['pin'], Path(tmp)), 1)

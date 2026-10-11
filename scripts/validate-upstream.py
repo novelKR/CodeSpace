@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Shared local/CI upstream gates. No source or lockfile updates."""
+"""Shared local/CI upstream gates. No source or lockfile updates, except the recorded Codex
+patches, which are applied to a clean checkout of the pinned commit before anything runs."""
 import argparse
 import hashlib
 import json
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import time
 
+import codex_patch
 from upstream_dependencies import ADAPTERS, DEVGUARD_SOURCE, ROOT
 
 
@@ -31,7 +33,17 @@ def fingerprint():
             'codex_sha': capture('git', '-C', 'third_party/codex', 'rev-parse', 'HEAD') if (ROOT / 'third_party/codex/.git').exists() else None,
             'codex_status': capture('git', '-C', 'third_party/codex', 'status', '--porcelain') if (ROOT / 'third_party/codex/.git').exists() else 'not initialized',
             'codex_diff': hashlib.sha256(subprocess.check_output(['git', '-C', 'third_party/codex', 'diff', '--binary', 'HEAD'], cwd=ROOT)).hexdigest() if (ROOT / 'third_party/codex/.git').exists() else None,
+            # The checkout's files as built, untracked ones included: the recorded patched tree.
+            'codex_tree': codex_patch.working_tree(ROOT / 'third_party/codex') if (ROOT / 'third_party/codex/.git').exists() else None,
             'files': hashes}
+
+
+def apply_codex_patches():
+    """Apply the patches docs/upstream-lock.md records to the pinned Codex checkout, or confirm
+    they are applied. Any other state of the checkout fails the run."""
+    if not (ROOT / 'third_party/codex/.git').exists():
+        return None
+    return codex_patch.apply(codex_patch.read_record())
 
 
 def cargo(action, area='root', *args):
@@ -156,6 +168,7 @@ def run(selected, output):
     report = {'schema': 1, 'platform': platform.platform(), 'stages': [], 'status': 'failed'}
     failed = False
     try:
+        report['codex_patches'] = apply_codex_patches()
         before = fingerprint()
         report['inputs'] = before
         report['rust'] = capture('rustc', '-vV')
