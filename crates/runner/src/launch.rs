@@ -688,10 +688,15 @@ mod tests {
     /// consumes the permit, then runs `behavior`, which writes transcript lines with `report`
     /// as the real helper does. It cannot present a grant, so it tests CodeSpace's side only.
     /// It runs under bash: the carriers' numbers can exceed 9, which dash, Linux's `sh`, cannot
-    /// redirect.
+    /// redirect. On macOS it is run once when written, with `--warm`: macOS checks a new
+    /// executable file on its first exec, which can take seconds while other tests start theirs,
+    /// and that time must not count against the launches it serves. Not on Linux, where the
+    /// check does not exist and running a file this process has just written can fail with
+    /// `ETXTBSY` (see `write_script` in `linux_sandbox`).
     fn stand_in(dir: &Path, name: &str, entry: &str, behavior: &str) -> PathBuf {
         let script = format!(
             r#"#!/bin/bash
+if [ "$1" = --warm ]; then exit 0; fi
 while [ "$1" != "--" ]; do
   case "$1" in
     --permit-fd) permit="$2" ;;
@@ -710,6 +715,13 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
         let path = dir.join(name);
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if cfg!(target_os = "macos") {
+            let warmed = std::process::Command::new(&path)
+                .arg("--warm")
+                .status()
+                .unwrap();
+            assert!(warmed.success(), "{warmed}");
+        }
         path
     }
 

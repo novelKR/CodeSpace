@@ -20,14 +20,20 @@ fn runner_socket(dir: &Path) -> PathBuf {
     dir.join("runner.sock")
 }
 
+/// The worker's socket, once it accepts. A worker binary never run before can take macOS a few
+/// seconds to start: it checks a new executable file on its first exec, and cargo places the
+/// binary anew for each test run.
 async fn wait_connect(socket: &Path) -> UnixStream {
-    for _ in 0..100 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
         if let Ok(stream) = UnixStream::connect(socket).await {
             return stream;
         }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("worker socket not ready at {}", socket.display());
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("worker socket not ready at {}", socket.display());
 }
 
 async fn spawn_worker(socket: &Path) -> tokio::process::Child {
