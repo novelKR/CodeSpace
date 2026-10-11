@@ -62,6 +62,9 @@ pub trait AttemptAuthority: Send + Sync + 'static {
     fn begin_launch(&self, admission: &Admission) -> LaunchAnswer;
     /// Report that this owner holds no helper for the attempt's grant (CSRG-U4).
     fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer;
+    /// Have DevGuard observe the attempt's scope now (CSRG-U5): while its exited root is still
+    /// unreaped, so that members left in its group stay tracked, and again after the reap.
+    fn observe(&self, admission: &Admission) -> Answer;
     /// The launch helper's invocation for the attempt's grant (CSRG-U4).
     fn helper(
         &self,
@@ -94,6 +97,9 @@ impl AttemptAuthority for devguard::Owner {
     }
     fn abandon_launch(&self, admission: &Admission, reason: Abandon) -> Answer {
         devguard::Owner::abandon_launch(self, admission, reason)
+    }
+    fn observe(&self, admission: &Admission) -> Answer {
+        devguard::Owner::observe(self, admission)
     }
     fn helper(
         &self,
@@ -1088,7 +1094,7 @@ pub(crate) mod tests {
         grants: Mutex<VecDeque<Grant>>,
         abandons: Mutex<VecDeque<Answer>>,
         admit_delay: Mutex<Duration>,
-        calls: [AtomicUsize; 5],
+        calls: [AtomicUsize; 6],
         seen: Mutex<Vec<Admission>>,
         pub(crate) abandoned_for: Mutex<Vec<Abandon>>,
     }
@@ -1132,6 +1138,7 @@ pub(crate) mod tests {
     pub(crate) const CANCEL: usize = 2;
     pub(crate) const BEGIN: usize = 3;
     pub(crate) const ABANDON: usize = 4;
+    pub(crate) const OBSERVE: usize = 5;
 
     /// A permit as a test authority would grant one.
     pub(crate) const PERMIT: &str =
@@ -1190,6 +1197,11 @@ pub(crate) mod tests {
                     Some(dg::Release::NoHelperCreated),
                 )),
             )
+        }
+        fn observe(&self, admission: &Admission) -> Answer {
+            self.calls[OBSERVE].fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(admission.clone());
+            Answer::Unknown
         }
         fn helper(
             &self,

@@ -3411,6 +3411,58 @@ mod devguard_tests {
         assert_eq!(released(&mut fixture), (Vec::new(), 0));
     }
 
+    /// A governed pipe execution whose root exits leaving a descendant (CSRG-U5): CodeSpace's
+    /// one reaper has DevGuard observe the scope while the exited root still holds its PID, so
+    /// the descendant keeps the attempt charged, and DevGuard releases it once the descendant
+    /// ends. Reaped before any observation, the attempt would have stayed charged for good.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_surviving_descendant_keeps_a_governed_attempt_charged_until_it_ends() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(dir.path()),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        let script = "sleep 3 </dev/null >/dev/null 2>&1 & echo started";
+        let result = executed(
+            &handler,
+            exec_params("gov", &["/bin/sh", "-c", script], false),
+        )
+        .await
+        .unwrap();
+        let (output, status) = finished(&handler, &result.process_id).await;
+        assert_eq!((output.as_str(), status.exit_code), ("started\n", Some(0)));
+        // The root has exited and been reaped; its descendant still runs in the scope.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert_eq!(
+            fixture.charged().0.len(),
+            1,
+            "the descendant keeps the attempt charged"
+        );
+        // Once it has ended, DevGuard releases the attempt.
+        assert_eq!(released(&mut fixture), (Vec::new(), 0));
+    }
+
     /// D6 for the launch carriers: governed launches run concurrently with ordinary pipe and PTY
     /// children of the same gateway. No child but each launch's own helper may hold its permit
     /// carrier or transcript; no governed command holds anything beyond its standard

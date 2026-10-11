@@ -369,9 +369,18 @@ impl PreparedExecution {
             let attempt = self.abandon(Abandon::SpawnFailed).await;
             return self.not_launched(PreparationOutcome::HelperNotCreated, attempt);
         };
+        // DevGuard observes the scope while the exited root still holds its PID, so members left
+        // in its group stay tracked, and again after the reap (CSRG-U5). Its answer changes
+        // nothing CodeSpace does with the process.
+        let observer: crate::process::ExitObserver = {
+            let (authority, admission) = (self.authority.clone(), self.admission.clone());
+            Arc::new(move |_| {
+                let _ = authority.observe(&admission);
+            })
+        };
         let (spawned, transcript) = self
             .runner
-            .spawn_managed(&self.ws, request.clone(), slot, invocation)
+            .spawn_managed(&self.ws, request.clone(), slot, invocation, observer)
             .await;
         if spawned.is_err() {
             // No helper exists, and none will be created for this grant.
@@ -663,7 +672,7 @@ mod tests {
     use super::*;
     use crate::admission::tests::{
         attempt, governed, prepared, record, request, runner, Fake, Grant, ABANDON, ADMIT, BEGIN,
-        CANCEL, LOOKUP,
+        CANCEL, LOOKUP, OBSERVE,
     };
     use crate::admission::Preparer;
     use crate::{InProcessRunner, Runner, RunnerReadProcess};
@@ -882,6 +891,16 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
                 (1, 1, 1, 0, 0)
             );
             assert_eq!(settled_slots(&runner).await, 0);
+            // DevGuard is asked to observe the scope before the reap and after it on a pipe;
+            // the pinned Codex PTY reaps first, so after it only (CSRG-U5).
+            let observes = if tty { 1 } else { 2 };
+            for _ in 0..250 {
+                if fake.count(OBSERVE) >= observes {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(fake.count(OBSERVE), observes, "tty={tty}");
         }
     }
 
