@@ -3788,6 +3788,127 @@ mod devguard_tests {
         assert_eq!(released(&mut fixture), (Vec::new(), 0));
     }
 
+    /// A gateway with DevGuard's fixture authority and launch helper, for the PTY window tests.
+    fn pty_window_gateway(
+        fixture: &FixtureAuthority,
+        helper: &std::path::Path,
+        root: &std::path::Path,
+    ) -> (CodeSpace, Arc<Store>) {
+        let cli = register_cli(
+            &fixture.settings,
+            &[
+                "--runner",
+                "in-process",
+                "--devguard-launch-helper",
+                helper.to_str().unwrap(),
+            ],
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let handler = CodeSpace::from_cli(
+            &cli,
+            launch_registry(root),
+            store.clone(),
+            RuntimeBackend::in_process(release(&store)),
+        );
+        (handler, store)
+    }
+
+    /// The PTY counterpart of the test above (CSRG-U5): the descendant ignores the terminal's
+    /// hangup, so it outlives the session leader. The patched Codex waiter keeps the exited
+    /// root unreaped for its window, in which DevGuard observes the scope and adopts the
+    /// descendant; the attempt stays charged until the descendant ends and is then released.
+    /// The reconciler is paused around the exit, so only that observation can adopt it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_surviving_pty_descendant_keeps_a_governed_attempt_charged_until_it_ends() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (handler, _store) = pty_window_gateway(&fixture, &helper, dir.path());
+        fixture.pause_reconciler(true);
+        let script = "trap '' HUP; sleep 3 </dev/null >/dev/null 2>&1 & echo started";
+        let result = executed(
+            &handler,
+            exec_params("gov", &["/bin/sh", "-c", script], true),
+        )
+        .await
+        .unwrap();
+        let (output, status) = finished(&handler, &result.process_id).await;
+        assert_eq!((output.as_str(), status.exit_code), ("started\n", Some(0)));
+        fixture.pause_reconciler(false);
+        // The root has exited and been reaped; its descendant still runs in the scope.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let phases = fixture.phases();
+        assert_eq!(phases.len(), 1, "the descendant keeps the attempt charged");
+        assert_ne!(phases[0].1, "suspect", "{phases:?}");
+        assert_eq!(released(&mut fixture), (Vec::new(), 0));
+    }
+
+    /// When DevGuard cannot observe a governed PTY root in its window (CSRG-U5): the window ends
+    /// at the observer's bound, the root is reaped, and the descendant it left, still running
+    /// when DevGuard can look again, cannot be proven the scope's. The attempt stays charged as
+    /// Suspect, also after the descendant ends. The reconciler is paused and the authority held
+    /// from just before the exit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_observation_leaves_a_pty_survivor_suspect() {
+        let Some(mut fixture) = FixtureAuthority::start(2) else {
+            return;
+        };
+        let Some(helper) = launch_helper() else {
+            return;
+        };
+        if !fixture.native {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (handler, _store) = pty_window_gateway(&fixture, &helper, dir.path());
+        let go = dir.path().join("go");
+        let script = format!(
+            "while [ ! -e '{}' ]; do sleep 0.05; done; \
+             trap '' HUP; sleep 6 </dev/null >/dev/null 2>&1 & echo started",
+            go.display()
+        );
+        let result = executed(
+            &handler,
+            exec_params("gov", &["/bin/sh", "-c", &script], true),
+        )
+        .await
+        .unwrap();
+        let (attempts, _) = fixture.charged();
+        assert_eq!(attempts.len(), 1);
+        // From here only an observation could adopt the descendant, and it will stall.
+        fixture.pause_reconciler(true);
+        let held = std::time::Instant::now();
+        fixture.hold(4_000);
+        std::fs::write(&go, b"").unwrap();
+        let (output, status) = finished(&handler, &result.process_id).await;
+        assert_eq!((output.as_str(), status.exit_code), ("started\n", Some(0)));
+        // Reaped at the observer's bound, while the authority was still held.
+        assert!(
+            held.elapsed() < std::time::Duration::from_millis(3_900),
+            "{:?}",
+            held.elapsed()
+        );
+        // Once the hold is over, the reconciler finds the root reaped and the descendant
+        // running but unproven.
+        tokio::time::sleep(std::time::Duration::from_millis(4_500).saturating_sub(held.elapsed()))
+            .await;
+        fixture.pause_reconciler(false);
+        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+        let suspect = [(attempts[0].clone(), "suspect".to_owned())];
+        assert_eq!(fixture.phases(), suspect);
+        // The descendant has ended by now; the lost tracking keeps the attempt charged.
+        tokio::time::sleep(std::time::Duration::from_millis(8_000).saturating_sub(held.elapsed()))
+            .await;
+        assert_eq!(fixture.phases(), suspect);
+    }
+
     /// The resource authority restarts while a governed process runs (CSRG-U5). CodeSpace keeps
     /// the process, its status and its workspace's lease, and the owner registers again for new
     /// work. DevGuard no longer knows the scope, so the attempt stays charged as Suspect after
