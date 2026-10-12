@@ -11,7 +11,10 @@
 //! line listing the consumer's registered instances, and each `charged` line with one listing
 //! the attempts that still hold resources and the budget they hold (CSRG-U3). A `restart` line
 //! stops the authority and serves its journal again, as after a restart, and is answered once
-//! it admits again (CSRG-U5). It stops at the end of its input. Built only as an
+//! it admits again (CSRG-U5). `pause` and `resume` lines pause and resume its background
+//! reconciler, so that only an owner's `Observe` reconciles meanwhile, and a `hold <ms>` line
+//! holds its lock for that many milliseconds, as a slow transition would, and is answered once
+//! the lock is held (CSRG-U5). It stops at the end of its input. Built only as an
 //! example, from this crate's development dependencies; no product links it.
 
 use std::io::{BufRead, Write};
@@ -38,17 +41,33 @@ fn main() {
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", fixture.settings).unwrap();
     out.flush().unwrap();
+    let mut holders = Vec::new();
     for line in std::io::stdin().lock().lines() {
-        match line.unwrap().trim() {
-            "instances" => writeln!(out, "{}", fixture.instances()).unwrap(),
-            "charged" => writeln!(out, "{}", fixture.charged()).unwrap(),
-            "restart" => {
+        let line = line.unwrap();
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next()) {
+            (Some("instances"), None) => writeln!(out, "{}", fixture.instances()).unwrap(),
+            (Some("charged"), None) => writeln!(out, "{}", fixture.charged()).unwrap(),
+            (Some("restart"), None) => {
                 fixture = fixture.restart(&base);
                 writeln!(out, "{}", json!({"restarted": true})).unwrap()
             }
-            other => panic!("unknown command {other:?}"),
+            (Some(command @ ("pause" | "resume")), None) => {
+                let paused = command == "pause";
+                fixture.pause(paused);
+                writeln!(out, "{}", json!({ "paused": paused })).unwrap()
+            }
+            (Some("hold"), Some(ms)) => {
+                let ms: u64 = ms.parse().unwrap();
+                holders.push(fixture.hold(ms));
+                writeln!(out, "{}", json!({ "held_ms": ms })).unwrap()
+            }
+            _ => panic!("unknown command {line:?}"),
         }
         out.flush().unwrap();
+    }
+    for holder in holders {
+        holder.join().unwrap();
     }
     fixture.stop();
 }
@@ -176,6 +195,30 @@ impl Fixture {
     #[cfg(not(target_os = "macos"))]
     fn restart(self, _base: &Path) -> Self {
         panic!("a restart is only exercised with native evidence");
+    }
+
+    /// Pause or resume the background reconciler. Owner requests such as `Observe` still
+    /// reconcile while it is paused.
+    #[cfg(target_os = "macos")]
+    fn pause(&self, paused: bool) {
+        self.authority.pause_reconciler(paused);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn pause(&self, _paused: bool) {
+        panic!("the reconciler is only paused with native evidence");
+    }
+
+    /// Hold the authority's lock for `ms` milliseconds on another thread; returns once held.
+    #[cfg(target_os = "macos")]
+    fn hold(&self, ms: u64) -> std::thread::JoinHandle<()> {
+        self.authority
+            .hold_authority(std::time::Duration::from_millis(ms))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn hold(&self, _ms: u64) -> std::thread::JoinHandle<()> {
+        panic!("the authority is only held with native evidence");
     }
 
     fn stop(self) {

@@ -1426,6 +1426,22 @@ pub(crate) mod tests {
         pub(crate) fn restart(&mut self) {
             assert_eq!(self.ask("restart"), serde_json::json!({"restarted": true}));
         }
+
+        /// Pause or resume the authority's background reconciler; an owner's `Observe` still
+        /// reconciles meanwhile (CSRG-U5).
+        pub(crate) fn pause_reconciler(&mut self, paused: bool) {
+            let command = if paused { "pause" } else { "resume" };
+            assert_eq!(self.ask(command), serde_json::json!({ "paused": paused }));
+        }
+
+        /// Hold the authority's lock for `ms` milliseconds, as a slow transition would; returns
+        /// once it is held (CSRG-U5).
+        pub(crate) fn hold(&mut self, ms: u64) {
+            assert_eq!(
+                self.ask(&format!("hold {ms}")),
+                serde_json::json!({ "held_ms": ms })
+            );
+        }
     }
 
     impl Drop for FixtureAuthority {

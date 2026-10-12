@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::path::Path;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -99,11 +100,116 @@ pub async fn spawn_inheriting(
     )
     .await
     .map_err(|err| err.to_string())?;
-    Ok(PtySession {
+    Ok(session(spawned))
+}
+
+fn session(spawned: codex_utils_pty::SpawnedProcess) -> PtySession {
+    PtySession {
         handle: spawned.session,
         stdout_rx: Some(spawned.stdout_rx),
         exit_rx: Some(spawned.exit_rx),
-    })
+    }
+}
+
+/// One chance to look at an observed spawn's exited child before it is reaped (CSRG-U5). Until
+/// it is released, or the spawn's bound passes, the child is a zombie that keeps its process ID
+/// and process group ID. Dropping it releases the child at once.
+pub struct ExitWindow(codex_utils_pty::observe::ExitOpportunity);
+
+impl ExitWindow {
+    /// Let the child be reaped now. Refused once the bound has passed, when it was reaped.
+    pub fn release(self) -> Result<(), WindowExpired> {
+        self.0.acknowledge().map_err(|_| WindowExpired)
+    }
+}
+
+/// An [`ExitWindow`] released after its bound had passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowExpired;
+
+/// How an observed spawn's window ended, reported once the child has been reaped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowEnd {
+    /// Released before the bound.
+    Released,
+    /// The bound passed first.
+    Expired,
+    /// Dropped without a release, or nobody took it.
+    Abandoned,
+    /// The exit could not be seen without reaping, so no window was offered.
+    Unavailable,
+}
+
+/// The observer's side of an observed spawn.
+pub struct ExitWatch {
+    window: Option<oneshot::Receiver<codex_utils_pty::observe::ExitOpportunity>>,
+    end: oneshot::Receiver<codex_utils_pty::observe::ObservationOutcome>,
+}
+
+impl ExitWatch {
+    /// The window, once the child has exited and before it is reaped; `None` when none is
+    /// offered, and after it was taken.
+    pub async fn window(&mut self) -> Option<ExitWindow> {
+        let window = self.window.take()?;
+        window.await.ok().map(ExitWindow)
+    }
+
+    /// How the window ended, once the child has been reaped; `None` when the waiter went away
+    /// without saying.
+    pub async fn end(self) -> Option<WindowEnd> {
+        use codex_utils_pty::observe::ObservationOutcome;
+        Some(match self.end.await.ok()? {
+            ObservationOutcome::Completed => WindowEnd::Released,
+            ObservationOutcome::TimedOut => WindowEnd::Expired,
+            ObservationOutcome::Failed => WindowEnd::Abandoned,
+            ObservationOutcome::Unavailable => WindowEnd::Unavailable,
+        })
+    }
+}
+
+/// [`spawn_inheriting`] with an exit window (CSRG-U5). Once the child exits, its one waiter, the
+/// pinned Codex PTY's with the recorded patch (`docs/upstream-lock.md`), offers one
+/// [`ExitWindow`] while the child is unreaped, and reaps it when the window is released or
+/// `bound` passes, whichever comes first. The session is the same as [`spawn_inheriting`]'s.
+pub async fn spawn_observed(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    inherited: &[RawFd],
+    bound: Duration,
+) -> Result<(PtySession, ExitWatch), String> {
+    if program.is_empty() {
+        return Err("command must be a non-empty argv (no shell)".into());
+    }
+    let (opportunity, window) = oneshot::channel();
+    let (outcome, end) = oneshot::channel();
+    let spawned = codex_utils_pty::spawn_pty_process_observed(
+        program,
+        args,
+        cwd,
+        env,
+        &None,
+        codex_utils_pty::TerminalSize {
+            rows: DEFAULT_ROWS,
+            cols: DEFAULT_COLS,
+        },
+        inherited,
+        codex_utils_pty::observe::ExitObserver {
+            opportunity,
+            bound,
+            outcome,
+        },
+    )
+    .await
+    .map_err(|err| err.to_string())?;
+    Ok((
+        session(spawned),
+        ExitWatch {
+            window: Some(window),
+            end,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -351,5 +457,129 @@ mod tests {
             .expect("exit timeout")
             .expect("exit receiver");
         assert_eq!(code, 0);
+    }
+
+    /// Whether this process's child `pid` has exited and is still unreaped.
+    fn exited_unreaped(pid: i32) -> bool {
+        // SAFETY: an all-zero `siginfo_t` is a valid value for `waitid` to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is valid for writes; `WNOWAIT` leaves the child's status unconsumed.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        // SAFETY: `waitid` filled `info`, or left the zero it was given.
+        result == 0 && unsafe { info.si_pid() } == pid
+    }
+
+    /// The number the child printed after `marker`, once it has printed the whole line.
+    async fn printed_pid(output: &mut mpsc::Receiver<Vec<u8>>, marker: &str) -> i32 {
+        let text = collect_until(output, "\n").await;
+        let line = text.replace("\r\n", "\n");
+        let digits: String = line
+            .split(marker)
+            .nth(1)
+            .expect("marker")
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().unwrap()
+    }
+
+    /// An observed spawn without inherited descriptors and one with a kept descriptor, the two
+    /// Unix paths of the pinned Codex PTY.
+    async fn spawn_watched(
+        dir: &Path,
+        script: &str,
+        kept: &[RawFd],
+        bound: Duration,
+    ) -> (PtySession, ExitWatch) {
+        spawn_observed(
+            "/bin/sh",
+            &["-c".into(), script.into()],
+            dir,
+            &shell_env(dir),
+            kept,
+            bound,
+        )
+        .await
+        .expect("spawn")
+    }
+
+    #[tokio::test]
+    async fn an_observed_child_is_offered_its_window_before_the_reap() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = inheritable_at(200);
+        for inherited in [vec![], vec![std::os::fd::AsRawFd::as_raw_fd(&kept)]] {
+            let (mut session, mut watch) = spawn_watched(
+                dir.path(),
+                "echo pid:$$; exit 3",
+                &inherited,
+                Duration::from_secs(10),
+            )
+            .await;
+            let mut output = session.take_stdout().expect("stdout");
+            let pid = printed_pid(&mut output, "pid:").await;
+            let window = tokio::time::timeout(Duration::from_secs(5), watch.window())
+                .await
+                .expect("window timeout")
+                .expect("a window");
+            // The exited child is a zombie that keeps its PID until the window is released.
+            assert!(exited_unreaped(pid), "{inherited:?}");
+            assert!(!session.has_exited(), "{inherited:?}");
+            assert_eq!(window.release(), Ok(()));
+            let code = tokio::time::timeout(Duration::from_secs(5), session.take_exit().unwrap())
+                .await
+                .expect("exit timeout")
+                .expect("exit receiver");
+            assert_eq!(code, 3, "{inherited:?}");
+            assert_eq!(watch.end().await, Some(WindowEnd::Released));
+            assert!(!exited_unreaped(pid), "{inherited:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreleased_window_is_reaped_at_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let bound = Duration::from_millis(300);
+        let (mut session, mut watch) = spawn_watched(dir.path(), "exit 0", &[], bound).await;
+        let window = tokio::time::timeout(Duration::from_secs(5), watch.window())
+            .await
+            .expect("window timeout")
+            .expect("a window");
+        let offered = std::time::Instant::now();
+        let code = tokio::time::timeout(Duration::from_secs(5), session.take_exit().unwrap())
+            .await
+            .expect("exit timeout")
+            .expect("exit receiver");
+        assert_eq!(code, 0);
+        assert!(offered.elapsed() >= bound - Duration::from_millis(50));
+        assert_eq!(watch.end().await, Some(WindowEnd::Expired));
+        // A release after the bound is refused: the child was reaped then.
+        assert_eq!(window.release(), Err(WindowExpired));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_window_releases_the_child_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut watch) =
+            spawn_watched(dir.path(), "exit 0", &[], Duration::from_secs(10)).await;
+        let window = tokio::time::timeout(Duration::from_secs(5), watch.window())
+            .await
+            .expect("window timeout")
+            .expect("a window");
+        let dropped = std::time::Instant::now();
+        drop(window);
+        let code = tokio::time::timeout(Duration::from_secs(5), session.take_exit().unwrap())
+            .await
+            .expect("exit timeout")
+            .expect("exit receiver");
+        assert_eq!(code, 0);
+        assert!(dropped.elapsed() < Duration::from_secs(2));
+        assert_eq!(watch.end().await, Some(WindowEnd::Abandoned));
     }
 }

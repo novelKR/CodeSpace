@@ -75,8 +75,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "7c67aaf956dd4ef71abd7d3f778b2aaf40792efaed55c9fef8bdacbe11f5e6d7",
-      "translation_sha256": "7af753ee9c0b54ac17753db23dea09fbafcb7a1c52a3f83f48286228cd2dfe21"
+      "source_sha256": "b08b20641a0bbd91a9635e31cf5051171d7844d5ae19c8c5d5ce13b30dfe2228",
+      "translation_sha256": "34927ccff3fd854b9041e202f2a807cd89ac3eb65e632598e9fed3a02fefe11c"
     },
     {
       "id": "overview",
@@ -291,8 +291,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "524cd7d63660e54377bd3916b461cf1d3efa92308feadaab6ce332cde4b68625",
-      "translation_sha256": "5e88314d135b2184fe06255ec1fd323f972c7475e33bd2f4fd6d9fc503a65cf2"
+      "source_sha256": "df2bd3224b5f47d28038f11bf065ec48ed08bc8a4bc30c3163adcec65b0eecba",
+      "translation_sha256": "300c857fa22a155c01070a7c4f7867e43085d8c15773acd19e60d745917cd2d2"
     },
     {
       "id": "execution-substrate",
@@ -649,8 +649,8 @@
         "하위-패치",
         "확인과-갱신"
       ],
-      "source_sha256": "f6fe4106df84b502eaaea65d40c666ade982253f658a46e8de769f7911d80b7f",
-      "translation_sha256": "bcdcb7a4e9b1080f5b5a66159dd1d693b82ed6bf0dccc6e346e8dfc33be0ca16"
+      "source_sha256": "55964a2fefa072c9f4642f667a98195a4ad7213b0dc76b1368d44eecbcafe640",
+      "translation_sha256": "ef64b2a6158b7cbd7956243620d6af4ec7557d07e31b59e9a6c78b394ea8bec0"
     },
     {
       "id": "upstream-update",
@@ -747,8 +747,8 @@
         "형식",
         "회수-전-관찰-첫-패치"
       ],
-      "source_sha256": "f48b33c4789ba32780e63ac790c98c45fa69c21cf8398b7015168c73fcaa3272",
-      "translation_sha256": "7d84836d7c0e01504955e61ff72029b5650381811c71496cb31ed93622d0e5f1"
+      "source_sha256": "b54b42d0c9eea5b911aea5bfab6829d33606cd739a74fe6efba16503c6fa44f3",
+      "translation_sha256": "5b1da3fb965b81c348625a0760c99fafc651f473bf1cc7fec371af8a98354c21"
     },
     {
       "id": "documentation",

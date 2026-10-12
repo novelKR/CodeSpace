@@ -898,9 +898,9 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
                 (1, 1, 1, 0, 0)
             );
             assert_eq!(settled_slots(&runner).await, 0);
-            // DevGuard is asked to observe the scope before the reap and after it on a pipe;
-            // the pinned Codex PTY reaps first, so after it only (CSRG-U5).
-            let observes = if tty { 1 } else { 2 };
+            // DevGuard is asked to observe the scope before the reap and after it, on a pipe
+            // and on a PTY, whose patched Codex waiter offers the same window (CSRG-U5).
+            let observes = 2;
             for _ in 0..250 {
                 if fake.count(OBSERVE) >= observes {
                     break;
