@@ -60,9 +60,8 @@ pub enum Participation {
     /// Executions run as they always have, without a resource authority.
     #[default]
     Off,
-    /// Every new execution must be admitted and launched through the resource authority.
-    /// CodeSpace admits it (CSRG-U3) but cannot launch it there yet, so none runs; none runs
-    /// without the authority either.
+    /// Every new execution must be admitted (CSRG-U3) and launched (CSRG-U4) through the
+    /// resource authority; none runs without it.
     Required,
 }
 
