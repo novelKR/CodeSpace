@@ -2206,8 +2206,8 @@ mod devguard_tests {
     use super::tests::{assert_required_starts_nothing, exec_params, participation_registry};
     use super::*;
     use crate::devguard::tests::{
-        devguard_worker, execute_report, parse, past_the_credential, settings, short_directory,
-        Endpoint, FixtureAuthority, SECRET,
+        before_environment, devguard_worker, execute_report, parse, past_the_credential, settings,
+        short_directory, Endpoint, FixtureAuthority, SECRET,
     };
     use crate::devguard::{ResourceAuthority, WorkerSettings};
     use crate::runtime::RuntimeProcess;
@@ -3213,7 +3213,10 @@ mod devguard_tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        panic!("{process_id:?} did not exit: {output:?}");
+        panic!(
+            "{process_id:?} did not exit: {:?}",
+            before_environment(&output)
+        );
     }
 
     /// `operation_resume`, again while it stops at the credential (see `past_the_credential`):
@@ -3939,17 +3942,19 @@ mod devguard_tests {
         // DevGuard's connect window on macOS.
         let (control, _peer) = crate::devguard::tests::inheritable_socket();
         let control_fd = control.as_raw_fd();
-        // Every descriptor 3..1024 a child holds, and which are sockets or pipes.
+        // Every descriptor 3..1024 a child holds and which are sockets or pipes, then an `env:`
+        // line and its environment.
         let probe = "fds=; sockets=; pipes=; n=3; while [ $n -lt 1024 ]; do \
                      if [ -e /dev/fd/$n ]; then fds=\"$fds $n\"; \
                      if [ -S /dev/fd/$n ]; then sockets=\"$sockets $n\"; fi; \
                      if [ -p /dev/fd/$n ]; then pipes=\"$pipes $n\"; fi; fi; n=$((n + 1)); done; \
-                     echo \"fds:$fds\"; echo \"sockets:$sockets\"; echo \"pipes:$pipes\"; env";
+                     echo \"fds:$fds\"; echo \"sockets:$sockets\"; echo \"pipes:$pipes\"; \
+                     echo env:; env";
         let field = |output: &str, name: &str| -> String {
             output
                 .lines()
                 .find_map(|line| line.strip_prefix(name))
-                .unwrap_or_else(|| panic!("no {name} in {output:?}"))
+                .unwrap_or_else(|| panic!("no {name} in {:?}", before_environment(output)))
                 .trim()
                 .to_owned()
         };
@@ -4002,7 +4007,8 @@ mod devguard_tests {
                         field(&output, "pipes:")
                     ),
                     (String::new(), String::new(), String::new()),
-                    "{workspace} tty={tty}: {output}"
+                    "{workspace} tty={tty}: {}",
+                    before_environment(&output)
                 );
                 if workspace.starts_with("gov") {
                     governed += 1;

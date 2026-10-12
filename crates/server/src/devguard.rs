@@ -918,24 +918,57 @@ pub(crate) mod tests {
         assert!(!logs.contains(SECRET), "{logs}");
     }
 
-    /// What a child reports about its descriptors above 2 and its environment.
-    #[derive(Debug, Default, PartialEq, Eq)]
+    /// What a child reports about its descriptors above 2 and its environment. Its `Debug`
+    /// leaves the environment out: failure messages print reports, and a child's environment is
+    /// this process's, with whatever credentials the test run was started with.
+    #[derive(Default, PartialEq, Eq)]
     pub(crate) struct ChildReport {
         pub(crate) descriptors: BTreeSet<RawFd>,
         pub(crate) sockets: BTreeSet<RawFd>,
         pub(crate) environment: String,
     }
 
-    /// A script that lists the child's descriptors 3..128 and sockets among them, then its
-    /// environment. The descriptor numbers the parent can hold stay below 128 here.
+    impl std::fmt::Debug for ChildReport {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ChildReport")
+                .field("descriptors", &self.descriptors)
+                .field("sockets", &self.sockets)
+                .finish_non_exhaustive()
+        }
+    }
+
+    /// A script that lists the child's descriptors 3..128 and sockets among them, then an `env:`
+    /// line and its environment. The descriptor numbers the parent can hold stay below 128 here.
     pub(crate) fn report_script() -> String {
+        format!("{}; {ENVIRONMENT_SCRIPT}", descriptor_script())
+    }
+
+    /// The part of `report_script` before the environment.
+    fn descriptor_script() -> String {
         let numbers: Vec<String> = (3..128).map(|n| n.to_string()).collect();
         format!(
             "fds=; sockets=; for n in {}; do if [ -e /dev/fd/$n ]; then fds=\"$fds $n\"; \
              if [ -S /dev/fd/$n ]; then sockets=\"$sockets $n\"; fi; fi; done; \
-             echo \"fds:$fds\"; echo \"sockets:$sockets\"; env",
+             echo \"fds:$fds\"; echo \"sockets:$sockets\"",
             numbers.join(" ")
         )
+    }
+
+    /// Prints an `env:` line, then the environment. Every report prints it last, because a
+    /// failure message prints a report only up to that line (see `before_environment`).
+    const ENVIRONMENT_SCRIPT: &str = "echo env:; env";
+
+    /// `output` up to its `env:` line, which is what a failure message may print of a child's
+    /// report; all of `output` if it has no such line.
+    pub(crate) fn before_environment(output: &str) -> &str {
+        let mut end = 0;
+        for line in output.split_inclusive('\n') {
+            if line.trim_end() == "env:" {
+                return &output[..end];
+            }
+            end += line.len();
+        }
+        output
     }
 
     pub(crate) fn parse(output: &str) -> ChildReport {
@@ -943,7 +976,7 @@ pub(crate) mod tests {
             output
                 .lines()
                 .find_map(|line| line.trim_end_matches('\r').strip_prefix(prefix))
-                .unwrap_or_else(|| panic!("no {prefix} line in {output:?}"))
+                .unwrap_or_else(|| panic!("no {prefix} line in {:?}", before_environment(output)))
                 .split_whitespace()
                 .map(|n| n.parse().unwrap())
                 .collect()
@@ -953,6 +986,42 @@ pub(crate) mod tests {
             sockets: numbers("sockets:"),
             environment: output.to_owned(),
         }
+    }
+
+    #[test]
+    fn failure_messages_leave_a_childs_environment_out() {
+        // A PTY child's lines end with `\r\n`.
+        for newline in ["\n", "\r\n"] {
+            let output = [
+                "fds: 10",
+                "sockets:",
+                "env:",
+                "TOKEN=only-in-the-environment",
+                "",
+            ]
+            .join(newline);
+            let report = parse(&output);
+            assert!(report.environment.contains("only-in-the-environment"));
+            let message = format!("{report:?}");
+            assert!(!message.contains("only-in-the-environment"), "{message}");
+            assert_eq!(
+                before_environment(&output),
+                ["fds: 10", "sockets:", ""].join(newline)
+            );
+        }
+        assert_eq!(before_environment("sh: not found\n"), "sh: not found\n");
+
+        // The real script prints the environment after everything a message shows.
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(report_script())
+            .env("CODESPACE_ONLY_IN_THE_ENVIRONMENT", "1")
+            .output()
+            .unwrap();
+        let output = String::from_utf8(output.stdout).unwrap();
+        assert!(output.contains("CODESPACE_ONLY_IN_THE_ENVIRONMENT=1"));
+        assert!(before_environment(&output).starts_with("fds:"));
+        assert!(!before_environment(&output).contains("CODESPACE_ONLY_IN_THE_ENVIRONMENT"));
     }
 
     /// CodeSpace's spawners, and an unguarded spawn as the control.
@@ -1391,8 +1460,8 @@ pub(crate) mod tests {
         text
     }
 
-    /// A worker script that reports its arguments, its descriptors and environment, and how
-    /// many bytes the descriptor it was handed carries.
+    /// A worker script that reports its arguments, its descriptors, how many bytes the
+    /// descriptor it was handed carries, and its environment.
     fn reporting_worker(dir: &Path, report: &Path) -> PathBuf {
         let script = dir.join("worker.sh");
         std::fs::write(
@@ -1402,8 +1471,9 @@ pub(crate) mod tests {
                  if [ \"$previous\" = --devguard-credential-fd ]; then fd=$argument; fi; \
                  previous=$argument; done; \
                  {{ echo \"args: $*\"; {}; \
-                 if [ -n \"$fd\" ]; then echo \"carried: $(wc -c <&$fd | tr -d ' ')\"; fi; }} > '{}'\n",
-                report_script(),
+                 if [ -n \"$fd\" ]; then echo \"carried: $(wc -c <&$fd | tr -d ' ')\"; fi; \
+                 {ENVIRONMENT_SCRIPT}; }} > '{}'\n",
+                descriptor_script(),
                 report.display()
             ),
         )
@@ -1442,7 +1512,7 @@ pub(crate) mod tests {
             || start_reporting_worker(&worker, dir.path()),
         )
         .await;
-        assert!(!output.contains(SECRET), "{output}");
+        assert!(!output.contains(SECRET), "{}", before_environment(&output));
         let args = output
             .lines()
             .find_map(|line| line.strip_prefix("args: "))
@@ -1465,7 +1535,11 @@ pub(crate) mod tests {
         // Its one socket is the carrier, holding the secret. (Its other descriptors are the
         // shell's own, whose numbers depend on which ones the carrier left free.)
         assert_eq!(parse(&output).sockets, BTreeSet::from([fd]));
-        assert!(output.contains("carried: 64"), "{output}");
+        assert!(
+            output.contains("carried: 64"),
+            "{}",
+            before_environment(&output)
+        );
     }
 
     #[tokio::test]
@@ -1475,9 +1549,10 @@ pub(crate) mod tests {
         unusable.credential_file = dir.path().join("missing.secret");
         let worker = WorkerSettings::from_settings(unusable);
         let output = start_reporting_worker(&worker, dir.path()).await;
-        assert!(output.contains("--devguard-socket"), "{output}");
-        assert!(!output.contains("--devguard-credential-fd"), "{output}");
-        assert!(!output.contains("carried:"), "{output}");
+        let message = before_environment(&output);
+        assert!(output.contains("--devguard-socket"), "{message}");
+        assert!(!output.contains("--devguard-credential-fd"), "{message}");
+        assert!(!output.contains("carried:"), "{message}");
         assert_eq!(parse(&output).sockets, BTreeSet::new());
     }
 
