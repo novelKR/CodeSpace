@@ -38,7 +38,7 @@ CodeSpace는 [고정 버전의 Codex 수정 정책](upstream-patches.md)에 따�
 | 파일 | `codex-rs/utils/pty/src`의 `observe.rs`(신규), `observe_tests.rs`(신규, 테스트 전용), `pty.rs`, `lib.rs`. 제품 코드 304줄 추가, 5줄 삭제, 테스트 9개 |
 | 기능 | spawn 전에 `observe::ExitObserver`를 등록하는 `spawn_pty_process_observed`. 자식의 단일 waiter가 회수하지 않고 종료를 보고(`WNOWAIT`를 쓴 `waitid`), 관찰자에게 그 bound 안에서 한 번의 기회를 준 뒤 전과 같이 회수하고 `Completed`, `TimedOut`, `Failed`, `Unavailable` 중 하나를 보고. 관찰자가 없으면 모든 경로가 그대로. Unix가 아닌 플랫폼은 관찰 spawn을 거부 |
 | 이유 | Codex가 루트를 회수하기 전에 관리 PTY 실행의 scope를 관찰하기 위함([CSRG-U5](devguard-integration.md#devguard-lifecycle)). 2026-10-11 소유자 결정. 계약은 [업스트림 어댑터 작업 명세](https://github.com/novelKR/DevGuard/blob/668750b4ab6ad582904c3d05ffceffa062b26243/docs/handoff/2026-09-28-cs-dg-upstream-adapter-work-spec-1.md#8-preferred-investigation-b-an-upstream-owned-bounded-pre-reap-observation-contract) 8절 |
-| CodeSpace 사용 | 아직 없음. PTY 어댑터는 여전히 `spawn_pty_process`를 호출하며, 관찰자 연결은 별도 변경에서 함 |
+| CodeSpace 사용 | 관리 대상 PTY 실행([CSRG-U5](devguard-integration.md#devguard-lifecycle)). PTY 어댑터의 `spawn_observed`가 CodeSpace의 관찰 상한(2초)으로 관찰자를 등록하고, 그 창에서 DevGuard의 `Observe`가 reap 전에 이루어짐. 관리하지 않는 PTY 실행은 여전히 `spawn_pty_process`를 호출함 |
 | 출처 | W3 실험 B의 관찰자([DevGuard 결정 패킷 3.2절](https://github.com/novelKR/DevGuard/blob/668750b4ab6ad582904c3d05ffceffa062b26243/docs/handoff/2026-09-28-w3-decision-packet.md#32-experiment-b-backend-owned-pre-reap-observation-packet-132))를 이 릴리스의 두 Unix PTY 경로로 옮긴 것. 수정한 파일마다 CodeSpace 수정 고지가 있음(Apache-2.0 4(b)) |
 | 검증 | 패치 적용 tree에서 함. Linux x86_64: crate 테스트 36개를 30회 반복해 모두 통과. macOS: 테스트 38개를 30회 반복해 모두 통과, DevGuard `6e7e065`로 W3 실험 B의 B1-B13 통과. Linux, macOS, Windows 대상 clippy 통과 |
 | 업스트림 | Codex는 외부 pull request를 받지 않음. 기능 요청 초안만 있고 제출하지 않음 |
