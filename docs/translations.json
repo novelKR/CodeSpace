@@ -649,8 +649,8 @@
         "하위-패치",
         "확인과-갱신"
       ],
-      "source_sha256": "55964a2fefa072c9f4642f667a98195a4ad7213b0dc76b1368d44eecbcafe640",
-      "translation_sha256": "ef64b2a6158b7cbd7956243620d6af4ec7557d07e31b59e9a6c78b394ea8bec0"
+      "source_sha256": "5a850ffa3d315d739c5fc3e35ba9ada1a9709e651915632264ea12851ab03087",
+      "translation_sha256": "17ab2bb0858c4f8521d31a49e1648f43bddaaaa27240fba5bf501f7a2c4ecc82"
     },
     {
       "id": "upstream-update",
