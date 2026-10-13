@@ -357,7 +357,7 @@ impl CodeSpace {
 
     #[tool(
         name = "process_status",
-        description = "Observe a managed process lifecycle. state is running or exited. termination is present only after exit (exited, signaled, timeout, terminated, or unknown). exit_code is present only when termination is exited; signal only when it is signaled, a signal CodeSpace did not send. A tty process reports a signal death as exited with exit_code 1. EOF is not success. Unknown process_id is rejected."
+        description = "Observe a managed process lifecycle. state is running or exited. termination is present only after exit (exited, signaled, timeout, terminated, or unknown). exit_code is present only when termination is exited; signal only when it is signaled, a signal CodeSpace did not send. A tty process reports a signal death as exited with exit_code 1, or 128 plus the signal number when it was launched through DevGuard. EOF is not success. Unknown process_id is rejected."
     )]
     async fn process_status(
         &self,

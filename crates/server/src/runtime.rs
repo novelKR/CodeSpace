@@ -17,6 +17,8 @@ pub struct RuntimeProcess {
     dir: PathBuf,
     socket: PathBuf,
     pid: Option<u32>,
+    /// The gateway's connection to the worker, which `wait_exit` closes.
+    runner: UdsRunner,
     shutdown: Arc<Notify>,
     wait: Option<JoinHandle<()>>,
 }
@@ -74,10 +76,7 @@ impl RuntimeProcess {
         let wait = tokio::spawn(async move {
             tokio::select! {
                 _ = child.wait() => {}
-                _ = wait_shutdown.notified() => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                }
+                _ = wait_shutdown.notified() => stop_worker(&mut child).await,
             }
             wait_store.release_all_processes();
         });
@@ -99,6 +98,7 @@ impl RuntimeProcess {
                 dir,
                 socket,
                 pid,
+                runner: runner.clone(),
                 shutdown,
                 wait: Some(wait),
             },
@@ -141,7 +141,12 @@ impl RuntimeProcess {
         &self.dir
     }
 
+    /// Stop the worker and wait for it to exit. Its connection closes first, so the worker ends
+    /// its processes as it exits; one still running after `WORKER_EXIT_GRACE` is killed.
     pub async fn wait_exit(&mut self) {
+        // Closing waits for a write in progress, which a worker that no longer reads would hold
+        // up, so it gets the same bound.
+        let _ = tokio::time::timeout(WORKER_EXIT_GRACE, self.runner.close()).await;
         self.shutdown.notify_one();
         if let Some(wait) = self.wait.take() {
             let _ = wait.await;
@@ -176,6 +181,24 @@ pub(crate) fn worker_command(bin: &Path, socket: &Path) -> Command {
     command.arg(socket).stdin(Stdio::null()).kill_on_drop(true);
     codespace_runner::exclude_unrelated(&mut command);
     command
+}
+
+/// How long a worker whose connection has closed may take to end its processes and exit before
+/// the gateway kills it. Its processes end as it exits, as an in-process runner's do when the
+/// gateway exits; a worker killed outright would leave its pipe processes running, as nothing
+/// gives them a parent-death signal.
+const WORKER_EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// The worker exits by itself once its connection has closed (or has been lost): it is given
+/// `WORKER_EXIT_GRACE` for that, then killed.
+async fn stop_worker(child: &mut tokio::process::Child) {
+    if tokio::time::timeout(WORKER_EXIT_GRACE, child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
 }
 
 /// How long the gateway waits for a started worker's socket. A worker binary never run before
@@ -505,6 +528,71 @@ mod tests {
             .try_acquire_write("demo")
             .expect("process leases released after worker death");
         assert!(!dir.exists() || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) == 0);
+    }
+
+    /// Gateway shutdown ends the worker's processes (docs/runner-isolation.md): its connection
+    /// closes, so the worker ends a pipe and a PTY process as it exits, well before it would be
+    /// killed. A killed worker would leave the pipe process running.
+    #[tokio::test]
+    async fn a_stopped_worker_ends_its_processes() {
+        use codespace_domain::{ProcessId, Profile, WorkspaceId};
+        use codespace_policy::Workspace;
+        use codespace_runner::{Runner, RunnerExecRequest};
+
+        let Some(bin) = runtime_bin() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(
+            WorkspaceId("demo".into()),
+            dir.path().to_path_buf(),
+            Profile::WorkspaceWrite,
+        );
+        let store = Arc::new(Store::memory().unwrap());
+        let (mut proc, runner) = RuntimeProcess::spawn(&bin, None, Arc::new(|_| {}), store)
+            .await
+            .expect("spawn runtime");
+        // Each process counts into its file until it ends.
+        let mut counts = Vec::new();
+        for (name, tty) in [("pipe", false), ("pty", true)] {
+            let count = dir.path().join(name);
+            let script = format!(
+                "n=0; while :; do n=$((n+1)); echo $n > '{}'; /bin/sleep 0.1; done",
+                count.display()
+            );
+            let mut req = RunnerExecRequest::for_host(
+                vec!["/bin/sh".into(), "-c".into(), script],
+                ProcessId(format!("proc-stop-{name}")),
+                Profile::WorkspaceWrite,
+            );
+            req.tty = tty;
+            runner.exec(&ws, req).await.expect("exec");
+            counts.push(count);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !counts.iter().all(|count| count.exists()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the processes never ran"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let asked = std::time::Instant::now();
+        proc.wait_exit().await;
+        let stopped = asked.elapsed();
+        assert!(
+            stopped < WORKER_EXIT_GRACE,
+            "the worker did not exit by itself: {stopped:?}"
+        );
+        let read = || -> Vec<String> {
+            counts
+                .iter()
+                .map(|count| std::fs::read_to_string(count).unwrap())
+                .collect()
+        };
+        let at_exit = read();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(read(), at_exit, "a process outlived its worker");
     }
 
     /// The wait for a worker's socket is long enough for a first exec, but a worker that exits

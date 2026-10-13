@@ -908,7 +908,8 @@ impl InProcessRunner {
         let wait_process = process_id;
         tokio::spawn(async move {
             match exit.await {
-                // The pinned Codex PTY reports a signal death as exit code 1.
+                // The pinned Codex PTY reports a signal death as exit code 1, or as 128 plus the
+                // signal for a child that inherited descriptors, as a governed one does.
                 Ok(code) => wait_life
                     .lock()
                     .expect("lifecycle")
