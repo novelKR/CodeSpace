@@ -13,7 +13,9 @@ import sys
 import tempfile
 import textwrap
 import time
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
@@ -543,6 +545,44 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(qualify.phase_checks('refused', refused(4, 'ADMISSION_UNKNOWN'))[0]['passed'])
         self.assertFalse(qualify.phase_checks('refused', refused(4))[0]['passed'])
         self.assertFalse(qualify.phase_checks('refused', [{'slot': 0, 'outcome': 'missed_slot'}])[0]['passed'])
+
+    def test_targets_wait_until_devguard_admits_them(self):
+        class Gateway:
+            def __init__(self, refusals, code='RESOURCE_UNAVAILABLE'):
+                self.refusals, self.code, self.calls = refusals, code, []
+
+            def exec(self, workspace, command, tty=False):
+                self.calls.append(workspace)
+                if self.refusals:
+                    self.refusals -= 1
+                    return {'outcome': 'refused', 'code': self.code}
+                return {'outcome': 'started', 'process_id': f'proc-{len(self.calls)}'}
+
+        gateway = Gateway(2)
+        pool, refusals, _ = qualify.start_targets(gateway, 3, period=0)
+        self.assertEqual([(entry['outcome'], entry['tty']) for entry in pool],
+                         [('started', False), ('started', True), ('started', False)])
+        self.assertEqual((refusals, gateway.calls), (2, ['term-0'] * 3 + ['term-1', 'term-2']))
+        # Only a refusal for capacity or pressure is awaited, and only up to the limit.
+        pool, refusals, _ = qualify.start_targets(Gateway(1, 'RESOURCE_AUTHORITY_UNAVAILABLE'), 1, period=0)
+        self.assertEqual((pool[0]['outcome'], refusals), ('refused', 0))
+        pool, refusals, _ = qualify.start_targets(Gateway(10 ** 6), 1, limit=0.05, period=0.01)
+        self.assertEqual(pool[0]['outcome'], 'refused')
+        self.assertGreater(refusals, 0)
+
+    def test_settled_awaits_charges_and_instances(self):
+        bench = SimpleNamespace(database=None, authority={'consumer': 'codespace'})
+        charged = iter([{'attempts': {'codespace': 1}, 'leases': 0}] + [{'attempts': {}, 'leases': 0}] * 3)
+        instances = iter([[{'state': 'active'}]] * 2 + [[{'state': 'retired'}]] * 2)
+        with mock.patch.object(host, 'journal_charged', lambda database: next(charged)), \
+                mock.patch.object(host, 'journal_instances', lambda consumer, database: next(instances)):
+            checks = qualify.settled_checks(bench, 'uds', period=0)
+        self.assertEqual([item['passed'] for item in checks], [True, True], checks)
+        # An instance still active once the limit has passed fails, though nothing is charged.
+        with mock.patch.object(host, 'journal_charged', lambda database: {'attempts': {}, 'leases': 0}), \
+                mock.patch.object(host, 'journal_instances', lambda consumer, database: [{'state': 'active'}]):
+            checks = qualify.settled_checks(bench, 'uds', limit=0.05, period=0.01)
+        self.assertEqual([item['passed'] for item in checks], [True, False], checks)
 
     def test_repetition_outcomes(self):
         report = {'service_before': {'runs_release': True, 'service_pid': 7},

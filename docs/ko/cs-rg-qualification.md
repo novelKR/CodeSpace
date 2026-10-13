@@ -82,7 +82,7 @@ env -i HOME="$HOME" TMPDIR="$TMPDIR" PATH="<Rust 1.95.0>/bin:/usr/bin:/bin:/usr/
 | 시나리오 | pipe와 PTY | 통과 조건 |
 | --- | --- | --- |
 | registration | | `workspace_info`가 참여 `registration`, authority 사용 가능, 소유자(`in_process` 또는 `worker`) 등록, 실행 관리 중을 보고하고, DevGuard의 활성 `codespace` 인스턴스 하나가 그 프로세스임 |
-| exits | 각각 | exit 0과 exit 3이 그 코드의 exited로 보고됨. SIGTERM으로 죽으면 pipe에서는 signal 15의 `signaled`, PTY에서는 고정된 Codex PTY가 보고하는 대로 코드 1의 exited([프로세스 상태](agent-integration.md)) |
+| exits | 각각 | exit 0과 exit 3이 그 코드의 exited로 보고됨. SIGTERM으로 죽으면 pipe에서는 signal 15의 `signaled`, PTY에서는 고정된 Codex PTY가 launch descriptor를 물려받는 관리 대상 자식을 보고하는 대로 코드 143(128 + 15)의 exited([프로세스 상태](agent-integration.md)) |
 | io | 각각 | pipe에서는 `write_stdin`이 `cat`에 닿고 출력이 돌아오며, `process_resize`가 `PROCESS_NOT_TTY`로 거부되고, 종료가 보고됨. PTY에서는 터미널이 24×80으로 시작하고, 40×100 크기 조정에 답하며 프로세스가 새 크기를 보고, stdin이 닿음 |
 | termination | 각각 | `terminate_process`가 답하고, 프로세스가 terminated로 보고되며, scope의 프로세스 그룹이 사라짐 |
 | timeout | 각각 | `sleep 600`이 `timeout`으로 보고됨 |
@@ -94,7 +94,7 @@ env -i HOME="$HOME" TMPDIR="$TMPDIR" PATH="<Rust 1.95.0>/bin:/usr/bin:/bin:/usr/
 | status-mode | | `--devguard status`에서 관리 대상 실행은 attempt가 생기기 전에 `RESOURCE_POLICY_UNSUPPORTED`로 거부되고, `off`는 계속 실행됨 |
 | authority-unavailable | | socket에 authority가 없으면 `RESOURCE_AUTHORITY_UNAVAILABLE`로 거부되고, DevGuard에는 그 attempt가 없으며, `off`는 계속 실행됨 |
 | runner-socket | `uds`만 | gateway가 시작하지 않은 worker에서는 관리 대상 실행이 attempt가 생기기 전에 `RESOURCE_POLICY_UNSUPPORTED`로 거부됨 |
-| settled | | 소비자의 어떤 attempt도 자원을 차지하지 않고 활성 인스턴스도 없음. 아니면 행렬을 멈춤 |
+| settled | | 소비자의 어떤 attempt도 자원을 차지하지 않고 활성 인스턴스도 없음. DevGuard는 소유자가 사라진 것을 본 뒤에 인스턴스를 `retired`로 바꾸므로 둘 다 60초까지 기다림. 아니면 행렬을 멈춤 |
 
 관리 대상 실행은 모두 DevGuard 자신의 attempt 기록과 다시 대조합니다([자원 회계](#accounting)).
 
@@ -188,7 +188,7 @@ fixture authority를 쓰는 gateway 시험은 DevGuard 시험 바이너리가 �
 
 ### authority 장애
 
-`authority`는 fixture authority가 정상이 아닐 때의 프로세스 제어를, runner 모드마다 15초짜리 다섯 단계로, 계속 실행 중인 같은 status 대상에 대해 측정합니다. 단계는 `baseline`, `paused`(reconciler 멈춤), `stalled`(단계 내내 lock을 잡음), `restarted`, `stopped`(프로세스를 죽임)입니다. status는 1초마다, I/O echo는 3초마다 재고, 장애 전에 시작한 관리 대상 셋을 3, 7, 11초에 종료하며, 1, 5, 9, 13초에 새 관리 대상 실행을 시도합니다. 단계마다 위의 구간 규칙으로 판정하며, 새 실행은 authority가 답할 수 있는 동안(`baseline`, `paused`, `restarted`)에는 허용되고, 답할 수 없는 동안(`stalled`, `stopped`)에는 `RESOURCE_AUTHORITY_UNAVAILABLE`이나 `ADMISSION_UNKNOWN`으로 거부되어야 합니다. 재시작한 뒤나 멈춘 뒤에는 DevGuard가 장애 전에 시작한 대상을 해제할 수 없으므로, 그 단계에서 해제되지 않은 대상은 실패가 아니라 보고 대상입니다.
+`authority`는 fixture authority가 정상이 아닐 때의 프로세스 제어를, runner 모드마다 15초짜리 다섯 단계로, 계속 실행 중인 같은 status 대상에 대해 측정합니다. 단계는 `baseline`, `paused`(reconciler 멈춤), `stalled`(단계 내내 lock을 잡음), `restarted`, `stopped`(프로세스를 죽임)입니다. status는 1초마다, I/O echo는 3초마다 재고, 장애 전에 시작한 관리 대상 셋을 3, 7, 11초에 종료하며, 1, 5, 9, 13초에 새 관리 대상 실행을 시도합니다. 대상은 DevGuard가 허용한 뒤에 시작합니다. authority를 잡아 둔 동안 host 표본이 오래되면 DevGuard는 표본이 30초 동안 정상일 때까지 새 작업을 받지 않으므로, `stalled` 뒤에는 `RESOURCE_UNAVAILABLE`로 거부된 대상을 90초까지 1초마다 다시 시도하고, 걸린 시간을 단계 기록에 남깁니다. 단계마다 위의 구간 규칙으로 판정하며, 새 실행은 authority가 답할 수 있는 동안(`baseline`, `paused`, `restarted`)에는 허용되고, 답할 수 없는 동안(`stalled`, `stopped`)에는 `RESOURCE_AUTHORITY_UNAVAILABLE`이나 `ADMISSION_UNKNOWN`으로 거부되어야 합니다. 재시작한 뒤나 멈춘 뒤에는 DevGuard가 장애 전에 시작한 대상을 해제할 수 없으므로, 그 단계에서 해제되지 않은 대상은 실패가 아니라 보고 대상입니다.
 
 <a id="accounting"></a>
 
@@ -220,7 +220,7 @@ fixture authority를 쓰는 gateway 시험은 DevGuard 시험 바이너리가 �
 
 - **범위.** 기본값이자 설정이 없을 때의 의미인 참여 `off`. 모든 플랫폼과 runner 모드, pipe와 PTY에 해당합니다. 이 실행은 요청한 명령 자체입니다. pipe 자식은 관리 대상 실행과 같은 CodeSpace의 reaper 하나를 쓰고, PTY 자식은 reap 전 관찰 창이 없는 고정 Codex PTY spawn을 씁니다.
 - **이유.** 작업 지시서는 깔끔함만을 위해 코드를 옮기지 않습니다. `off`는 제품의 기본값이고, `required`는 운영자가 명시적으로 고르는 것이며 DG-LINUX 전까지 Linux에서는 지원하지 않으므로, Linux에서는 `off`가 유일한 경로입니다. 관리형 실행만 남기면 Linux의 모든 실행과 DevGuard가 없는 모든 환경이 사라집니다.
-- **중복된 부분.** spawn 경로는 하나이며 실행할 프로그램만 고릅니다. 요청한 명령이거나, permit과 report descriptor를 받는 DevGuard의 launch helper입니다([`crates/runner/src/process.rs`](../../crates/runner/src/process.rs)의 `How::Direct`와 `How::Managed`). reap은 중복되지 않습니다. 어느 쪽이든 pipe 자식은 CodeSpace의 reaper 하나가, PTY 자식은 고정 Codex PTY의 waiter가 reap합니다. PTY는 호출 하나만 다릅니다. 관리하지 않는 실행은 `spawn_inheriting`, 관리 대상 실행은 [기록된 패치](upstream-patches.md)의 `spawn_observed`를 씁니다. 관리 대상 경로에는 실행 허용, launch, 정리가 더해지며([`crates/runner/src/launch.rs`](../../crates/runner/src/launch.rs)), `off`는 이 경로에 들어가지 않습니다. `devguard` feature가 없으면 빌드에 DevGuard 패키지가 없고, 있으면 DevGuard의 client와 contract crate만 들어가며, `dependencies` 단계가 이를 확인합니다.
+- **중복된 부분.** spawn 경로는 하나이며 실행할 프로그램만 고릅니다. 요청한 명령이거나, permit과 report descriptor를 받는 DevGuard의 launch helper입니다([`crates/runner/src/process.rs`](../../crates/runner/src/process.rs)의 `How::Direct`와 `How::Managed`). reap은 중복되지 않습니다. 어느 쪽이든 pipe 자식은 CodeSpace의 reaper 하나가, PTY 자식은 고정 Codex PTY의 waiter가 reap합니다. PTY는 호출 하나만 다릅니다. 관리하지 않는 실행은 `spawn_inheriting`, 관리 대상 실행은 [기록된 패치](upstream-patches.md)의 `spawn_observed`를 씁니다. 관리 대상 PTY 자식은 launch descriptor도 물려받으므로 고정 Codex PTY는 descriptor를 유지하는 경로로 띄우고, 이 경로는 신호로 끝난 것을 128에 신호 번호를 더한 exit code로 보고합니다. 관리하지 않는 PTY는 1로 보고합니다([프로세스 상태](agent-integration.md)). 관리 대상 경로에는 실행 허용, launch, 정리가 더해지며([`crates/runner/src/launch.rs`](../../crates/runner/src/launch.rs)), `off`는 이 경로에 들어가지 않습니다. `devguard` feature가 없으면 빌드에 DevGuard 패키지가 없고, 있으면 DevGuard의 client와 contract crate만 들어가며, `dependencies` 단계가 이를 확인합니다.
 - **`off`가 제공하지 않는 것.** DevGuard의 실행 허용, 예약, 회계가 없고, scope 단속이 없으며, 관리하지 않는 PTY root를 reap 전에 관찰하지 않습니다. Linux 명령 sandbox는 `off` 실행만 쓸 수 있고, sandbox가 켜진 곳에서 관리 대상 실행은 거부됩니다.
 - **재검토 시점.** DG-LINUX가 Linux 강제 보호를 qualification할 때, Codex pin 이동으로 PTY spawn이 바뀔 때, `required`가 기본값이 될 때입니다.
 - **제거 기준.** 독립적인 제품상의 이유가 있고, 이 경로 없이도 지원하는 모든 모드의 동작이 유지된다는 회귀 증거가 있을 때만 제거합니다.

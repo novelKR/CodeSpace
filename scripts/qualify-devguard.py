@@ -467,8 +467,10 @@ def scenario_registration(bench, gateway):
 
 def scenario_exits(bench, gateway, tty):
     checks, detail = [], {}
-    # The pinned Codex PTY reports a signal death as exit code 1 (docs/agent-integration.md).
-    death = {'termination': 'exited', 'exit_code': 1} if tty else {'termination': 'signaled', 'signal': 15}
+    # A governed PTY child inherits its launch descriptors, so the pinned Codex PTY spawns it on
+    # its descriptor-keeping path, which reports a signal death as exit code 128 + the signal
+    # (docs/agent-integration.md).
+    death = {'termination': 'exited', 'exit_code': 128 + 15} if tty else {'termination': 'signaled', 'signal': 15}
     for label, command, expected in (('exit 0', ['true'], {'termination': 'exited', 'exit_code': 0}),
                                      ('exit 3', ['sh', '-c', 'exit 3'], {'termination': 'exited', 'exit_code': 3}),
                                      ('death by SIGTERM', ['sh', '-c', 'kill -TERM $$'], death)):
@@ -719,19 +721,21 @@ def matrix_workspaces(work, capacity):
             'hog': (work / 'ws/hog', host.required(**hog))}
 
 
-def settled_checks(bench, label):
-    """After a mode: nothing of the consumer is charged, and its instances are not active."""
-    deadline = time.monotonic() + 60
+def settled_checks(bench, label, limit=60.0, period=1.0):
+    """After a mode: nothing of the consumer is charged, and its instances are not active. DevGuard
+    retires an instance once it sees that its owner is gone, which can come after the gateway has
+    exited, so both are awaited for up to `limit` seconds."""
+    deadline = time.monotonic() + limit
     while True:
         charged = host.journal_charged(bench.database)
         mine = charged['attempts'].get(bench.authority['consumer'], 0)
-        if not mine or time.monotonic() >= deadline:
+        instances = host.journal_instances(bench.authority['consumer'], bench.database)
+        active = [entry for entry in instances if entry['state'] == 'active']
+        if (not mine and not active) or time.monotonic() >= deadline:
             break
-        time.sleep(1)
-    instances = host.journal_instances(bench.authority['consumer'], bench.database)
+        time.sleep(period)
     return [check(f'{label}: nothing of the consumer stays charged', mine == 0, charged=charged),
-            check(f'{label}: no instance stays active', not any(entry['state'] == 'active' for entry in instances),
-                  instances=instances)]
+            check(f'{label}: no instance stays active', not active, instances=instances)]
 
 
 def installed_authority(args):
@@ -778,7 +782,8 @@ def matrix(args, live, evidence):
                     run_scenario(results, evidence, mode, None, 'runner-socket', scenario_runner_socket, bench)
                 entry = run_scenario(results, evidence, mode, None, 'settled', lambda: (settled_checks(bench, mode), {}))
                 if entry['verdict'] != 'pass':
-                    print('qualify: work stayed charged; the matrix stops here', flush=True)
+                    print('qualify: work stayed charged or an instance stayed active; the matrix stops here',
+                          flush=True)
                     break
             finally:
                 if bench is not None:
@@ -1534,6 +1539,29 @@ AUTHORITY_PHASES = (('baseline', None, 'admitted', True), ('paused', 'pause', 'a
                     ('stalled', 'hold', 'refused', True), ('restarted', 'restart', 'admitted', False),
                     ('stopped', 'kill', 'refused', False))
 REFUSED_UNREACHABLE = ('RESOURCE_AUTHORITY_UNAVAILABLE', 'ADMISSION_UNKNOWN')
+# A host sample that goes stale while the authority is held makes DevGuard close new work until
+# its samples have been clear for 30 seconds, so a phase after `stalled` waits that long, and
+# some margin, for its termination targets to be admitted.
+READMIT_LIMIT_S = 90.0
+
+
+def start_targets(gateway, count, limit=READMIT_LIMIT_S, period=1.0):
+    """A phase's termination targets, alternating pipe and PTY. A target refused for capacity or
+    pressure (`RESOURCE_UNAVAILABLE`) is tried again every `period` seconds until it is admitted
+    or `limit` seconds have passed. Returns the targets, the refusals met, and how long it took."""
+    began = time.monotonic()
+    pool, refusals = [], 0
+    for n in range(count):
+        tty = bool(n % 2)
+        while True:
+            entry = gateway.exec(f'term-{n}', ['/bin/sleep', '600'], tty=tty)
+            if (entry['outcome'] == 'started' or entry.get('code') != 'RESOURCE_UNAVAILABLE'
+                    or time.monotonic() - began >= limit):
+                break
+            refusals += 1
+            time.sleep(period)
+        pool.append(dict(entry, tty=tty))
+    return pool, refusals, round(time.monotonic() - began, 3)
 
 
 def authority_workspaces(work):
@@ -1566,15 +1594,14 @@ def phase_verdict(record, rows):
 
 
 def authority_phase(bench, gateway, evidence, mode, targets, echo, phase, fault, expectation, release_expected):
-    """One phase: its termination targets started before the fault, the fault applied, the
-    schedules run for PHASE_S seconds, then the fault lifted where it can be. The samples have
-    their own writer, closed before their files are hashed."""
+    """One phase: its termination targets started before the fault, once DevGuard admits them,
+    the fault applied, the schedules run for PHASE_S seconds, then the fault lifted where it can
+    be. The samples have their own writer, closed before their files are hashed."""
     raw = evidence.file(f'{mode}/authority/{phase}/x').parent
     samples = host.Writer()
     schedules, watcher, invalid = {}, None, []
     try:
-        pool = [dict(gateway.exec(f'term-{n}', ['/bin/sleep', '600'], tty=bool(n % 2)), tty=bool(n % 2))
-                for n in range(len(PHASE_TERMINATIONS))]
+        pool, refusals, admitted_s = start_targets(gateway, len(PHASE_TERMINATIONS))
         prepared = [entry['process_id'] for entry in pool if entry['outcome'] == 'started']
         if len(prepared) < len(pool):
             invalid.append('a termination target could not be started before the fault')
@@ -1628,6 +1655,7 @@ def authority_phase(bench, gateway, evidence, mode, targets, echo, phase, fault,
         invalid.append(f"raw evidence could not be written: {written['errors'][:3]}")
     record = {'mode': mode, 'phase': phase, 'fault': fault, 'applied': applied, 'started_unix': started_unix,
               'seconds': seconds, 'release_expected': release_expected, 'expectation': expectation,
+              'termination_targets': {'refusals_before_admitted': refusals, 'admitted_s': admitted_s},
               'invalid': invalid, 'checks': phase_checks(expectation, rows['refusals']),
               'read_errors': watcher.read_errors, 'evidence_writer': written, 'raw': raw_hashes(raw)}
     record['verdict'], record['reasons'], record['metrics'] = phase_verdict(record, rows)

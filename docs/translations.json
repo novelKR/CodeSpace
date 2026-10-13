@@ -130,8 +130,8 @@
         "회귀와-동등성",
         "후보-조합"
       ],
-      "source_sha256": "018ad1ba83f5f63c2442d2d76b818ecee88742e5698404f3ef1d6c40d67fe0ac",
-      "translation_sha256": "1cdf7e966d26809d9a35689a12489a9444322c46d497d906e795e0b842175076"
+      "source_sha256": "99d92fa6d0a302b40c70b892f5af601e662e866f4ff99cd612220577d6149128",
+      "translation_sha256": "3fc102df0febc47abe134718152cddd532cdc1245c997a6570f246fc3c0c6510"
     },
     {
       "id": "overview",
@@ -204,8 +204,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "5c89ffabca2002b3473a5c45dc52ea6bae522da36ca4cfbf8db657bf997ba96f",
-      "translation_sha256": "0d3c33de0a8bbdaffc87970ce8ab243871df9d284f9cb1d4de5b953dc6dd6e6e"
+      "source_sha256": "eb38ede0d2c1f2457e238c92ee554c7dc292ba50841835f0c658431f6c9a6f33",
+      "translation_sha256": "a71c333f14a70d9848e14fe1633e34de3d9616fca1ab5e432d0ed1387aa3c218"
     },
     {
       "id": "operations",
