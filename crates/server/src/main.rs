@@ -41,13 +41,25 @@ async fn serve() -> Result<()> {
             Ok(())
         }
     };
-    drop(started);
+    started.stop().await;
     result
 }
 
 struct StartedRunner {
     runner: RuntimeBackend,
-    _process: Option<RuntimeProcess>,
+    process: Option<RuntimeProcess>,
+}
+
+impl StartedRunner {
+    /// Gateway shutdown ends a worker this gateway started, and with it the worker's processes,
+    /// before the gateway exits.
+    async fn stop(self) {
+        let Self { runner, process } = self;
+        drop(runner);
+        if let Some(mut process) = process {
+            process.wait_exit().await;
+        }
+    }
 }
 
 async fn start_runner(cli: &Cli, store: Arc<Store>) -> Result<StartedRunner> {
@@ -60,7 +72,7 @@ async fn start_runner(cli: &Cli, store: Arc<Store>) -> Result<StartedRunner> {
     match cli.runner {
         RunnerMode::InProcess => Ok(StartedRunner {
             runner: RuntimeBackend::in_process(on_release),
-            _process: None,
+            process: None,
         }),
         RunnerMode::Uds => {
             if let Some(bin) = &cli.runtime_bin {
@@ -77,7 +89,7 @@ async fn start_runner(cli: &Cli, store: Arc<Store>) -> Result<StartedRunner> {
                     .await?;
                     return Ok(StartedRunner {
                         runner: RuntimeBackend::Uds(runner),
-                        _process: Some(process),
+                        process: Some(process),
                     });
                 }
                 let (process, runner) =
@@ -85,7 +97,7 @@ async fn start_runner(cli: &Cli, store: Arc<Store>) -> Result<StartedRunner> {
                         .await?;
                 return Ok(StartedRunner {
                     runner: RuntimeBackend::Uds(runner),
-                    _process: Some(process),
+                    process: Some(process),
                 });
             }
             let socket = cli.runner_socket.as_ref().ok_or_else(|| {
@@ -96,7 +108,7 @@ async fn start_runner(cli: &Cli, store: Arc<Store>) -> Result<StartedRunner> {
             let runner = RuntimeProcess::connect_existing(socket, on_release, store).await?;
             Ok(StartedRunner {
                 runner: RuntimeBackend::Uds(runner),
-                _process: None,
+                process: None,
             })
         }
     }
