@@ -41,7 +41,7 @@ CodeSpace는 [고정 버전의 Codex 수정 정책](upstream-patches.md)에 따�
 | CodeSpace 사용 | 관리 대상 PTY 실행([CSRG-U5](devguard-integration.md#devguard-lifecycle)). PTY 어댑터의 `spawn_observed`가 CodeSpace의 관찰 상한(2초)으로 관찰자를 등록하고, 그 창에서 DevGuard의 `Observe`가 reap 전에 이루어짐. 관리하지 않는 PTY 실행은 여전히 `spawn_pty_process`를 호출함 |
 | 출처 | W3 실험 B의 관찰자([DevGuard 결정 패킷 3.2절](https://github.com/novelKR/DevGuard/blob/668750b4ab6ad582904c3d05ffceffa062b26243/docs/handoff/2026-09-28-w3-decision-packet.md#32-experiment-b-backend-owned-pre-reap-observation-packet-132))를 이 릴리스의 두 Unix PTY 경로로 옮긴 것. 수정한 파일마다 CodeSpace 수정 고지가 있음(Apache-2.0 4(b)) |
 | 검증 | 패치 적용 tree에서 함. Linux x86_64: crate 테스트 36개를 30회 반복해 모두 통과. macOS: 테스트 38개를 30회 반복해 모두 통과, DevGuard `6e7e065`로 W3 실험 B의 B1-B13 통과. Linux, macOS, Windows 대상 clippy 통과 |
-| 업스트림 | Codex는 외부 pull request를 받지 않음. 기능 요청 [openai/codex#53298](https://github.com/openai/codex/issues/53298)을 2026-10-12 소유자 승인으로 제출함 |
+| 업스트림 | Codex는 외부 pull request를 받지 않음. 기능 요청 [openai/codex#53298](https://github.com/openai/codex/issues/53298)을 2026-10-12 소유자 승인으로 제출했고, 이 기능은 CodeSpace에만 필요해서 2026-10-14 소유자가 not planned로 닫음([업스트림 우선](upstream-patches.md#patch-upstream)). 열린 업스트림 요청 없음 |
 | 제거 조건 | Codex 릴리스가 같은 관찰(단일 waiter, bound, 결과 보고)을 제공하고 CodeSpace가 그것으로 옮기거나, CodeSpace가 더 이상 회수 전에 PTY 실행을 관찰하지 않으면 패치를 뺌 |
 | 핀 변경 시 | 패치를 되돌리고 서브모듈을 옮긴 뒤, 후보에 패치를 다시 옮기거나 제거 조건에 따라 빼고, Linux와 macOS에서 테스트를 다시 실행하고 이 기록을 갱신 |
 | 되돌리기 | CodeSpace의 관찰자 사용을 먼저 되돌린 뒤, 패치 파일과 이 기록을 함께 되돌림 |

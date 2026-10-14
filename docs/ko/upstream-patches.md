@@ -47,7 +47,7 @@ CodeSpace는 [고정한 릴리스](upstream-lock.md) 하나의 Codex 코드를 �
 
 ### 업스트림 우선
 
-Codex는 코드 변경을 자기 팀에서만 받고, 기능 요청은 issue tracker에서 받습니다([기여 안내](https://github.com/openai/codex/blob/rust-v0.154.0/docs/contributing.md)). 패치마다 그 기능을 그곳에 기능 요청으로 제안하고 패치를 참고 자료로 붙입니다. 요청을 제출할지는 소유자가 정합니다. 그 상태는 기록에 남기고, Codex 릴리스가 같은 기능을 제공하고 CodeSpace가 그 릴리스로 옮기면 패치를 제거합니다.
+Codex는 코드 변경을 자기 팀에서만 받고, 기능 요청은 요청자의 사용 사례와 함께 issue tracker에서 받습니다([기여 안내](https://github.com/openai/codex/blob/rust-v0.154.0/docs/contributing.md)). 패치의 기능은 Codex 사용자에게도 필요할 때만 그곳에 제안하고, CodeSpace를 위한 API가 아니라 그 사용자들의 문제로 설명합니다. CodeSpace에만 필요한 기능은 요청 없이 패치로 유지합니다([첫 패치](#case-pre-reap)). 요청을 제출할지는 소유자가 정합니다. 업스트림 상태는 기록에 남기고, Codex 릴리스가 같은 기능을 제공하고 CodeSpace가 그 릴리스로 옮기면 패치를 제거합니다.
 
 <a id="patch-pin-changes"></a>
 
@@ -122,6 +122,7 @@ Codex는 코드 변경을 자기 팀에서만 받고, 기능 요청은 issue tra
 - **검토한 것**(2026-10-11, [DevGuard #14](https://github.com/novelKR/DevGuard/issues/14#issuecomment-6110596020)): 문서화된 제약으로 두기, Codex의 공개 `spawn_from_driver` 위에 CodeSpace 자체 PTY를 두기, Codex에 회수 전 hook을 넣기. [업스트림 어댑터 명세](https://github.com/novelKR/DevGuard/blob/668750b4ab6ad582904c3d05ffceffa062b26243/docs/handoff/2026-09-28-cs-dg-upstream-adapter-work-spec-1.md#8-preferred-investigation-b-an-upstream-owned-bounded-pre-reap-observation-contract)는 업스트림이 소유하고 시간 제한이 있는 회수 전 관찰을 우선하며, CodeSpace 자체 PTY는 CodeSpace가 Codex에 맡긴 메커니즘을 CodeSpace 안으로 옮기는 일입니다.
 - **결정.** 소유자는 hook을 골랐고, 수명 주기 작업과 병행했습니다. [#92](https://github.com/novelKR/CodeSpace/pull/92)는 PTY를 회수 뒤에 관찰하는 상태로 병합했고, hook은 별도 변경으로 준비했습니다. 관찰 기능은 먼저 Codex 사전 릴리스에서 만들어 시험했고([DevGuard W3 결정 자료](https://github.com/novelKR/DevGuard/blob/668750b4ab6ad582904c3d05ffceffa062b26243/docs/handoff/2026-09-28-w3-decision-packet.md#32-experiment-b-backend-owned-pre-reap-observation-packet-132) 3.2절), 그 뒤 `rust-v0.154.0`으로 옮겼습니다. 이어서 후속 변경이 이를 관리 대상 PTY 실행에 연결했습니다([실행 뒤 생명주기](devguard-integration.md#devguard-lifecycle)).
 - **형식.** 서브모듈이 가리킬 커밋을 담은 fork, 또는 공식 릴리스 위의 패치 파일. 어느 쪽이든 버전을 옮길 때 다시 옮겨야 하며, `rust-v0.159.x`에서는 이 PTY 코드가 바뀝니다. 소유자는 패치 파일을 골랐습니다. 서브모듈은 공식 릴리스에 남고, 변경과 그 기록, 이후의 이식은 모두 CodeSpace에서 검토하며, 따로 최신으로 유지할 저장소가 생기지 않습니다. 이 문서는 그 선택을 규칙으로 정한 것입니다.
+- **업스트림.** 이 기능을 2026-10-12 소유자 승인으로 [openai/codex#53298](https://github.com/openai/codex/issues/53298)에 제출했습니다. 2026-10-14 소유자가 not planned로 닫았습니다. DevGuard 연동에만 필요한 기능을 Codex 내부 크레이트의 새 API로 요청한 것이었고, Codex 사용자에게는 필요하지 않았습니다. 그래서 [업스트림 우선](#patch-upstream)은 Codex 사용자에게도 필요한 기능만 제안합니다.
 
 <a id="case-patterns"></a>
 
