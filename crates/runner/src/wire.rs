@@ -27,7 +27,7 @@ use crate::{
     RunnerResizeResult, RunnerWriteStdin, ShellRelease,
 };
 
-pub const WIRE_PROTOCOL: u32 = 8;
+pub const WIRE_PROTOCOL: u32 = 9;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
 /// How long a stopping independent Runner waits for its terminated processes to be reaped and
@@ -1049,8 +1049,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_protocol_is_v8() {
-        assert_eq!(WIRE_PROTOCOL, 8);
+    fn wire_protocol_is_v9() {
+        assert_eq!(WIRE_PROTOCOL, 9);
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
@@ -10,10 +11,16 @@ use codespace_server::config::{
 };
 use codespace_server::http::serve_http_handler;
 use codespace_server::logging;
+use codespace_server::records::ProcessRecords;
 use codespace_server::runtime::RuntimeProcess;
 use codespace_server::stdio;
 use codespace_server::CodeSpace;
-use codespace_store::Store;
+use codespace_store::{Store, WriterLock};
+
+/// How long a gateway with an independent Runner waits for the gateway before it to let go of
+/// the operations database (P1R-C02): one that is ending detaches at once, or stops its Runner,
+/// which waits up to 5 seconds for its processes.
+const OPERATIONS_DB_LOCK_WAIT: Duration = Duration::from_secs(15);
 
 fn main() -> Result<()> {
     // First, while this is the only thread: no later fork can then copy libnotify's
@@ -26,6 +33,8 @@ fn main() -> Result<()> {
     logging::init();
     let cli = Cli::parse();
     let lifecycle = cli.lifecycle().map_err(anyhow::Error::msg)?;
+    // Released as the gateway exits, once its runtime is shut down.
+    let _writer = lock_operations_db(&cli, lifecycle)?;
     let result = runtime.block_on(serve(cli, lifecycle));
     if let GatewayLifecycle::Independent { .. } = lifecycle {
         // A signal can end the gateway while a read of its stdin waits on one of the runtime's
@@ -36,11 +45,37 @@ fn main() -> Result<()> {
     result
 }
 
+/// A gateway with an independent Runner is its operations database's only writer (P1R-C02): it
+/// takes the lock beside the database before it opens it, waiting a bounded time for a gateway
+/// that is still ending, and refuses to start after that.
+fn lock_operations_db(cli: &Cli, lifecycle: GatewayLifecycle) -> Result<Option<WriterLock>> {
+    let (GatewayLifecycle::Independent { .. }, Some(database)) = (lifecycle, &cli.operations_db)
+    else {
+        return Ok(None);
+    };
+    let lock = WriterLock::acquire(database, OPERATIONS_DB_LOCK_WAIT, |holder| {
+        tracing::info!(
+            holder = ?holder,
+            wait = ?OPERATIONS_DB_LOCK_WAIT,
+            "another gateway holds the operations database; waiting for it to end"
+        )
+    })
+    .map_err(anyhow::Error::msg)?;
+    tracing::info!(
+        lock = %lock.path().display(),
+        "this gateway is the only writer of the operations database"
+    );
+    Ok(Some(lock))
+}
+
 async fn serve(cli: Cli, lifecycle: GatewayLifecycle) -> Result<()> {
     let registry = load_registry(&cli)?;
     let store = load_store(&cli)?;
     let started = start_runner(&cli, lifecycle, store.clone()).await?;
-    let handler = CodeSpace::from_cli(&cli, registry, store, started.runner.clone());
+    let mut handler = CodeSpace::from_cli(&cli, registry, store, started.runner.clone());
+    if let Some(records) = &started.records {
+        handler = handler.with_records(records.clone());
+    }
     #[cfg(feature = "devguard")]
     handler.register_owner_now();
     let (result, ending) = match lifecycle {
@@ -103,6 +138,8 @@ struct StartedRunner {
     lifecycle: GatewayLifecycle,
     /// Set before the gateway ends its connection to an independent Runner itself.
     leaving: Arc<AtomicBool>,
+    /// The records of the executions sent to an independent Runner (P1R-C02).
+    records: Option<Arc<ProcessRecords>>,
 }
 
 impl StartedRunner {
@@ -115,6 +152,7 @@ impl StartedRunner {
             process,
             lifecycle,
             leaving,
+            records: _,
         } = self;
         if let (GatewayLifecycle::Independent { exit_intent }, RuntimeBackend::Uds(runner)) =
             (lifecycle, &runner)
@@ -175,11 +213,14 @@ async fn start_runner(
             process: None,
             lifecycle,
             leaving,
+            records: None,
         }),
         RunnerMode::Uds => {
             if let (GatewayLifecycle::Independent { .. }, Some(socket)) =
                 (lifecycle, &cli.runner_socket)
             {
+                // Each exit releases its lease and is recorded (P1R-C02).
+                let (on_release, exits) = ProcessRecords::release_hook(store.clone());
                 // The gateway only connects; the Runner registers itself, from its own
                 // credential file, and nothing is handed to it (P1R-C01).
                 let runner =
@@ -189,11 +230,18 @@ async fn start_runner(
                 if cli.devguard.worker().is_some() {
                     codespace_server::runtime::require_registration(&runner, socket)?;
                 }
+                let identity = runner
+                    .hello()
+                    .identity
+                    .ok_or_else(|| anyhow::anyhow!("the independent Runner has no identity"))?;
+                let runner = RuntimeBackend::Uds(runner);
+                let records = ProcessRecords::start(store, &identity, runner.clone(), exits);
                 return Ok(StartedRunner {
-                    runner: RuntimeBackend::Uds(runner),
+                    runner,
                     process: None,
                     lifecycle,
                     leaving,
+                    records: Some(records),
                 });
             }
             if let Some(bin) = &cli.runtime_bin {
@@ -213,6 +261,7 @@ async fn start_runner(
                         process: Some(process),
                         lifecycle,
                         leaving,
+                        records: None,
                     });
                 }
                 let (process, runner) =
@@ -223,6 +272,7 @@ async fn start_runner(
                     process: Some(process),
                     lifecycle,
                     leaving,
+                    records: None,
                 });
             }
             let socket = cli.runner_socket.as_ref().ok_or_else(|| {
@@ -236,6 +286,7 @@ async fn start_runner(
                 process: None,
                 lifecycle,
                 leaving,
+                records: None,
             })
         }
     }

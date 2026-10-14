@@ -404,6 +404,8 @@ impl UdsRunner {
                     phases: Vec::new(),
                     account: None,
                     scope_root_pid: None,
+                    root: None,
+                    deadline_at_ms: None,
                 }))
             }
             Err(err) => Err(err),

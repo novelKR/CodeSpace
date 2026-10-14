@@ -109,7 +109,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. MCP/HTTP client disconnect does not kill those processes. The default remains `in-process`. An [independent Runner](runner-isolation.md#independent-runner), whose processes outlive the gateway, is not a supported mode yet.
+The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. MCP/HTTP client disconnect does not kill those processes. The default remains `in-process`. An [independent Runner](runner-isolation.md#independent-runner), whose processes outlive the gateway and whose gateway records them in the operations database, is not a supported mode yet.
 
 <a id="logs"></a>
 <a id="recovery-after-disconnect-or-restart"></a>
@@ -119,13 +119,17 @@ The worker runs on the same host and is not a container. The gateway creates a p
 | Setting or limit | Behavior |
 | --- | --- |
 | `RUST_LOG` | stderr tracing level; default `info` |
-| `CODESPACE_OPERATIONS_DB` unset | In-memory patch operations and instruction queue; lost on restart |
+| `CODESPACE_OPERATIONS_DB` unset | In-memory patch operations and instruction queue; lost on restart. A gateway with an independent Runner does not start without it |
 | `CODESPACE_PROCESS_TIMEOUT_SECS` | Positive integer; default 30 seconds; set in the runner environment |
 | `CODESPACE_MAX_PROCESSES` | Default 8 live processes across the runner; a request over it is refused before any process is created; workspace occupancy still applies |
 | Process output | Last 256 KiB retained; stdout/stderr combined; `read_process` reports `output_lost` and `retained_from`; `process_status` reports termination; `process_resize` resizes a running PTY |
 | Completed handles | Default retention up to 15 minutes and 64 completed entries; not durable |
 
 Store logs and the database outside the managed workspace, with tokens and gateway configuration. Rotate stderr capture yourself. Do not log Bearer tokens or commit real credentials. Deleting the database also deletes patch idempotency records and confirmation-hold rows.
+
+<a id="operations-database"></a>
+
+**Schema version and earlier versions.** The operations database states its schema version. CodeSpace refuses a database with a newer schema version than its own before writing anything, and leaves it as it is: open it with the CodeSpace version that wrote it. A gateway with an [independent Runner](runner-isolation.md#process-records) also records its executions in the database, and holds the lock file `<database>.gateway.lock` beside it while it runs. A CodeSpace version from before these records still opens such a database and leaves the records alone, but it neither checks the schema version nor takes the lock, so do not run one on a database that a gateway with an independent Runner uses. To go back from the independent mode, stop using it and keep the database: restoring an earlier copy would drop the patch idempotency records, confirmation holds and process records written since.
 
 After losing a patch response, query `operation_status` with exactly one of `operation_id` or `operation_key`. An unfinished record becomes `unknown` after restart; inspect files before deciding what to do. Processes use `process_id` and cannot be recovered through `operation_status`. A confirmation hold that was `queued` when the process died can be resumed and will reacquire. A hold that was `resuming` may recover a patch from that ledger, replay a stored terminal result, or return `APPROVAL_AMBIGUOUS`; exec is not respawned. See [retry and recovery rules](agent-integration.md).
 

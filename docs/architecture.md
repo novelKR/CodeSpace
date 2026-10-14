@@ -35,11 +35,11 @@ The UDS worker and default runner both execute on the same host. A Linux command
 | `server` | MCP transport, HTTP authentication/inbox, request validation and orchestration |
 | `domain` | CodeSpace tool parameters, results, IDs, error and execution types |
 | `policy` | Registered roots, environments, profiles, and network policy |
-| `store` | SQLite patch operations, confirmation holds, logical works, user instructions; in-memory occupancy |
+| `store` | SQLite patch operations, confirmation holds, logical works, user instructions, records of an independent Runner's executions; in-memory occupancy |
 | `runner` | Execution DTOs, file scope, patch transaction, process supervision, UDS client/server protocol |
 | Isolated adapters | Codex patch, PTY, filesystem, worker hardening/socket, Linux sandbox mechanisms |
 
-Patch operations, confirmation holds, and works/intents survive restart only with a configured SQLite file. Process handles and occupancy leases are memory-only. `operation_status` does not track exec requests. The transport request ID, patch operation ID, process ID, work ID, instruction ID, and approval ID serve different purposes.
+Patch operations, confirmation holds, and works/intents survive restart only with a configured SQLite file. Process handles and occupancy leases are memory-only; the record that a gateway with an [independent Runner](runner-isolation.md#process-records) keeps of each execution identifies it again but never revives its handle. `operation_status` does not track exec requests. The transport request ID, patch operation ID, process ID, work ID, instruction ID, and approval ID serve different purposes.
 
 <a id="patch-apply-pipeline"></a>
 

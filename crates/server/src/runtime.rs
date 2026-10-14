@@ -177,6 +177,14 @@ impl RuntimeProcess {
                 hello.lifecycle.as_str()
             ));
         }
+        // Its executions are recorded under its identity (P1R-C02).
+        if hello.identity.is_none() {
+            runner.close().await;
+            return Err(anyhow!(
+                "--runner-lifecycle independent: the Runner at {} did not state its identity",
+                socket.display()
+            ));
+        }
         tracing::info!(
             runner_pid = hello.identity.as_ref().map(|identity| identity.pid),
             previous_controller = hello.previous_controller,

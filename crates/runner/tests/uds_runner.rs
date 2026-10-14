@@ -121,7 +121,7 @@ async fn uds_process_status_echo_and_protocol_6_hello() {
             .expect("serve runner");
     });
     let runner = UdsRunner::from_stream(client, Arc::new(|_| {}));
-    runner.handshake().await.expect("hello protocol 8");
+    runner.handshake().await.expect("hello protocol 9");
     let dir = tempdir().unwrap();
     let ws = workspace(dir.path());
     let process_id = ProcessId("proc-uds-status".into());

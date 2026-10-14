@@ -10,6 +10,7 @@ pub mod logging;
 pub mod mcp;
 pub mod patch_helper;
 pub mod protocol;
+pub mod records;
 pub mod runtime;
 pub mod stdio;
 

@@ -1,18 +1,24 @@
 //! The gateway with an independent Runner (P1R-C01), each started as an operator starts it: the
 //! Runner outlives a gateway, the next gateway inherits its processes but starts nothing, and a
-//! gateway that ends leaves or stops the Runner as its exit intent says. These tests need the
-//! worker binary (`CODESPACE_RUNTIME_BIN`) and return early without it, as the gateway's other
-//! worker tests do.
+//! gateway that ends leaves or stops the Runner as its exit intent says. Each gateway records
+//! its executions in the operations database, which it is the only writer of (P1R-C02). The
+//! tests with a Runner need the worker binary (`CODESPACE_RUNTIME_BIN`) and return early
+//! without it, as the gateway's other worker tests do.
 
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
-use codespace_domain::{TOOL_EXEC_COMMAND, TOOL_PROCESS_STATUS, TOOL_READ_PROCESS};
+use codespace_domain::{
+    ProcessTermination, TOOL_EXEC_COMMAND, TOOL_PROCESS_STATUS, TOOL_READ_PROCESS,
+};
+use codespace_store::{ProcessOutcome, ProcessPhase, Store, WriterLock};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{RunningService, ServiceError};
 use rmcp::{object, RoleClient, ServiceExt};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout, Instant};
 
 /// The process timeout that every gateway here gives its executions.
@@ -95,6 +101,11 @@ impl Setup {
         runner
     }
 
+    /// The operations database that every gateway here records into.
+    fn database(&self) -> PathBuf {
+        self.root.path().join("ops.sqlite")
+    }
+
     /// The gateway binary with these settings alone: the environment of the test run may name a
     /// worker for the gateway to start, which an independent Runner's gateway refuses.
     fn gateway_command(&self, args: &[&str]) -> Command {
@@ -109,10 +120,7 @@ impl Setup {
         }
         command
             .env("CODESPACE_CONFIG", &self.cfg)
-            .env(
-                "CODESPACE_OPERATIONS_DB",
-                self.root.path().join("ops.sqlite"),
-            )
+            .env("CODESPACE_OPERATIONS_DB", self.database())
             .env(
                 "CODESPACE_PROCESS_TIMEOUT_SECS",
                 TIMEOUT.as_secs().to_string(),
@@ -122,21 +130,30 @@ impl Setup {
         command
     }
 
+    /// The settings of a gateway connected to the independent Runner, whose normal shutdown
+    /// asks `exit_intent` of it.
+    fn independent(&self, exit_intent: &str) -> Vec<String> {
+        [
+            "--runner",
+            "uds",
+            "--runner-socket",
+            &self.socket.display().to_string(),
+            "--runner-lifecycle",
+            "independent",
+            "--runner-exit-intent",
+            exit_intent,
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
     /// A gateway connected to the independent Runner, whose normal shutdown asks `exit_intent`
     /// of it.
     async fn gateway(&self, exit_intent: &str) -> Gateway {
-        let socket = self.socket.display().to_string();
+        let args = self.independent(exit_intent);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut process = self
-            .gateway_command(&[
-                "--runner",
-                "uds",
-                "--runner-socket",
-                &socket,
-                "--runner-lifecycle",
-                "independent",
-                "--runner-exit-intent",
-                exit_intent,
-            ])
+            .gateway_command(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -149,16 +166,47 @@ impl Setup {
 
     /// The error of a gateway that does not start with `args`.
     async fn refused(&self, args: &[&str]) -> String {
-        let output = timeout(
-            Duration::from_secs(30),
-            self.gateway_command(args).stdin(Stdio::null()).output(),
-        )
-        .await
-        .expect("the gateway ends")
-        .expect("run the gateway");
-        assert!(!output.status.success(), "{args:?}: {output:?}");
-        String::from_utf8_lossy(&output.stderr).into_owned()
+        refused(self.gateway_command(args)).await
     }
+}
+
+/// The error of a gateway `command` that does not start.
+async fn refused(mut command: Command) -> String {
+    let output = timeout(
+        Duration::from_secs(30),
+        command.stdin(Stdio::null()).output(),
+    )
+    .await
+    .expect("the gateway ends")
+    .expect("run the gateway");
+    assert!(!output.status.success(), "{output:?}");
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// The lines a process writes to `stderr`, read for as long as it writes them.
+fn log_lines(stderr: tokio::process::ChildStderr) -> mpsc::UnboundedReceiver<String> {
+    let (lines, logged) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut read = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = read.next_line().await {
+            let _ = lines.send(line);
+        }
+    });
+    logged
+}
+
+/// The first line logged that contains `text`.
+async fn logged(lines: &mut mpsc::UnboundedReceiver<String>, text: &str) -> String {
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let line = lines.recv().await.expect("the gateway logs it");
+            if line.contains(text) {
+                return line;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the gateway does not log {text:?}"))
 }
 
 struct Gateway {
@@ -196,6 +244,22 @@ impl Gateway {
             .await
             .expect("process_status");
         payload(&status)
+    }
+
+    /// The process's status once it has exited.
+    async fn ended(&self, process_id: &str) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let status = self.status(process_id).await;
+            if status["state"] == "exited" {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the process does not end: {status}"
+            );
+            sleep(Duration::from_millis(40)).await;
+        }
     }
 
     /// The process's output once it contains `expected`.
@@ -274,6 +338,15 @@ async fn still_beating(beat: &Path) -> bool {
     let before = read();
     sleep(Duration::from_millis(600)).await;
     before != read()
+}
+
+/// The parent of the live process `pid`, as `ps` reports it on Linux and macOS.
+fn parent_of(pid: u32) -> Option<u32> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
 /// A gateway killed while its process runs leaves the process to the Runner: the next gateway
@@ -443,4 +516,142 @@ async fn a_gateway_refuses_independent_settings_or_a_runner_that_do_not_fit() {
         "an independent gateway: {refused}"
     );
     exited(&mut managed).await;
+}
+
+/// A gateway with an independent Runner needs an operations database, and is its only writer
+/// (P1R-C02): before it connects to the Runner, it waits a bounded time for the gateway that
+/// holds the database's lock, and then refuses to start. A gateway in another mode takes no
+/// lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gateway_with_an_independent_runner_is_its_databases_only_writer() {
+    let setup = Setup::new();
+    let args = setup.independent("detach");
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut without = setup.gateway_command(&args);
+    without.env_remove("CODESPACE_OPERATIONS_DB");
+    let refusal = refused(without).await;
+    assert!(refusal.contains("needs --operations-db"), "{refusal}");
+
+    let held = WriterLock::acquire(&setup.database(), Duration::ZERO, |_| {
+        unreachable!("nothing holds the lock yet")
+    })
+    .unwrap();
+    let started = Instant::now();
+    let mut waiting = setup.gateway_command(&args);
+    waiting.env("RUST_LOG", "info");
+    let refusal = refused(waiting).await;
+    let waited = started.elapsed();
+    assert!(refusal.contains("waiting for it to end"), "{refusal}");
+    assert!(
+        refusal.contains("has another writer")
+            && refusal.contains(&format!("process {}", std::process::id())),
+        "{refusal}"
+    );
+    assert!(waited >= Duration::from_secs(15), "{waited:?}");
+
+    // A gateway in another mode records nothing and takes no lock.
+    let mut managed = setup
+        .gateway_command(&[])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn a managed gateway");
+    let stdout = managed.stdout.take().unwrap();
+    let stdin = managed.stdin.take().unwrap();
+    let client = ().serve((stdout, stdin)).await.expect("initialize");
+    let ended = Gateway {
+        client,
+        process: managed,
+    }
+    .shut_down()
+    .await;
+    assert!(ended.success(), "{ended:?}");
+    drop(held);
+}
+
+/// A gateway started while the gateway before it still ends, as when a client restarts its
+/// stdio gateway, waits for it to let go of the operations database and then serves (P1R-C02).
+/// The records the gateway before it wrote name each execution, the Runner it was sent to and
+/// its root process, and say how it ended or that it still runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restarted_gateway_waits_for_the_one_before_it_and_finds_its_records() {
+    let Some(bin) = runtime_bin() else {
+        return;
+    };
+    let setup = Setup::new();
+    let mut runner = setup.start_runner(&bin).await;
+    let first = setup.gateway("detach").await;
+    let ended = first.started(&["/bin/sh", "-c", "echo $$; exit 4"]).await;
+    first.ended(&ended).await;
+    let root_pid = first.output(&ended, "\n").await;
+    let running = first
+        .started(&["/bin/sh", "-c", "echo started; exec sleep 30"])
+        .await;
+    first.output(&running, "started").await;
+
+    let args = setup.independent("stop");
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut process = setup
+        .gateway_command(&args)
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the next gateway");
+    let mut lines = log_lines(process.stderr.take().unwrap());
+    let first_pid = first.process.id().unwrap();
+    let line = logged(&mut lines, "waiting for it to end").await;
+    assert!(line.contains(&format!("Some({first_pid})")), "{line}");
+    let stdout = process.stdout.take().unwrap();
+    let stdin = process.stdin.take().unwrap();
+    let serving = tokio::spawn(async move { ().serve((stdout, stdin)).await });
+    sleep(Duration::from_millis(500)).await;
+    assert!(
+        !serving.is_finished(),
+        "the next gateway serves while the first one holds the database"
+    );
+    let shut = first.shut_down().await;
+    assert!(shut.success(), "{shut:?}");
+    logged(&mut lines, "the only writer of the operations database").await;
+    let client = timeout(Duration::from_secs(15), serving)
+        .await
+        .expect("the next gateway serves")
+        .unwrap()
+        .expect("initialize");
+    let next = Gateway { client, process };
+    assert_eq!(next.status(&running).await["state"], "running");
+
+    let store = Store::open(&setup.database()).unwrap();
+    let runner_pid = runner.id().unwrap();
+    let record = store.process_record(&ended).unwrap().expect("its record");
+    assert_eq!(record.phase, ProcessPhase::Terminal, "{record:?}");
+    assert_eq!(
+        record.outcome,
+        Some(ProcessOutcome::Ended(ProcessTermination::Exited))
+    );
+    assert_eq!(record.exit_code, Some(4));
+    assert_eq!(record.runner.pid, runner_pid);
+    let root = record.root.expect("its root process");
+    // Unsandboxed, the root is the shell itself. The Linux sandbox's root is its helper, and
+    // the shell's `$$` is its PID in the sandbox's own PID namespace.
+    if !codespace_runner::linux_sandbox_available() {
+        assert_eq!(root.pid.to_string(), root_pid.trim());
+    }
+    let record = store.process_record(&running).unwrap().expect("its record");
+    assert_eq!(record.phase, ProcessPhase::Running, "{record:?}");
+    assert_eq!(record.runner.pid, runner_pid);
+    // The running execution's root is a live process that the Runner created, sandboxed or not.
+    let root = record.root.expect("its root process");
+    assert_eq!(parent_of(root.pid), Some(runner_pid), "{root:?}");
+    let version: i64 = rusqlite::Connection::open(setup.database())
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, codespace_store::SCHEMA_VERSION);
+
+    let shut = next.shut_down().await;
+    assert!(shut.success(), "{shut:?}");
+    let status = exited(&mut runner).await;
+    assert!(status.success(), "{status:?}");
 }

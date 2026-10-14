@@ -30,9 +30,10 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::lifecycle::process_start_identity;
 use crate::{
-    runner_local_exec_env, RunnerCwd, RunnerExecRequest, RunnerExecResult, RunnerProcessStatus,
-    RunnerReadProcess, RunnerReadResult, RunnerResizeResult, RunnerWriteStdin,
+    runner_local_exec_env, RunnerCwd, RunnerExecRequest, RunnerExecResult, RunnerProcessRoot,
+    RunnerProcessStatus, RunnerReadProcess, RunnerReadResult, RunnerResizeResult, RunnerWriteStdin,
 };
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -679,6 +680,12 @@ impl InProcessRunner {
                 format!("failed to spawn process: {err}"),
             )
         })?;
+        // Before its reaper exists, so the PID is still this child's (P1R-C02).
+        let root = spawned.id().map(|pid| RunnerProcessRoot {
+            pid,
+            started: process_start_identity(pid),
+        });
+        let deadline_at_ms = deadline_after(timeout);
         let stdin = spawned.stdin.take();
         let stdout = spawned.stdout.take();
         let stderr = spawned.stderr.take();
@@ -750,6 +757,8 @@ impl InProcessRunner {
 
         Ok(RunnerExecResult {
             process_id: req.process_id,
+            root,
+            deadline_at_ms,
         })
     }
 
@@ -856,6 +865,8 @@ impl InProcessRunner {
                 format!("failed to spawn process: {err}"),
             )
         })?;
+        // The pinned Codex PTY does not name its child, so a PTY root has no PID here.
+        let deadline_at_ms = deadline_after(timeout);
         let stdout = session
             .take_stdout()
             .ok_or_else(|| ErrorBody::new(ErrorCode::InvalidPatch, "PTY stdout missing"))?;
@@ -949,6 +960,8 @@ impl InProcessRunner {
 
         Ok(RunnerExecResult {
             process_id: req.process_id,
+            root: None,
+            deadline_at_ms,
         })
     }
 
@@ -1196,6 +1209,15 @@ async fn reap_child(
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// When a timeout that starts now ends, in milliseconds since the Unix epoch (P1R-C02).
+fn deadline_after(timeout: Duration) -> Option<u64> {
+    std::time::SystemTime::now()
+        .checked_add(timeout)?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|deadline| u64::try_from(deadline.as_millis()).ok())
 }
 
 /// Whether `child` has exited, seen without reaping it. Until its reaper waits, an exited child
@@ -3023,5 +3045,54 @@ mod tests {
         assert!(read.output_lost);
         assert_eq!(read.retained_from, status.output_retained_from);
         assert!(read.cursor >= read.retained_from);
+    }
+
+    /// A spawn reports its root process and when its timeout ends (P1R-C02): a pipe root by its
+    /// PID and start identity, read before its reaper runs, so a command that exits at once is
+    /// named too; a PTY root, which the pinned Codex PTY does not name, by its deadline only.
+    #[tokio::test]
+    async fn a_spawn_reports_its_root_and_its_deadline() {
+        fn now_ms() -> u64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        }
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        for (process_id, script, tty) in [
+            ("proc-root-pipe", "sleep 30", false),
+            ("proc-root-exits", "exit 0", false),
+            ("proc-root-pty", "sleep 30", true),
+        ] {
+            let mut req = RunnerExecRequest::for_host(
+                vec!["/bin/sh".into(), "-c".into(), script.into()],
+                ProcessId(process_id.into()),
+                Profile::WorkspaceWrite,
+            );
+            req.tty = tty;
+            req.timeout_ms = 60_000;
+            let before = now_ms();
+            let spawned = runner.spawn_host(&ws, req).await.unwrap();
+            let after = now_ms();
+            let deadline = spawned.deadline_at_ms.expect("a deadline");
+            assert!(
+                (before + 60_000..=after + 60_000).contains(&deadline),
+                "{process_id}: {before} {deadline} {after}"
+            );
+            if tty {
+                assert_eq!(spawned.root, None);
+                continue;
+            }
+            let root = spawned.root.expect("a pipe root");
+            if cfg!(any(target_os = "linux", target_os = "macos")) {
+                assert!(root.started.is_some(), "{process_id}: {root:?}");
+            }
+            if script == "sleep 30" {
+                assert_eq!(process_start_identity(root.pid), root.started);
+            }
+        }
+        runner.kill_host_workspace("demo").unwrap();
     }
 }
