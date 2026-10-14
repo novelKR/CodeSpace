@@ -115,7 +115,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다.
+worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다. 프로세스가 게이트웨이보다 오래 사는 [독립 Runner](runner-isolation.md#independent-runner)는 아직 지원하는 모드가 아닙니다.
 
 <a id="로그"></a>
 <a id="로그"></a>

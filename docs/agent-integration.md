@@ -150,7 +150,7 @@ Interactive input and cancellation use the same handle:
 
 A live command occupies the workspace. Wait for it to end or terminate it before applying a patch or starting another command. Reads and searches remain available. Long-lived development servers therefore require a workflow that stops them before edits.
 
-`workspace_info.execution.process.capabilities.lifetime` advertises the owner: the runner instance, not the MCP session. Streamable HTTP or MCP client disconnect keeps the process running; reconnect with the saved `process_id`. Losing the UDS worker connection or shutting down the gateway (including stdio EOF) terminates the owned subtree and drops handles. Restart does not restore `process_id`. If the spawn response is lost before you receive `process_id`, do not search with `process_status` and do not start a duplicate command.
+`workspace_info.execution.process.capabilities.lifetime` advertises the owner: the runner instance, not the MCP session. Streamable HTTP or MCP client disconnect keeps the process running; reconnect with the saved `process_id`. Losing the UDS worker connection or shutting down the gateway (including stdio EOF) terminates the owned subtree and drops handles. Restart does not restore `process_id`. With an [independent Runner](runner-isolation.md#independent-runner), which is not a supported mode yet, `runner_disconnect` is `keep_running`, and `gateway_shutdown` is `keep_running` when the gateway detaches and `terminate` when it stops the Runner; read `initialize.instructions` for what that gateway does. If the spawn response is lost before you receive `process_id`, do not search with `process_status` and do not start a duplicate command.
 
 ## Confirm a held mutation
 

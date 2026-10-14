@@ -33,7 +33,7 @@ use codespace_runner::launch::{LaunchReport, Launcher};
 use codespace_runner::registration::{
     handoff, status_info, Owner, OwnerCredential, OwnerRegistration, OwnerSettings,
 };
-use codespace_runner::RuntimeBackend;
+use codespace_runner::{RunnerLifecycle, RuntimeBackend};
 use tokio::sync::Mutex;
 
 use crate::config::RunnerMode;
@@ -217,7 +217,8 @@ pub(crate) enum ExecutionOwner {
     /// The gateway runs executions in its own process and registers itself; with a launch
     /// helper it launches governed executions (CSRG-U4).
     InProcess(Arc<OwnerRegistration>, Option<Launcher>),
-    /// The worker the gateway started owns them, registers itself and reports to the gateway.
+    /// The worker the gateway started owns them, registers itself and reports to the gateway;
+    /// so does an independent Runner, which reads the consumer secret itself (P1R-C01).
     Worker,
     /// A worker the gateway did not start: nothing can hand it the consumer secret.
     UnstartedWorker,
@@ -244,14 +245,16 @@ pub struct Registration {
 impl Registration {
     /// The registration for the gateway's runner mode. In InProcess mode the gateway reads
     /// the consumer secret from its file for each session, as a status probe does, and
-    /// launches through `launcher`; a worker the gateway starts gets its own.
+    /// launches through `launcher`; a worker the gateway starts gets its own, and an
+    /// independent Runner reads its own (P1R-C01): `worker_registers` says the UDS worker is
+    /// one of those.
     pub fn new(
         settings: Settings,
         runner: RunnerMode,
-        starts_worker: bool,
+        worker_registers: bool,
         launcher: Option<Launcher>,
     ) -> Arc<Self> {
-        let owner = match (runner, starts_worker) {
+        let owner = match (runner, worker_registers) {
             (RunnerMode::InProcess, _) => ExecutionOwner::InProcess(
                 OwnerRegistration::new(
                     Owner::new(
@@ -282,11 +285,16 @@ impl Registration {
 
     /// Whether this gateway's execution owner can prepare governed executions with `runner`
     /// (CSRG-U3): the gateway itself in InProcess mode, or the worker it started when that
-    /// worker states it.
+    /// worker states it. An independent Runner prepares them only when it also states that it
+    /// launches them (P1R-C01).
     pub(crate) fn prepares(&self, runner: &RuntimeBackend) -> bool {
         match (&self.owner, runner) {
             (ExecutionOwner::InProcess(..), RuntimeBackend::InProcess(_)) => true,
-            (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => worker.states_admission(),
+            (ExecutionOwner::Worker, RuntimeBackend::Uds(worker)) => {
+                worker.states_admission()
+                    && (worker.hello().lifecycle == RunnerLifecycle::Managed
+                        || worker.states_launch())
+            }
             _ => false,
         }
     }
@@ -1894,7 +1902,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_worker_that_does_not_state_registration_is_refused() {
         use codespace_runner::{
-            read_frame, write_frame, RunnerOpResult, UdsRunner, WireEnvelope, WIRE_PROTOCOL,
+            read_frame, write_frame, RunnerLifecycle, RunnerOpResult, UdsRunner, WireEnvelope,
+            WIRE_PROTOCOL,
         };
         for registration in [false, true] {
             let (client, mut server) = tokio::net::UnixStream::pair().unwrap();
@@ -1903,6 +1912,10 @@ pub(crate) mod tests {
                 let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
                 let hello = RunnerOpResult::Hello {
                     protocol: WIRE_PROTOCOL,
+                    lifecycle: RunnerLifecycle::Managed,
+                    identity: None,
+                    previous_controller: false,
+                    inherited_processes: 0,
                     registration,
                     admission: registration,
                     launch: false,

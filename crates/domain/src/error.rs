@@ -58,6 +58,16 @@ pub enum ErrorCode {
     /// so whether it reserved resources is not known. Nothing was started; do not assume the
     /// attempt does not exist.
     AdmissionUnknown,
+    /// An earlier gateway controlled this gateway's independent Runner, and recovering what it
+    /// left is not available yet (P1R-C01): its processes can be queried, read, written to,
+    /// resized and terminated, but no new execution, patch or approval resume starts, and an
+    /// approval being resumed is left as it was. Stopping the Runner and starting a new one ends
+    /// it. Not occupancy; do not retry as busy.
+    RecoveryPending,
+    /// This gateway lost its connection to its independent Runner and does not reconnect
+    /// (P1R-C01). The request never reached the Runner, whose processes keep running;
+    /// restarting the gateway reaches them again.
+    RunnerDisconnected,
     /// Scheduler or store invariant failed. Not occupancy; do not retry as busy.
     Internal,
 }
@@ -173,6 +183,10 @@ mod tests {
         assert_eq!(json, "\"RESOURCE_QUEUE_FULL\"");
         let json = serde_json::to_string(&ErrorCode::ResourcePolicyUnsupported).unwrap();
         assert_eq!(json, "\"RESOURCE_POLICY_UNSUPPORTED\"");
+        let json = serde_json::to_string(&ErrorCode::RecoveryPending).unwrap();
+        assert_eq!(json, "\"RECOVERY_PENDING\"");
+        let json = serde_json::to_string(&ErrorCode::RunnerDisconnected).unwrap();
+        assert_eq!(json, "\"RUNNER_DISCONNECTED\"");
         let json = serde_json::to_string(&ErrorCode::Internal).unwrap();
         assert_eq!(json, "\"INTERNAL\"");
     }

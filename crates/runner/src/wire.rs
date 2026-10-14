@@ -3,25 +3,36 @@
 //! Framing is `u32` big-endian length + JSON. Kinds share one stream:
 //! request, response, and event. `request_id` (`rrpc-…`) is not an HTTP
 //! id, `operation_id`, `operation_key`, or `process_id`.
+//!
+//! A `managed` worker serves the one connection of the gateway that started it. An
+//! `independent` Runner (P1R-C01) serves one connection at a time through [`IndependentRunner`]:
+//! its processes, their output, their timeouts and their exit events outlive each connection.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use codespace_domain::{ErrorBody, ErrorCode, FindResult, ProcessId, ReadResult};
 use codespace_policy::Workspace;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::task::JoinSet;
 
+use crate::lifecycle::{RunnerIdentity, RunnerLifecycle};
 use crate::{
     InProcessRunner, Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult, RunnerError,
     RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
     RunnerResizeResult, RunnerWriteStdin, ShellRelease,
 };
 
-pub const WIRE_PROTOCOL: u32 = 7;
+pub const WIRE_PROTOCOL: u32 = 8;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
+/// How long a stopping independent Runner waits for its terminated processes to be reaped and
+/// their output to end before it exits anyway (P1R-C01).
+pub const STOP_DRAIN_BOUND: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -166,6 +177,14 @@ pub enum RunnerOp {
         request_id: String,
     },
     Hello,
+    /// The gateway leaves an independent Runner and its processes keep running (P1R-C01). The
+    /// Runner answers `Detached`, reads nothing more from this connection and serves the next
+    /// one once this connection's requests have ended. A managed worker refuses it.
+    Detach,
+    /// Stop an independent Runner (P1R-C01): it reads nothing more, lets this connection's
+    /// requests end, terminates every process, waits for them, answers `Stopped` and exits. A
+    /// managed worker refuses it.
+    Stop,
     /// The execution owner's DevGuard registration (CSRG-U2). Sent only to a worker whose
     /// `Hello` states `registration`; a worker without it would close the connection.
     #[cfg(feature = "devguard")]
@@ -209,6 +228,21 @@ pub enum RunnerOpResult {
     TerminateWorkspace(u32),
     Hello {
         protocol: u32,
+        /// Whether the worker belongs to the gateway that started it or outlives its
+        /// connections (P1R-C01).
+        #[serde(default)]
+        lifecycle: RunnerLifecycle,
+        /// Which Runner process answered (P1R-C01).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<RunnerIdentity>,
+        /// An earlier connection of this independent Runner started work, so this connection
+        /// may observe and control the processes it inherits but starts nothing (P1R-C01).
+        #[serde(default)]
+        previous_controller: bool,
+        /// Processes still running when this connection began, which it inherits from
+        /// earlier connections (P1R-C01).
+        #[serde(default)]
+        inherited_processes: u32,
         /// The worker answers `Registration` (CSRG-U2). Left out when false, so a worker built
         /// without DevGuard says `Hello` as before.
         #[cfg(feature = "devguard")]
@@ -224,6 +258,14 @@ pub enum RunnerOpResult {
         #[serde(default, skip_serializing_if = "is_false")]
         launch: bool,
     },
+    /// An independent Runner's answer to `Detach` (P1R-C01).
+    Detached,
+    /// An independent Runner's answer to `Stop`, sent once its processes ended or
+    /// [`STOP_DRAIN_BOUND`] passed (P1R-C01): how many processes were still running when it
+    /// terminated them.
+    Stopped {
+        terminated: u32,
+    },
     #[cfg(feature = "devguard")]
     Registration(codespace_domain::ResourceAuthorityInfo),
     #[cfg(feature = "devguard")]
@@ -235,6 +277,18 @@ pub enum RunnerOpResult {
 #[cfg(feature = "devguard")]
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// The refusal of new work on a connection to an independent Runner that an earlier connection
+/// controlled (P1R-C01): recovering what that controller left is not available yet.
+pub fn recovery_pending() -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::RecoveryPending,
+        "an earlier gateway controlled this independent Runner, and recovering what it left is \
+         not available yet: its processes can be queried, read, written to, resized and \
+         terminated, but nothing new is started. Stop the Runner and start a new one to start \
+         work again",
+    )
 }
 
 /// The worker's registration, when it was started with one, and its launch helper.
@@ -252,6 +306,31 @@ impl Registrar {
     /// The worker launches governed executions: it registers and has a launch helper.
     fn launches(&self) -> bool {
         self.registration.is_some() && self.launcher.is_some()
+    }
+}
+
+/// What a connection's `Hello` states.
+fn hello(
+    registrar: &Registrar,
+    lifecycle: RunnerLifecycle,
+    previous_controller: bool,
+    inherited_processes: u32,
+) -> RunnerOpResult {
+    #[cfg(not(feature = "devguard"))]
+    let () = *registrar;
+    RunnerOpResult::Hello {
+        protocol: WIRE_PROTOCOL,
+        lifecycle,
+        identity: Some(RunnerIdentity::this_process()),
+        previous_controller,
+        inherited_processes,
+        #[cfg(feature = "devguard")]
+        registration: true,
+        #[cfg(feature = "devguard")]
+        admission: true,
+        // A worker states `launch` only with a registration and a launch helper.
+        #[cfg(feature = "devguard")]
+        launch: registrar.launches(),
     }
 }
 
@@ -308,6 +387,7 @@ where
     .await
 }
 
+/// A managed worker's one connection.
 async fn serve<S>(
     stream: S,
     runner: InProcessRunner,
@@ -317,8 +397,6 @@ async fn serve<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    #[cfg(not(feature = "devguard"))]
-    let () = registrar;
     let (mut read, write) = tokio::io::split(stream);
     let write = Arc::new(Mutex::new(write));
     let event_write = write.clone();
@@ -334,174 +412,521 @@ where
         }
     });
 
+    let hello = hello(&registrar, RunnerLifecycle::Managed, false, 0);
     let mut cache: VecDeque<(String, WireEnvelope)> = VecDeque::new();
     loop {
         let payload = match read_frame(&mut read).await? {
             Some(payload) => payload,
             None => return Ok(()),
         };
-        let request: WireEnvelope = match serde_json::from_slice(&payload) {
+        let (request_id, op) = match parse_request(&payload) {
             Ok(request) => request,
-            Err(err) => {
-                let response = WireEnvelope::response(
-                    String::new(),
-                    Err(ErrorBody::new(
-                        ErrorCode::InvalidPatch,
-                        format!("invalid runner rpc: {err}"),
-                    )),
-                );
+            Err(response) => {
                 let mut writer = write.lock().await;
                 write_frame(&mut *writer, &response).await?;
                 return Ok(());
             }
         };
-        if request.protocol != WIRE_PROTOCOL || request.kind != WireKind::Request {
-            let response = WireEnvelope::response(
-                request.request_id.clone().unwrap_or_default(),
-                Err(ErrorBody::new(
-                    ErrorCode::InvalidPatch,
-                    "runner rpc protocol mismatch",
-                )),
-            );
-            let mut writer = write.lock().await;
-            write_frame(&mut *writer, &response).await?;
-            return Ok(());
-        }
-        let request_id = request.request_id.clone().unwrap_or_default();
         #[cfg(feature = "devguard")]
-        if matches!(request.op, Some(RunnerOp::Registration)) {
-            // Not cached for replay: asking again opens a new session for the same identity.
-            let (write, registrar) = (write.clone(), registrar.clone());
-            tokio::spawn(async move {
-                let result = match registrar.registration {
-                    Some(registration) => {
-                        Ok(RunnerOpResult::Registration(registration.report().await))
-                    }
-                    None => Err(ErrorBody::new(
-                        ErrorCode::ResourcePolicyUnsupported,
-                        "this worker was started without DevGuard settings",
-                    )),
-                };
-                let response = WireEnvelope::response(request_id, result);
-                let mut writer = write.lock().await;
-                let _ = write_frame(&mut *writer, &response).await;
-            });
-            continue;
-        }
-        #[cfg(feature = "devguard")]
-        if let Some(RunnerOp::Prepare {
-            workspace,
-            request: exec,
-            attempt_id,
-        }) = request.op
-        {
-            // Beside the other requests, and never cached: a preparation is not replayed.
-            let (write, registrar, runner) = (write.clone(), registrar.clone(), runner.clone());
-            tokio::spawn(async move {
-                let result = match registrar.registration {
-                    Some(registration) => Ok(RunnerOpResult::Prepared(
-                        crate::admission::Preparer::new(registration.owner(), runner)
-                            .prepare_and_dispose(workspace, exec, attempt_id)
-                            .await,
-                    )),
-                    None => Err(ErrorBody::new(
-                        ErrorCode::ResourcePolicyUnsupported,
-                        "this worker was started without DevGuard settings",
-                    )),
-                };
-                let response = WireEnvelope::response(request_id, result);
-                let mut writer = write.lock().await;
-                let _ = write_frame(&mut *writer, &response).await;
-            });
-            continue;
-        }
-        #[cfg(feature = "devguard")]
-        if let Some(RunnerOp::Launch {
-            workspace,
-            request: exec,
-            attempt_id,
-        }) = request.op
-        {
-            // Beside the other requests, and never cached: a launch is never replayed. The
-            // launch is its own task, so it settles even if the gateway stops waiting.
-            let (write, registrar, runner) = (write.clone(), registrar.clone(), runner.clone());
-            tokio::spawn(async move {
-                let result = match (registrar.registration, registrar.launcher) {
-                    (Some(registration), Some(launcher)) => Ok(RunnerOpResult::Launched(
-                        crate::admission::Preparer::new(registration.owner(), runner)
-                            .with_launcher(Some(launcher))
-                            .prepare_and_launch(workspace, exec, attempt_id)
-                            .await,
-                    )),
-                    _ => Err(ErrorBody::new(
-                        ErrorCode::ResourcePolicyUnsupported,
-                        "this worker was started without DevGuard settings or a launch helper",
-                    )),
-                };
-                let response = WireEnvelope::response(request_id, result);
-                let mut writer = write.lock().await;
-                let _ = write_frame(&mut *writer, &response).await;
-            });
-            continue;
-        }
-        let response = match request.op {
-            Some(RunnerOp::Replay {
-                request_id: original,
-            }) => cache
-                .iter()
-                .find(|(id, _)| id == &original)
-                .map(|(_, cached)| {
-                    let mut replayed = cached.clone();
-                    replayed.request_id = Some(request_id.clone());
-                    replayed
-                })
-                .unwrap_or_else(|| {
-                    WireEnvelope::response(
-                        request_id.clone(),
-                        Err(ErrorBody::new(
-                            ErrorCode::InvalidPatch,
-                            format!("unknown runner request_id `{original}`"),
-                        )),
-                    )
-                }),
-            Some(op) => {
-                let dispatched = dispatch(&runner, op).await;
-                // A worker states `launch` only with a registration and a launch helper.
-                #[cfg(feature = "devguard")]
-                let dispatched = dispatched.map(|result| match result {
-                    RunnerOpResult::Hello {
-                        protocol,
-                        registration,
-                        admission,
-                        ..
-                    } => RunnerOpResult::Hello {
-                        protocol,
-                        registration,
-                        admission,
-                        launch: registrar.launches(),
-                    },
-                    other => other,
+        let op = match op {
+            Some(op) if answered_beside(&op) => {
+                // Beside the other requests, and never cached: asking again opens a new
+                // session, and a preparation or a launch is never replayed. A launch is its own
+                // task, so it settles even if the gateway stops waiting.
+                let (write, registrar, runner) = (write.clone(), registrar.clone(), runner.clone());
+                tokio::spawn(async move {
+                    let result = answer_beside(op, registrar, runner).await;
+                    let response = WireEnvelope::response(request_id, result);
+                    let mut writer = write.lock().await;
+                    let _ = write_frame(&mut *writer, &response).await;
                 });
-                let envelope = WireEnvelope::response(request_id.clone(), dispatched);
-                if !request_id.is_empty() {
-                    if cache.len() >= MAX_REPLAY {
-                        cache.pop_front();
-                    }
-                    cache.push_back((request_id, envelope.clone()));
-                }
-                envelope
+                continue;
             }
-            None => WireEnvelope::response(
+            op => op,
+        };
+        let response = match op {
+            Some(RunnerOp::Detach | RunnerOp::Stop) => WireEnvelope::response(
                 request_id,
                 Err(ErrorBody::new(
-                    ErrorCode::InvalidPatch,
-                    "runner rpc missing op",
+                    ErrorCode::InvalidCommand,
+                    "this worker belongs to the gateway that started it; only an independent \
+                     Runner detaches or stops on request",
                 )),
             ),
+            op => answer(&mut cache, &runner, request_id, op, &hello).await,
         };
         let mut writer = write.lock().await;
         write_frame(&mut *writer, &response).await?;
     }
+}
+
+/// A request's id and operation, or the response that refuses it and ends the connection.
+fn parse_request(payload: &[u8]) -> Result<(String, Option<RunnerOp>), Box<WireEnvelope>> {
+    let request: WireEnvelope = serde_json::from_slice(payload).map_err(|err| {
+        Box::new(WireEnvelope::response(
+            String::new(),
+            Err(ErrorBody::new(
+                ErrorCode::InvalidPatch,
+                format!("invalid runner rpc: {err}"),
+            )),
+        ))
+    })?;
+    if request.protocol != WIRE_PROTOCOL || request.kind != WireKind::Request {
+        return Err(Box::new(WireEnvelope::response(
+            request.request_id.clone().unwrap_or_default(),
+            Err(ErrorBody::new(
+                ErrorCode::InvalidPatch,
+                "runner rpc protocol mismatch",
+            )),
+        )));
+    }
+    Ok((request.request_id.unwrap_or_default(), request.op))
+}
+
+/// The response to a request answered in turn: a replay from `cache`, the connection's `hello`,
+/// or the runner's answer, which `cache` keeps for replay.
+async fn answer(
+    cache: &mut VecDeque<(String, WireEnvelope)>,
+    runner: &InProcessRunner,
+    request_id: String,
+    op: Option<RunnerOp>,
+    hello: &RunnerOpResult,
+) -> WireEnvelope {
+    match op {
+        Some(RunnerOp::Replay {
+            request_id: original,
+        }) => cache
+            .iter()
+            .find(|(id, _)| id == &original)
+            .map(|(_, cached)| {
+                let mut replayed = cached.clone();
+                replayed.request_id = Some(request_id.clone());
+                replayed
+            })
+            .unwrap_or_else(|| {
+                WireEnvelope::response(
+                    request_id.clone(),
+                    Err(ErrorBody::new(
+                        ErrorCode::InvalidPatch,
+                        format!("unknown runner request_id `{original}`"),
+                    )),
+                )
+            }),
+        Some(op) => {
+            let dispatched = match op {
+                RunnerOp::Hello => Ok(hello.clone()),
+                op => dispatch(runner, op).await,
+            };
+            let envelope = WireEnvelope::response(request_id.clone(), dispatched);
+            if !request_id.is_empty() {
+                if cache.len() >= MAX_REPLAY {
+                    cache.pop_front();
+                }
+                cache.push_back((request_id, envelope.clone()));
+            }
+            envelope
+        }
+        None => WireEnvelope::response(
+            request_id,
+            Err(ErrorBody::new(
+                ErrorCode::InvalidPatch,
+                "runner rpc missing op",
+            )),
+        ),
+    }
+}
+
+/// A `Registration`, `Prepare` or `Launch` request, which runs beside the other requests and is
+/// never cached for replay.
+#[cfg(feature = "devguard")]
+fn answered_beside(op: &RunnerOp) -> bool {
+    matches!(
+        op,
+        RunnerOp::Registration | RunnerOp::Prepare { .. } | RunnerOp::Launch { .. }
+    )
+}
+
+#[cfg(feature = "devguard")]
+async fn answer_beside(
+    op: RunnerOp,
+    registrar: Registrar,
+    runner: InProcessRunner,
+) -> Result<RunnerOpResult, ErrorBody> {
+    match op {
+        RunnerOp::Registration => match registrar.registration {
+            Some(registration) => Ok(RunnerOpResult::Registration(registration.report().await)),
+            None => Err(ErrorBody::new(
+                ErrorCode::ResourcePolicyUnsupported,
+                "this worker was started without DevGuard settings",
+            )),
+        },
+        RunnerOp::Prepare {
+            workspace,
+            request,
+            attempt_id,
+        } => match registrar.registration {
+            Some(registration) => Ok(RunnerOpResult::Prepared(
+                crate::admission::Preparer::new(registration.owner(), runner)
+                    .prepare_and_dispose(workspace, request, attempt_id)
+                    .await,
+            )),
+            None => Err(ErrorBody::new(
+                ErrorCode::ResourcePolicyUnsupported,
+                "this worker was started without DevGuard settings",
+            )),
+        },
+        RunnerOp::Launch {
+            workspace,
+            request,
+            attempt_id,
+        } => match (registrar.registration, registrar.launcher) {
+            (Some(registration), Some(launcher)) => Ok(RunnerOpResult::Launched(
+                crate::admission::Preparer::new(registration.owner(), runner)
+                    .with_launcher(Some(launcher))
+                    .prepare_and_launch(workspace, request, attempt_id)
+                    .await,
+            )),
+            _ => Err(ErrorBody::new(
+                ErrorCode::ResourcePolicyUnsupported,
+                "this worker was started without DevGuard settings or a launch helper",
+            )),
+        },
+        other => unreachable!("{other:?} is answered in turn"),
+    }
+}
+
+/// A request that starts work an earlier connection's successor could not know about: a
+/// process, a change to the workspace or an admission (P1R-C01). The first one accepted makes
+/// its connection the independent Runner's controller.
+fn starts_work(op: &RunnerOp) -> bool {
+    match op {
+        RunnerOp::Exec { .. } | RunnerOp::ApplyPatch { .. } => true,
+        #[cfg(feature = "devguard")]
+        RunnerOp::Prepare { .. } | RunnerOp::Launch { .. } => true,
+        _ => false,
+    }
+}
+
+/// How an independent Runner's connection ended (P1R-C01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Served {
+    /// The gateway detached: the processes keep running.
+    Detached,
+    /// The connection ended without `Detach` or `Stop`, or with an unusable request: a loss.
+    /// The processes keep running; the Runner never infers an intent from it.
+    Lost,
+    /// The Runner stopped, through `Stop` or its own stop request: it terminated `terminated`
+    /// processes and waited for them, and serves no further connection.
+    Stopped { terminated: u32 },
+}
+
+/// Asks an independent Runner to stop (P1R-C01), as `Stop` does: from a signal handler, or with
+/// no connection open.
+#[derive(Clone)]
+pub struct StopHandle {
+    requested: Arc<watch::Sender<bool>>,
+    /// How many processes the stop terminated so far.
+    terminated: Arc<AtomicU32>,
+    runner: InProcessRunner,
+}
+
+impl StopHandle {
+    /// Stop the Runner: every process is terminated now, so no request waits on one, and the
+    /// Runner reads no further request.
+    pub fn request(&self) {
+        self.requested.send_replace(true);
+        self.terminate();
+    }
+
+    /// Terminate the processes still running, and count those nothing had asked to end yet.
+    fn terminate(&self) -> u32 {
+        let terminated = self.runner.terminate_all();
+        self.terminated.fetch_add(terminated, Ordering::SeqCst) + terminated
+    }
+
+    pub fn is_requested(&self) -> bool {
+        *self.requested.borrow()
+    }
+
+    /// Resolves once a stop has been requested.
+    pub async fn requested(&self) {
+        let mut requested = self.requested.subscribe();
+        let _ = requested.wait_for(|stop| *stop).await;
+    }
+}
+
+/// The exit events of an independent Runner's processes, kept between its connections.
+struct EventHub {
+    events: mpsc::UnboundedReceiver<RunnerEvent>,
+    /// An event whose write failed, which the next connection gets first.
+    undelivered: Option<RunnerEvent>,
+}
+
+/// Forward exit events to one connection until `stop`, or until a write fails. Events left in
+/// the hub go to the next connection.
+async fn forward_events<W>(
+    hub: Arc<Mutex<EventHub>>,
+    write: Arc<Mutex<W>>,
+    mut stop: oneshot::Receiver<()>,
+) where
+    W: AsyncWrite + Unpin,
+{
+    let mut hub = hub.lock().await;
+    loop {
+        let event = match hub.undelivered.take() {
+            Some(event) => event,
+            None => tokio::select! {
+                biased;
+                _ = &mut stop => return,
+                event = hub.events.recv() => match event {
+                    Some(event) => event,
+                    None => return,
+                },
+            },
+        };
+        let mut writer = write.lock().await;
+        if write_frame(&mut *writer, &WireEnvelope::event(event.clone()))
+            .await
+            .is_err()
+        {
+            hub.undelivered = Some(event);
+            return;
+        }
+    }
+}
+
+/// An independent Runner (P1R-C01), started by an operator or a harness rather than a gateway.
+/// It serves one connection at a time, and its processes, their output, their timeouts and
+/// their exit events outlive each connection. A connection becomes the Runner's controller with
+/// the first request that starts work; every later connection states `previous_controller` in
+/// its `Hello` and may only query, read, write stdin, resize and terminate, until the Runner
+/// stops. Recovering what an earlier controller left is later work (P1R-C03, P1R-C04).
+pub struct IndependentRunner {
+    runner: InProcessRunner,
+    events: Arc<Mutex<EventHub>>,
+    registrar: Registrar,
+    /// A connection has started work.
+    controlled: bool,
+    stop: StopHandle,
+}
+
+impl IndependentRunner {
+    pub fn new(runner: InProcessRunner, events: mpsc::UnboundedReceiver<RunnerEvent>) -> Self {
+        let stop = StopHandle {
+            requested: Arc::new(watch::Sender::new(false)),
+            terminated: Arc::new(AtomicU32::new(0)),
+            runner: runner.clone(),
+        };
+        Self {
+            runner,
+            events: Arc::new(Mutex::new(EventHub {
+                events,
+                undelivered: None,
+            })),
+            #[cfg(feature = "devguard")]
+            registrar: Registrar::default(),
+            #[cfg(not(feature = "devguard"))]
+            registrar: (),
+            controlled: false,
+            stop,
+        }
+    }
+
+    /// The Runner's own DevGuard registration, which it keeps across its connections, and its
+    /// launch helper (CSRG-U2, CSRG-U4).
+    #[cfg(feature = "devguard")]
+    pub fn with_registration(
+        mut self,
+        registration: Option<Arc<crate::OwnerRegistration>>,
+        launcher: Option<crate::launch::Launcher>,
+    ) -> Self {
+        self.registrar = Registrar {
+            registration,
+            launcher,
+        };
+        self
+    }
+
+    pub fn stop_handle(&self) -> StopHandle {
+        self.stop.clone()
+    }
+
+    /// Serve each connection that `accept` yields, one at a time, until the Runner stops: through
+    /// `Stop`, or a stop request, which ends a connection being served or the wait for the next
+    /// one. `served` hears how each connection ended, or why one could not be accepted; a failed
+    /// accept is tried again after a pause. How many processes the stop terminated.
+    pub async fn run<S, A, F>(
+        mut self,
+        mut accept: A,
+        mut served: impl FnMut(std::io::Result<Served>),
+    ) -> u32
+    where
+        A: FnMut() -> F,
+        F: std::future::Future<Output = std::io::Result<S>>,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let stop = self.stop.clone();
+        loop {
+            let accepted = tokio::select! {
+                biased;
+                () = stop.requested() => {
+                    let terminated = self.stop().await;
+                    served(Ok(Served::Stopped { terminated }));
+                    return terminated;
+                }
+                accepted = accept() => accepted,
+            };
+            match accepted {
+                Ok(stream) => {
+                    let ending = self.serve(stream).await;
+                    served(Ok(ending));
+                    if let Served::Stopped { terminated } = ending {
+                        return terminated;
+                    }
+                }
+                Err(err) => {
+                    served(Err(err));
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    /// Serve one connection until it detaches, is lost or stops the Runner. Every request it
+    /// sent has ended when this returns, its `Registration`, `Prepare` and `Launch` requests
+    /// included, so the next connection starts after them.
+    pub async fn serve<S>(&mut self, stream: S) -> Served
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let previous_controller = self.controlled;
+        let hello = hello(
+            &self.registrar,
+            RunnerLifecycle::Independent,
+            previous_controller,
+            self.runner.live_processes(),
+        );
+        let (mut read, write) = tokio::io::split(stream);
+        let write = Arc::new(Mutex::new(write));
+        let (stop_events, events_stopped) = oneshot::channel();
+        let forwarder = tokio::spawn(forward_events(
+            self.events.clone(),
+            write.clone(),
+            events_stopped,
+        ));
+        let mut beside: JoinSet<()> = JoinSet::new();
+        let mut cache: VecDeque<(String, WireEnvelope)> = VecDeque::new();
+        let stop = self.stop.clone();
+        let ending = loop {
+            let frame = tokio::select! {
+                biased;
+                () = stop.requested() => break Ending::Stop(None),
+                frame = read_frame(&mut read) => frame,
+            };
+            let Ok(Some(payload)) = frame else {
+                break Ending::Lost;
+            };
+            let (request_id, op) = match parse_request(&payload) {
+                Ok(request) => request,
+                Err(response) => {
+                    let mut writer = write.lock().await;
+                    let _ = write_frame(&mut *writer, &response).await;
+                    break Ending::Lost;
+                }
+            };
+            let response = match op {
+                Some(RunnerOp::Detach) => break Ending::Detach(request_id),
+                Some(RunnerOp::Stop) => {
+                    self.stop.request();
+                    break Ending::Stop(Some(request_id));
+                }
+                Some(op) if starts_work(&op) && previous_controller => {
+                    WireEnvelope::response(request_id, Err(recovery_pending()))
+                }
+                op => {
+                    if op.as_ref().is_some_and(starts_work) {
+                        self.controlled = true;
+                    }
+                    #[cfg(feature = "devguard")]
+                    let op = match op {
+                        Some(op) if answered_beside(&op) => {
+                            let (write, registrar, runner) =
+                                (write.clone(), self.registrar.clone(), self.runner.clone());
+                            beside.spawn(async move {
+                                let result = answer_beside(op, registrar, runner).await;
+                                let response = WireEnvelope::response(request_id, result);
+                                let mut writer = write.lock().await;
+                                let _ = write_frame(&mut *writer, &response).await;
+                            });
+                            continue;
+                        }
+                        op => op,
+                    };
+                    answer(&mut cache, &self.runner, request_id, op, &hello).await
+                }
+            };
+            let mut writer = write.lock().await;
+            if write_frame(&mut *writer, &response).await.is_err() {
+                break Ending::Lost;
+            }
+        };
+        if let Ending::Detach(request_id) = &ending {
+            let response = WireEnvelope::response(request_id.clone(), Ok(RunnerOpResult::Detached));
+            let mut writer = write.lock().await;
+            let _ = write_frame(&mut *writer, &response).await;
+        }
+        // The connection's requests end before anything else: no later connection, and no
+        // stop, overlaps them.
+        while beside.join_next().await.is_some() {}
+        let served = match ending {
+            Ending::Detach(_) => Served::Detached,
+            Ending::Lost => Served::Lost,
+            Ending::Stop(request_id) => {
+                let terminated = self.end_processes().await;
+                if let Some(request_id) = request_id {
+                    let response = WireEnvelope::response(
+                        request_id,
+                        Ok(RunnerOpResult::Stopped { terminated }),
+                    );
+                    let mut writer = write.lock().await;
+                    let _ = write_frame(&mut *writer, &response).await;
+                }
+                Served::Stopped { terminated }
+            }
+        };
+        let _ = stop_events.send(());
+        let _ = forwarder.await;
+        let _ = write.lock().await.shutdown().await;
+        served
+    }
+
+    /// Stop with no connection open (P1R-C01): terminate every process and wait for them, as
+    /// `Stop` does. How many were still running.
+    pub async fn stop(&self) -> u32 {
+        self.stop.request();
+        self.end_processes().await
+    }
+
+    /// Terminate every process, those a request started after the stop request included, and
+    /// wait until each is reaped and its output has ended, at most [`STOP_DRAIN_BOUND`]: a pipe
+    /// process's own children may keep its output open, as a pipe process has no process group.
+    /// How many processes the stop terminated.
+    async fn end_processes(&self) -> u32 {
+        let terminated = self.stop.terminate();
+        let deadline = tokio::time::Instant::now() + STOP_DRAIN_BOUND;
+        while self.runner.occupied_slots() > 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        terminated
+    }
+}
+
+/// Why an independent Runner's connection stopped reading.
+enum Ending {
+    Detach(String),
+    Lost,
+    /// With the request's id when `Stop` asked for it.
+    Stop(Option<String>),
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(
@@ -598,16 +1023,11 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
             .terminate_workspace(&workspace_id)
             .await
             .map(RunnerOpResult::TerminateWorkspace),
-        RunnerOp::Hello => Ok(RunnerOpResult::Hello {
-            protocol: WIRE_PROTOCOL,
-            #[cfg(feature = "devguard")]
-            registration: true,
-            #[cfg(feature = "devguard")]
-            admission: true,
-            #[cfg(feature = "devguard")]
-            launch: false,
-        }),
+        RunnerOp::Hello => unreachable!("hello is answered before dispatch"),
         RunnerOp::Replay { .. } => unreachable!("replay is handled before dispatch"),
+        RunnerOp::Detach | RunnerOp::Stop => {
+            unreachable!("detach and stop are handled before dispatch")
+        }
         #[cfg(feature = "devguard")]
         RunnerOp::Registration => unreachable!("registration is handled before dispatch"),
         #[cfg(feature = "devguard")]
@@ -629,8 +1049,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_protocol_is_v7() {
-        assert_eq!(WIRE_PROTOCOL, 7);
+    fn wire_protocol_is_v8() {
+        assert_eq!(WIRE_PROTOCOL, 8);
     }
 
     #[tokio::test]
@@ -868,12 +1288,14 @@ mod tests {
             match response(&mut read).await.result {
                 Some(RunnerOpResult::Hello {
                     protocol,
+                    lifecycle,
                     registration,
                     admission,
                     launch,
+                    ..
                 }) => assert_eq!(
-                    (protocol, registration, admission, launch),
-                    (WIRE_PROTOCOL, true, true, false)
+                    (protocol, lifecycle, registration, admission, launch),
+                    (WIRE_PROTOCOL, RunnerLifecycle::Managed, true, true, false)
                 ),
                 other => panic!("unexpected {other:?}"),
             }
@@ -958,6 +1380,10 @@ mod tests {
             assert!(matches!(
                 old,
                 RunnerOpResult::Hello {
+                    lifecycle: RunnerLifecycle::Managed,
+                    identity: None,
+                    previous_controller: false,
+                    inherited_processes: 0,
                     registration: false,
                     admission: false,
                     launch: false,
@@ -1210,6 +1636,87 @@ mod tests {
             stop.store(true, Ordering::Relaxed);
             assert!(registering.await.unwrap() > 0);
         }
+
+        /// An independent Runner keeps its registration across its connections and states it in
+        /// each `Hello`, and ends a connection only once its `Registration` requests were
+        /// answered, so the next connection starts after them (P1R-C01).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn an_independent_runner_answers_registration_before_the_next_connection() {
+            let dir = private_directory();
+            let credential = dir.path().join("consumer.secret");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&credential)
+                .unwrap()
+                .write_all("ef".repeat(32).as_bytes())
+                .unwrap();
+            // An authority that accepts each session and answers nothing, so a registration
+            // session lasts until DevGuard's frame deadline.
+            let socket = dir.path().join("silent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let stream = stream.unwrap();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(2));
+                        drop(stream);
+                    });
+                }
+            });
+            let owner = Owner::new(
+                OwnerSettings {
+                    socket,
+                    consumer: "codespace".into(),
+                    generation: "g1".into(),
+                },
+                OwnerCredential::File(credential),
+            );
+            let (worker, events) = host_worker();
+            let mut independent = IndependentRunner::new(worker, events).with_registration(
+                Some(OwnerRegistration::new(owner, ResourceOwner::Worker)),
+                None,
+            );
+            for connection in 0..2 {
+                let (client, server) = tokio::net::UnixStream::pair().unwrap();
+                let serving = tokio::spawn(async move {
+                    let served = independent.serve(server).await;
+                    (served, independent)
+                });
+                let (mut read, mut write) = client.into_split();
+                request(&mut write, "rrpc-hello", RunnerOp::Hello).await;
+                match response(&mut read).await.result {
+                    Some(RunnerOpResult::Hello {
+                        lifecycle,
+                        registration,
+                        admission,
+                        launch,
+                        ..
+                    }) => assert_eq!(
+                        (lifecycle, registration, admission, launch),
+                        (RunnerLifecycle::Independent, true, true, false),
+                        "connection {connection}"
+                    ),
+                    other => panic!("unexpected {other:?}"),
+                }
+                request(&mut write, "rrpc-reg", RunnerOp::Registration).await;
+                request(&mut write, "rrpc-detach", RunnerOp::Detach).await;
+                // Both are answered before the connection ends.
+                let mut answered = Vec::new();
+                while let Some(frame) = read_frame(&mut read).await.unwrap() {
+                    let envelope: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+                    if envelope.kind == WireKind::Response {
+                        answered.push(envelope.request_id.unwrap());
+                    }
+                }
+                answered.sort();
+                assert_eq!(answered, ["rrpc-detach", "rrpc-reg"]);
+                let (served, returned) = serving.await.unwrap();
+                assert_eq!(served, Served::Detached);
+                independent = returned;
+            }
+        }
     }
 
     #[tokio::test]
@@ -1234,6 +1741,585 @@ mod tests {
         match parsed.result {
             Some(RunnerOpResult::Hello { protocol, .. }) => assert_eq!(protocol, WIRE_PROTOCOL),
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A managed worker refuses `Detach` and `Stop` and keeps serving; its `Hello` states its
+    /// lifecycle and identity (P1R-C01).
+    #[tokio::test]
+    async fn a_managed_worker_refuses_detach_and_stop() {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (worker, events) = host_worker();
+        tokio::spawn(async move {
+            serve_runner_connection(server, worker, events)
+                .await
+                .expect("serve");
+        });
+        let (mut read, mut write) = client.into_split();
+        for (id, op) in [
+            ("rrpc-detach", RunnerOp::Detach),
+            ("rrpc-stop", RunnerOp::Stop),
+            ("rrpc-hello", RunnerOp::Hello),
+        ] {
+            write_frame(&mut write, &WireEnvelope::request(id.into(), op))
+                .await
+                .unwrap();
+            let reply = read_frame(&mut read).await.unwrap().unwrap();
+            let reply: WireEnvelope = serde_json::from_slice(&reply).unwrap();
+            assert_eq!(reply.request_id.as_deref(), Some(id));
+            match reply.result {
+                Some(RunnerOpResult::Hello {
+                    lifecycle,
+                    identity,
+                    previous_controller,
+                    inherited_processes,
+                    ..
+                }) => {
+                    assert_eq!(lifecycle, RunnerLifecycle::Managed);
+                    assert_eq!(identity, Some(RunnerIdentity::this_process()));
+                    assert!(!previous_controller);
+                    assert_eq!(inherited_processes, 0);
+                }
+                None => assert_eq!(reply.error.unwrap().code, ErrorCode::InvalidCommand),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    /// An independent Runner across its connections, through the gateway's client (P1R-C01).
+    mod independent {
+        use super::*;
+        use crate::{RunnerApplyPatchRequest, RunnerReadProcess, RunnerWriteStdin, UdsRunner};
+        use codespace_domain::{ProcessState, ProcessTermination, Profile, WorkspaceId};
+        use std::path::Path;
+        use std::time::Instant;
+
+        /// An independent Runner that serves the streams sent to it in turn, as the worker binary
+        /// serves each connection it accepts. Dropping it stops the Runner.
+        struct Host {
+            streams: mpsc::UnboundedSender<tokio::net::UnixStream>,
+            served: mpsc::UnboundedReceiver<Served>,
+            stop: StopHandle,
+            runner: InProcessRunner,
+        }
+
+        impl Host {
+            fn start() -> Self {
+                let (runner, events) = host_worker();
+                let independent = IndependentRunner::new(runner.clone(), events);
+                let stop = independent.stop_handle();
+                let (streams, incoming) = mpsc::unbounded_channel::<tokio::net::UnixStream>();
+                let incoming = Arc::new(Mutex::new(incoming));
+                let (report, served) = mpsc::unbounded_channel();
+                tokio::spawn(independent.run(
+                    move || {
+                        let incoming = incoming.clone();
+                        async move {
+                            incoming
+                                .lock()
+                                .await
+                                .recv()
+                                .await
+                                .ok_or_else(|| std::io::Error::other("no more connections"))
+                        }
+                    },
+                    move |ending| {
+                        if let Ok(ending) = ending {
+                            let _ = report.send(ending);
+                        }
+                    },
+                ));
+                Self {
+                    streams,
+                    served,
+                    stop,
+                    runner,
+                }
+            }
+
+            /// A new gateway's connection, after its handshake.
+            async fn connect(&self) -> UdsRunner {
+                self.connect_reporting_exits(Arc::new(|_: &str| {})).await
+            }
+
+            async fn connect_reporting_exits(&self, on_exit: ShellRelease) -> UdsRunner {
+                let (client, server) = tokio::net::UnixStream::pair().unwrap();
+                self.streams.send(server).unwrap();
+                let gateway = UdsRunner::from_stream(client, on_exit);
+                gateway.handshake().await.unwrap();
+                gateway
+            }
+
+            /// A connection the gateway's client does not speak for.
+            fn connect_raw(&self) -> tokio::net::UnixStream {
+                let (client, server) = tokio::net::UnixStream::pair().unwrap();
+                self.streams.send(server).unwrap();
+                client
+            }
+
+            /// How the connection being served ended.
+            async fn served(&mut self) -> Served {
+                tokio::time::timeout(Duration::from_secs(20), self.served.recv())
+                    .await
+                    .expect("the connection ends")
+                    .expect("the Runner reports it")
+            }
+        }
+
+        impl Drop for Host {
+            fn drop(&mut self) {
+                self.stop.request();
+            }
+        }
+
+        fn workspace(root: &Path) -> Workspace {
+            Workspace::new(
+                WorkspaceId("demo".into()),
+                root.to_path_buf(),
+                Profile::WorkspaceWrite,
+            )
+        }
+
+        fn command(
+            argv: &[&str],
+            process_id: &str,
+            timeout_ms: u64,
+            tty: bool,
+        ) -> RunnerExecRequest {
+            let mut request = RunnerExecRequest::for_host(
+                argv.iter().map(|arg| arg.to_string()).collect(),
+                ProcessId(process_id.into()),
+                Profile::WorkspaceWrite,
+            );
+            request.timeout_ms = timeout_ms;
+            request.tty = tty;
+            request
+        }
+
+        fn code(err: RunnerError) -> ErrorCode {
+            match err.as_execution() {
+                Some(body) => body.code,
+                None => panic!("{err:?}"),
+            }
+        }
+
+        /// The process's output from its start, once it contains `expected`.
+        async fn output_with(gateway: &UdsRunner, process_id: &ProcessId, expected: &str) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let read = gateway
+                    .read_process(RunnerReadProcess {
+                        process_id: process_id.clone(),
+                        cursor: 0,
+                    })
+                    .await
+                    .unwrap();
+                if read.chunk.contains(expected) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "{process_id:?}: {read:?}");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        async fn exited<R: Runner>(runner: &R, process_id: &ProcessId) -> RunnerProcessStatus {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                let status = runner.process_status(process_id).await.unwrap();
+                if status.state == ProcessState::Exited {
+                    return status;
+                }
+                assert!(Instant::now() < deadline, "{status:?}");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        async fn next_exit(exited_ids: &mut mpsc::UnboundedReceiver<String>) -> Option<String> {
+            tokio::time::timeout(Duration::from_secs(10), exited_ids.recv())
+                .await
+                .expect("an exit event")
+        }
+
+        async fn disconnected(gateway: &UdsRunner, process_id: &ProcessId) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match gateway.process_status(process_id).await {
+                    Err(RunnerError::Execution(body))
+                        if body.code == ErrorCode::RunnerDisconnected =>
+                    {
+                        return
+                    }
+                    other => assert!(Instant::now() < deadline, "{other:?}"),
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        /// After a detach the next gateway reads the output and status of the same process_id,
+        /// writes to it and resizes it, and the process times out at its original deadline.
+        /// That gateway starts nothing new, also once the inherited processes ended.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_next_gateway_inherits_the_processes_but_starts_nothing() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let first = host.connect().await;
+            let hello = first.hello();
+            assert_eq!(hello.lifecycle, RunnerLifecycle::Independent);
+            assert_eq!(hello.identity, Some(RunnerIdentity::this_process()));
+            assert!(!hello.previous_controller);
+            assert_eq!(hello.inherited_processes, 0);
+            assert!(!first.refuses_new_work());
+            let pipe = ProcessId("proc-pipe".into());
+            let tty = ProcessId("proc-tty".into());
+            let started = Instant::now();
+            first
+                .exec(
+                    &ws,
+                    command(
+                        &[
+                            "/bin/sh",
+                            "-c",
+                            "echo ready; read line; echo got $line; exec sleep 30",
+                        ],
+                        &pipe.0,
+                        3_000,
+                        false,
+                    ),
+                )
+                .await
+                .unwrap();
+            first
+                .exec(
+                    &ws,
+                    command(
+                        &["/bin/sh", "-c", "echo tty-ready; exec sleep 30"],
+                        &tty.0,
+                        60_000,
+                        true,
+                    ),
+                )
+                .await
+                .unwrap();
+            output_with(&first, &pipe, "ready").await;
+            first.detach().await.unwrap();
+            assert_eq!(host.served().await, Served::Detached);
+            // The gateway that detached reaches the Runner no more.
+            assert_eq!(
+                code(first.process_status(&pipe).await.unwrap_err()),
+                ErrorCode::RunnerDisconnected
+            );
+
+            let second = host.connect().await;
+            let inherited = second.hello();
+            assert_eq!(inherited.identity, hello.identity);
+            assert!(inherited.previous_controller);
+            assert_eq!(inherited.inherited_processes, 2);
+            assert!(second.refuses_new_work());
+            output_with(&second, &pipe, "ready").await;
+            second
+                .write_stdin(RunnerWriteStdin {
+                    process_id: pipe.clone(),
+                    data: "hello\n".into(),
+                })
+                .await
+                .unwrap();
+            output_with(&second, &pipe, "got hello").await;
+            output_with(&second, &tty, "tty-ready").await;
+            assert_eq!(
+                second.resize(&tty, 40, 100).await.unwrap(),
+                RunnerResizeResult {
+                    rows: 40,
+                    cols: 100
+                }
+            );
+            let status = exited(&second, &pipe).await;
+            let elapsed = started.elapsed();
+            assert_eq!(
+                status.termination,
+                Some(ProcessTermination::Timeout),
+                "{status:?}"
+            );
+            assert!(
+                elapsed >= Duration::from_millis(3_000) && elapsed < Duration::from_secs(10),
+                "{elapsed:?}"
+            );
+            // Nothing new starts, and the workspace is not changed.
+            let marker = root.path().join("started");
+            let touch = command(
+                &["/usr/bin/touch", &marker.display().to_string()],
+                "proc-new",
+                5_000,
+                false,
+            );
+            assert_eq!(
+                code(second.exec(&ws, touch.clone()).await.unwrap_err()),
+                ErrorCode::RecoveryPending
+            );
+            let patch = RunnerApplyPatchRequest {
+                patch: "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch\n".into(),
+                expected_versions: Default::default(),
+                check_only: false,
+            };
+            assert_eq!(
+                code(second.apply_patch(&ws, patch.clone()).await.unwrap_err()),
+                ErrorCode::RecoveryPending
+            );
+            // An inherited process still ends on request.
+            second.terminate(&tty).await.unwrap();
+            assert_eq!(
+                exited(&second, &tty).await.termination,
+                Some(ProcessTermination::Terminated)
+            );
+            // The barrier stays once the inherited processes ended.
+            second.detach().await.unwrap();
+            assert_eq!(host.served().await, Served::Detached);
+            let third = host.connect().await;
+            assert!(third.hello().previous_controller);
+            assert_eq!(third.hello().inherited_processes, 0);
+            assert!(third.refuses_new_work());
+            assert_eq!(
+                code(third.exec(&ws, touch).await.unwrap_err()),
+                ErrorCode::RecoveryPending
+            );
+            assert_eq!(
+                code(third.apply_patch(&ws, patch).await.unwrap_err()),
+                ErrorCode::RecoveryPending
+            );
+            assert!(!marker.exists());
+            assert!(!root.path().join("added.txt").exists());
+            assert_eq!(third.stop_runner().await.unwrap(), 0);
+            assert_eq!(host.served().await, Served::Stopped { terminated: 0 });
+        }
+
+        /// Only a connection that starts work becomes the controller: one that only read leaves
+        /// the next gateway free to start work.
+        #[tokio::test]
+        async fn a_gateway_that_starts_nothing_leaves_no_controller() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let reader = host.connect().await;
+            reader.find(&ws, None, None, None).await.unwrap();
+            reader.detach().await.unwrap();
+            assert_eq!(host.served().await, Served::Detached);
+            let worker = host.connect().await;
+            assert!(!worker.hello().previous_controller);
+            assert!(!worker.refuses_new_work());
+            worker
+                .exec(
+                    &ws,
+                    command(&["/bin/sh", "-c", "exit 0"], "proc-ok", 5_000, false),
+                )
+                .await
+                .unwrap();
+            worker.close().await;
+            assert_eq!(host.served().await, Served::Lost);
+            assert!(host.connect().await.hello().previous_controller);
+        }
+
+        /// An explicit stop ends the processes, a tty's process group included, and the Runner.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_stop_ends_the_processes_and_the_runner() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let gateway = host.connect().await;
+            let pipe = ProcessId("proc-pipe".into());
+            let tty = ProcessId("proc-tty".into());
+            gateway
+                .exec(&ws, command(&["/bin/sleep", "30"], &pipe.0, 60_000, false))
+                .await
+                .unwrap();
+            gateway
+                .exec(
+                    &ws,
+                    command(
+                        &["/bin/sh", "-c", "echo tty-ready; exec sleep 30"],
+                        &tty.0,
+                        60_000,
+                        true,
+                    ),
+                )
+                .await
+                .unwrap();
+            output_with(&gateway, &tty, "tty-ready").await;
+            let started = Instant::now();
+            assert_eq!(gateway.stop_runner().await.unwrap(), 2);
+            assert!(
+                started.elapsed() < STOP_DRAIN_BOUND,
+                "{:?}",
+                started.elapsed()
+            );
+            assert_eq!(host.served().await, Served::Stopped { terminated: 2 });
+            assert_eq!(host.runner.occupied_slots(), 0);
+            for process_id in [&pipe, &tty] {
+                let status = exited(&host.runner, process_id).await;
+                assert_eq!(
+                    status.termination,
+                    Some(ProcessTermination::Terminated),
+                    "{status:?}"
+                );
+            }
+            assert_eq!(
+                code(gateway.process_status(&pipe).await.unwrap_err()),
+                ErrorCode::RunnerDisconnected
+            );
+        }
+
+        /// A stop request, as the Runner's own SIGTERM or SIGINT makes, ends the connection being
+        /// served and the processes; the gateway's later requests are refused.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_stop_request_ends_the_connection_and_the_processes() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let gateway = host.connect().await;
+            let pipe = ProcessId("proc-pipe".into());
+            gateway
+                .exec(&ws, command(&["/bin/sleep", "30"], &pipe.0, 60_000, false))
+                .await
+                .unwrap();
+            host.stop.request();
+            assert_eq!(host.served().await, Served::Stopped { terminated: 1 });
+            assert_eq!(
+                exited(&host.runner, &pipe).await.termination,
+                Some(ProcessTermination::Terminated)
+            );
+            disconnected(&gateway, &pipe).await;
+        }
+
+        /// A connection that ends without a word is a loss: the processes keep running, and an
+        /// exit while no gateway is connected reaches the next one.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_lost_connection_keeps_the_processes_and_their_exit_events() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let first = host.connect().await;
+            let quick = ProcessId("proc-quick".into());
+            let long = ProcessId("proc-long".into());
+            first
+                .exec(&ws, command(&["/bin/sleep", "2"], &quick.0, 60_000, false))
+                .await
+                .unwrap();
+            first
+                .exec(&ws, command(&["/bin/sleep", "30"], &long.0, 60_000, false))
+                .await
+                .unwrap();
+            first.close().await;
+            assert_eq!(host.served().await, Served::Lost);
+            assert_eq!(
+                exited(&host.runner, &quick).await.termination,
+                Some(ProcessTermination::Exited)
+            );
+            let (exits, mut exited_ids) = mpsc::unbounded_channel();
+            let second = host
+                .connect_reporting_exits(Arc::new(move |process_id: &str| {
+                    let _ = exits.send(process_id.to_string());
+                }))
+                .await;
+            assert!(second.hello().previous_controller);
+            assert_eq!(second.hello().inherited_processes, 1);
+            assert_eq!(
+                next_exit(&mut exited_ids).await.as_deref(),
+                Some("proc-quick")
+            );
+            assert_eq!(
+                second.process_status(&long).await.unwrap().state,
+                ProcessState::Running
+            );
+            second.terminate(&long).await.unwrap();
+            assert_eq!(
+                next_exit(&mut exited_ids).await.as_deref(),
+                Some("proc-long")
+            );
+        }
+
+        /// A gateway whose connection ends right after its `Detach` or `Stop` still detaches or
+        /// stops: the Runner acts on what it read, though its answer is lost.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_detach_or_stop_whose_answer_is_lost_still_holds() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let gateway = host.connect().await;
+            let long = ProcessId("proc-long".into());
+            gateway
+                .exec(&ws, command(&["/bin/sleep", "30"], &long.0, 60_000, false))
+                .await
+                .unwrap();
+            gateway.close().await;
+            assert_eq!(host.served().await, Served::Lost);
+            for (op, ending) in [
+                (RunnerOp::Detach, Served::Detached),
+                (RunnerOp::Stop, Served::Stopped { terminated: 1 }),
+            ] {
+                let (_, mut write) = host.connect_raw().into_split();
+                write_frame(&mut write, &WireEnvelope::request("rrpc-end".into(), op))
+                    .await
+                    .unwrap();
+                drop(write);
+                assert_eq!(host.served().await, ending);
+                assert_eq!(
+                    host.runner.process_status(&long).await.unwrap().state == ProcessState::Running,
+                    ending == Served::Detached
+                );
+            }
+            assert_eq!(
+                exited(&host.runner, &long).await.termination,
+                Some(ProcessTermination::Terminated)
+            );
+        }
+
+        /// When a call outlives the gateway's deadline the gateway closes the connection: its
+        /// later requests are refused, and the Runner treats the closed connection as a loss and
+        /// keeps the processes.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_call_past_its_deadline_closes_the_connection_and_keeps_the_processes() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let gateway = host
+                .connect()
+                .await
+                .with_call_deadline(Duration::from_millis(500));
+            // A process that never reads its stdin: a large write to it waits for its timeout.
+            let stuck = ProcessId("proc-stuck".into());
+            let long = ProcessId("proc-long".into());
+            gateway
+                .exec(&ws, command(&["/bin/sleep", "30"], &stuck.0, 2_000, false))
+                .await
+                .unwrap();
+            gateway
+                .exec(&ws, command(&["/bin/sleep", "30"], &long.0, 60_000, false))
+                .await
+                .unwrap();
+            let err = gateway
+                .write_stdin(RunnerWriteStdin {
+                    process_id: stuck.clone(),
+                    data: "x".repeat(4 * 1024 * 1024),
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, RunnerError::TransportAmbiguous { .. }),
+                "{err:?}"
+            );
+            assert_eq!(
+                code(gateway.process_status(&long).await.unwrap_err()),
+                ErrorCode::RunnerDisconnected
+            );
+            assert_eq!(host.served().await, Served::Lost);
+            let next = host.connect().await;
+            assert_eq!(
+                next.process_status(&long).await.unwrap().state,
+                ProcessState::Running
+            );
+            assert_eq!(
+                exited(&next, &stuck).await.termination,
+                Some(ProcessTermination::Timeout)
+            );
         }
     }
 }

@@ -150,7 +150,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 
 실행 중인 명령은 작업 공간을 점유합니다. 패치를 적용하거나 다른 명령을 시작하려면 기존 명령이 끝날 때까지 기다리거나 종료하세요. 읽기와 검색은 계속 가능합니다. 개발 서버를 오래 실행하는 작업 흐름이라면 수정 전에 서버를 멈추는 절차가 필요합니다.
 
-`workspace_info.execution.process.capabilities.lifetime`은 소유자가 MCP 세션이 아니라 러너 인스턴스임을 알립니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지하므로, 저장한 `process_id`로 다시 연결하면 됩니다. UDS worker 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 소유 서브트리가 종료되고 핸들이 사라집니다. 재시작은 `process_id`를 복구하지 않습니다. spawn 응답을 받기 전에 `process_id`를 잃으면 `process_status`로 찾지 말고 명령을 중복 시작하지 마세요.
+`workspace_info.execution.process.capabilities.lifetime`은 소유자가 MCP 세션이 아니라 러너 인스턴스임을 알립니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지하므로, 저장한 `process_id`로 다시 연결하면 됩니다. UDS worker 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 소유 서브트리가 종료되고 핸들이 사라집니다. 재시작은 `process_id`를 복구하지 않습니다. 아직 지원하는 모드가 아닌 [독립 Runner](runner-isolation.md#independent-runner)에서는 `runner_disconnect`가 `keep_running`이고, `gateway_shutdown`은 게이트웨이가 detach하면 `keep_running`, Runner를 중지하면 `terminate`입니다. 그 게이트웨이가 하는 일은 `initialize.instructions`에서 확인하세요. spawn 응답을 받기 전에 `process_id`를 잃으면 `process_status`로 찾지 말고 명령을 중복 시작하지 마세요.
 
 ## 보류된 변경 확인
 

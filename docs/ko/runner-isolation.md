@@ -13,11 +13,46 @@
 
 `in-process`는 `codespace-mcp` 안에서 프로세스를 관리합니다. `uds`(Unix domain socket, Unix 도메인 소켓)는 같은 호스트의 `codespace-codex-runtime` 안에서 같은 관리 코드를 실행합니다. worker는 시작 시 Codex의 프로세스 보호 설정을 적용하고 전용 Unix 소켓을 엽니다. worker 자체를 보호하는 것과 실행할 명령에 샌드박스를 적용하는 것은 별개입니다.
 
-게이트웨이는 임시 디렉터리 또는 `CODESPACE_RUNNER_DIR` 아래에 권한 0700의 고유 디렉터리를 만듭니다. 내부 통신은 u32 길이 접두부, 버전 7 핸드셰이크, 요청 ID, 프로세스 종료 이벤트를 사용하는 CodeSpace JSON입니다. Codex App Server RPC가 아닙니다. 같은 연결에서의 요청 재처리는 재접속 복구를 뜻하지 않습니다.
+게이트웨이는 임시 디렉터리 또는 `CODESPACE_RUNNER_DIR` 아래에 권한 0700의 고유 디렉터리를 만듭니다. 내부 통신은 u32 길이 접두부, 버전 8 핸드셰이크, 요청 ID, 프로세스 종료 이벤트를 사용하는 CodeSpace JSON입니다. Codex App Server RPC가 아닙니다. 같은 연결에서의 요청 재처리는 재접속 복구를 뜻하지 않습니다.
 
-관리 프로세스의 수명은 MCP 연결이 아니라 러너 인스턴스가 소유합니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지합니다. 게이트웨이와 worker의 UDS 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 관리 중인 worker와 자식 프로세스가 종료되고 핸들이 사라집니다. 종료할 때 게이트웨이는 worker와의 연결을 닫으므로 worker는 종료하면서 자기 프로세스를 끝내고, 5초 뒤에도 실행 중인 worker는 강제로 종료됩니다. 재시작은 `process_id`를 복구하지 않습니다.
+관리 프로세스의 수명은 MCP 연결이 아니라 러너 인스턴스가 소유합니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지합니다. 게이트웨이와 worker의 UDS 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 관리 중인 worker와 자식 프로세스가 종료되고 핸들이 사라집니다. 종료할 때 게이트웨이는 worker와의 연결을 닫으므로 worker는 종료하면서 자기 프로세스를 끝내고, 5초 뒤에도 실행 중인 worker는 강제로 종료됩니다. 재시작은 `process_id`를 복구하지 않습니다. [독립 Runner](#independent-runner)는 예외로, 그 프로세스는 게이트웨이보다 오래 삽니다.
 
 **자식 프로세스를 시작하는 방식.** 파이프 명령, `tty: true` 명령, 패치 도우미, Linux 샌드박스 도우미, worker는 fork와 exec로 시작합니다. 모두 exec 전에 자식 프로세스 안에서 실행할 단계가 있기 때문입니다. 파이프, 패치 도우미, 샌드박스 도우미, worker 자식은 표준 디스크립터만 남기고([#79](https://github.com/novelKR/CodeSpace/issues/79)), PTY 자식은 새 세션의 리더가 됩니다. macOS에서는 같은 프로세스의 다른 스레드가 시스템 알림 라이브러리(libnotify)를 초기화하는 도중에 fork한 자식이 명령을 실행하기도 전에 `fork` 안에서 신호를 받아 종료됩니다. `process_status`는 이렇게 종료된 파이프 명령을 `signaled`로, `tty: true` 명령을 종료 코드 1로 끝난 것으로 보고합니다([Agent Loop 연동](agent-integration.md)). 그래서 `codespace-mcp`와 `codespace-codex-runtime`은 스레드를 시작하기 전에 이 초기화를 마치고, 위의 spawn은 모두 fork하기 전에 초기화를 마칩니다. 이 조치는 이 원인 하나를 없앨 뿐이며, 다중 스레드 프로세스에서 fork하는 것을 일반적으로 안전하게 만들지는 않습니다.
+
+<a id="independent-runner"></a>
+
+## 독립 Runner
+
+> **아직 지원하는 모드가 아닙니다.** 독립 Runner는 게이트웨이 복구의 첫 단계입니다. 게이트웨이는 독립 Runner에 다시 연결하지 않으며, 다른 게이트웨이 뒤에 연결한 게이트웨이는 새 작업을 시작할 수 없습니다. 재연결과 상태 대조는 다음 단계에서 더하며, 이 모드는 qualification을 마친 뒤에야 지원합니다.
+
+독립 Runner는 자신에게 연결하는 게이트웨이보다 오래 삽니다. 게이트웨이가 종료되거나 재시작되거나 강제로 종료되어도 프로세스와 그 출력, timeout은 계속됩니다. 운영자나 하네스가 독립 Runner를 시작하고, 게이트웨이는 연결만 합니다.
+
+```bash
+codespace-codex-runtime "$RUNNER_DIR/runner.sock" --lifecycle independent
+codespace-mcp --runner uds --runner-socket "$RUNNER_DIR/runner.sock" \
+  --runner-lifecycle independent --runner-exit-intent detach
+```
+
+Runner는 소켓 디렉터리를 권한 0700으로 직접 만듭니다. 이미 있는 디렉터리는 같은 사용자의 디렉터리이고 권한이 0700이며 심볼릭 링크가 아닐 때만 받아들입니다. 이미 있는 디렉터리를 바꾸지 않으며 `/`, `/tmp`, `/var/tmp`, `$HOME`은 거부합니다. 게이트웨이 연결은 한 번에 하나씩 받고, 앞 연결의 요청이 모두 끝난 뒤에 다음 연결을 받습니다. 중지할 때는 소켓을 지우고, 디렉터리도 직접 만든 것이면 지웁니다.
+
+게이트웨이의 `--runner-lifecycle`이 Runner의 수명 모드와 다르거나, `--runner-lifecycle independent`에 `--runner uds`, `--runner-socket`, `--runner-exit-intent` 중 하나가 없거나, `--runtime-bin`이나 `--runner-dir`가 함께 있으면 게이트웨이는 시작하지 않습니다. `--runner-exit-intent`는 `--runner-lifecycle independent`와 함께일 때만 받습니다.
+
+| 사건 | 관리 worker(기본값) | 독립 Runner |
+| --- | --- | --- |
+| 게이트웨이 종료: stdin이 끝나거나 SIGTERM이나 SIGINT를 받음 | worker가 프로세스를 끝내고 종료합니다 | `--runner-exit-intent detach`면 게이트웨이가 detach하고 프로세스는 계속됩니다. `stop`이면 Runner가 프로세스를 끝내고 종료합니다 |
+| 재시작하려고 게이트웨이에 SIGUSR1을 보냄 | 처리하지 않으므로 게이트웨이가 강제 종료된 경우와 같습니다 | 종료 의도와 관계없이 게이트웨이가 detach하고 프로세스는 계속됩니다 |
+| 게이트웨이가 강제 종료되거나, detach나 stop 없이 연결이 끝남 | worker가 프로세스를 끝내고 종료합니다 | 중지가 아니라 연결 손실입니다. 프로세스는 계속되고 Runner는 다음 게이트웨이를 기다립니다 |
+| Runner 호출이 120초 deadline을 넘김 | 게이트웨이가 연결을 닫고, worker는 프로세스를 끝내고 종료합니다 | 게이트웨이가 연결을 닫고, 프로세스는 계속됩니다 |
+| 게이트웨이가 Runner에 중지를 요청하거나, Runner가 SIGTERM이나 SIGINT를 받음 | 관리 worker는 요청을 거부하며 이 신호를 처리하지 않습니다 | Runner가 프로세스를 끝내고 최대 5초 동안 기다린 뒤 종료합니다 |
+| 프로세스가 timeout에 도달함 | 프로세스를 강제로 종료합니다 | 게이트웨이 연결 여부와 관계없이 원래 deadline에 프로세스를 강제로 종료합니다 |
+
+프로세스를 끝낼 때 tty 프로세스는 그 프로세스 그룹에 신호를 보내지만, 파이프 프로세스는 그 프로세스에만 보냅니다. 파이프 프로세스에는 자기 프로세스 그룹이 없으므로, 그 프로세스가 시작한 프로세스는 중지할 때를 포함해 더 오래 남을 수 있습니다.
+
+**연결을 잃었을 때.** 게이트웨이는 다시 연결하지 않습니다. Runner와의 연결이 끝나면 Runner가 필요한 요청을 모두 `RUNNER_DISCONNECTED`로 거부하며, Runner의 프로세스에 다시 닿으려면 게이트웨이를 재시작해야 합니다. 연결이 끝날 때 이미 보낸 요청은 지금처럼 불확실한 결과를 받습니다. 실행이라면 `dispatch_status: unknown`입니다.
+
+**이전 게이트웨이가 있었을 때.** 새로 시작한 Runner에 처음 연결한 게이트웨이는 관리 worker와 같이 동작합니다. 한 게이트웨이가 그 Runner에서 작업(실행, 패치, DevGuard를 쓰면 준비나 launch)을 시작한 뒤에는, 다음 게이트웨이들이 Runner의 프로세스를 넘겨받습니다. 그 게이트웨이는 `process_id`로 프로세스를 조회하고, 출력을 읽고, stdin에 쓰고, 크기를 바꾸고, 종료할 수 있지만, 새 실행, 패치, 승인 재개는 `RECOVERY_PENDING`으로 거부하고 승인은 그대로 둡니다. 넘겨받은 프로세스가 모두 끝난 뒤에도 마찬가지이므로, 작업을 다시 시작하려면 Runner를 중지하고 새로 시작합니다. 게이트웨이는 Runner의 식별 정보(프로세스 ID, 부팅과 시작 시각), 이전에 다른 게이트웨이가 제어했는지, 넘겨받은 프로세스 수를 로그에 남깁니다.
+
+**DevGuard.** `devguard` feature로 빌드한 독립 Runner는 worker의 DevGuard 설정으로 스스로 등록하며, 소비자 secret은 `--devguard-credential-file`로 지정한 비공개 파일에서 직접 읽습니다. `--devguard register`로 시작한 게이트웨이는 Runner에 secret을 넘기지 않습니다. 자원 참여를 요구하는 workspace는 Runner가 등록하고 launch helper로 실행한다고 알릴 때만 실행하며, 그렇지 않으면 `RESOURCE_POLICY_UNSUPPORTED`로 거부합니다. [DevGuard 결합](devguard-integration.md#resource-gateway-recovery)을 참고하세요.
 
 <a id="macos-docker-없음"></a>
 <a id="macos-docker-없음"></a>

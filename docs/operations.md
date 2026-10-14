@@ -109,7 +109,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. MCP/HTTP client disconnect does not kill those processes. The default remains `in-process`.
+The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. MCP/HTTP client disconnect does not kill those processes. The default remains `in-process`. An [independent Runner](runner-isolation.md#independent-runner), whose processes outlive the gateway, is not a supported mode yet.
 
 <a id="logs"></a>
 <a id="recovery-after-disconnect-or-restart"></a>

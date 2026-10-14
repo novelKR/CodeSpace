@@ -10,11 +10,46 @@ There are three separate questions: which process runs the work, whether command
 
 `in-process` runs the supervisor inside `codespace-mcp`. `uds` (Unix domain socket) runs that supervisor inside `codespace-codex-runtime` on the same host. The worker starts with Codex process hardening and binds a private Unix socket. Hardening the worker does not sandbox its commands.
 
-The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 7, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery.
+The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 8, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery.
 
-Managed process lifetime is owned by the runner instance, not the MCP connection. Streamable HTTP or MCP client disconnect keeps processes running. Gateway/worker UDS disconnect or gateway shutdown (including stdio EOF) ends the owned worker and its children; process handles are lost. At shutdown the gateway closes the worker's connection, so the worker ends its processes as it exits; a worker still running 5 seconds later is killed. Restart does not restore `process_id`.
+Managed process lifetime is owned by the runner instance, not the MCP connection. Streamable HTTP or MCP client disconnect keeps processes running. Gateway/worker UDS disconnect or gateway shutdown (including stdio EOF) ends the owned worker and its children; process handles are lost. At shutdown the gateway closes the worker's connection, so the worker ends its processes as it exits; a worker still running 5 seconds later is killed. Restart does not restore `process_id`. An [independent Runner](#independent-runner) is the exception: its processes outlive the gateway.
 
 **How children start.** Pipe commands, `tty: true` commands, the patch helper, the Linux sandbox helper and the worker are started with fork and exec, because each runs a step in the child before exec: pipe, patch-helper, sandbox-helper and worker children keep only their standard descriptors ([#79](https://github.com/novelKR/CodeSpace/issues/79)), and a PTY child becomes the leader of a new session. On macOS, a child forked while another thread of the same process is initializing the system's notification library (libnotify) is killed by a signal inside `fork`, before the command runs. `process_status` reports a pipe command killed this way as `signaled`, and a `tty: true` command as an exit with code 1 ([Agent Loop integration](agent-integration.md)). So `codespace-mcp` and `codespace-codex-runtime` complete that initialization before they start any thread, and every one of these spawns completes it before it forks. This removes that one cause; it does not make forking from a multithreaded process safe in general.
+
+<a id="independent-runner"></a>
+
+## Independent Runner
+
+> **Not a supported mode yet.** The independent Runner is the first step of Gateway recovery. A gateway does not reconnect to it, and a gateway that connects after another one cannot start new work. Later steps add reconnection and reconciliation, and the mode is supported only once it is qualified.
+
+An independent Runner outlives the gateways that connect to it: its processes, their output and their timeouts carry on when a gateway exits, restarts or is killed. An operator or a harness starts it, and a gateway only connects to it:
+
+```bash
+codespace-codex-runtime "$RUNNER_DIR/runner.sock" --lifecycle independent
+codespace-mcp --runner uds --runner-socket "$RUNNER_DIR/runner.sock" \
+  --runner-lifecycle independent --runner-exit-intent detach
+```
+
+The Runner creates its socket's directory with mode 0700, or accepts an existing one only when it is a directory of the same user with mode 0700 and not a symbolic link. It never changes an existing directory, and it refuses `/`, `/tmp`, `/var/tmp` and `$HOME`. It serves one gateway connection at a time, and accepts the next only after every request of the previous one has ended. When it stops, it removes its socket, and the directory if it created it.
+
+A gateway does not start when its `--runner-lifecycle` differs from the Runner's lifecycle, or when `--runner-lifecycle independent` comes without `--runner uds`, `--runner-socket` or `--runner-exit-intent`, or with `--runtime-bin` or `--runner-dir`. `--runner-exit-intent` is accepted only with `--runner-lifecycle independent`.
+
+| Event | Managed worker (default) | Independent Runner |
+| --- | --- | --- |
+| The gateway shuts down: its stdin ends, or it receives SIGTERM or SIGINT | The worker ends its processes and exits | With `--runner-exit-intent detach` the gateway detaches, and the processes carry on. With `stop` the Runner ends its processes and exits |
+| The gateway receives SIGUSR1 to be restarted | Not handled: as when the gateway is killed | The gateway detaches whatever its exit intent, and the processes carry on |
+| The gateway is killed, or its connection ends without a detach or a stop | The worker ends its processes and exits | A loss, never a stop: the processes carry on, and the Runner waits for the next gateway |
+| A call to the Runner passes its 120-second deadline | The gateway closes the connection, and the worker ends its processes and exits | The gateway closes the connection, and the processes carry on |
+| A gateway asks the Runner to stop, or the Runner receives SIGTERM or SIGINT | A managed worker refuses the request and does not handle these signals | The Runner ends its processes, waits up to 5 seconds for them, and exits |
+| A process reaches its timeout | The process is killed | The process is killed at its original deadline, whether or not a gateway is connected |
+
+Ending a process signals a tty process's process group, but a pipe process alone: a pipe process has no process group of its own, so the processes it started may outlive it, a stop included.
+
+**A lost connection.** A gateway does not reconnect. Once its connection to the Runner has ended, it refuses every request that needs the Runner with `RUNNER_DISCONNECTED`, and it has to be restarted to reach the Runner's processes again. A request that was already sent when the connection ended keeps the uncertain result it has today, such as `dispatch_status: unknown` for an execution.
+
+**After an earlier gateway.** The first gateway that connects to a newly started Runner works as it does with a managed worker. Once a gateway has started work there (an execution, a patch, or with DevGuard a preparation or a launch), every later gateway inherits the Runner's processes: it can query, read, write to, resize and terminate them with their `process_id`, but it refuses new executions, patches and approval resumes with `RECOVERY_PENDING`, and leaves the approvals as they are. This holds after the inherited processes have ended too; to start work again, stop the Runner and start a new one. The gateway logs the Runner's identity (its process ID, boot and start time), whether a gateway controlled it before and how many processes it inherited.
+
+**DevGuard.** With the `devguard` feature, the independent Runner registers itself with the worker's DevGuard settings and reads the consumer secret from the private file given with `--devguard-credential-file`; its gateway, started with `--devguard register`, hands it no secret. Workspaces that require resource participation run only when the Runner states that it registers and launches through a launch helper, and are refused with `RESOURCE_POLICY_UNSUPPORTED` otherwise. See [DevGuard integration](devguard-integration.md#resource-gateway-recovery).
 
 <a id="macos-no-docker"></a>
 

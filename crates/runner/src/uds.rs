@@ -3,13 +3,17 @@
 //! `Host` + `UdsRunner` is opt-in **transport** on the same host. It does
 //! not claim Linux container isolation. P0 is 1:1: one gateway connection
 //! per worker. Replay is connection-local.
+//!
+//! An independent Runner (P1R-C01) outlives the gateway's connection. The client never
+//! reconnects: once its connection ends, every later request is refused with
+//! `RUNNER_DISCONNECTED` and the gateway has to be restarted.
 
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -26,8 +30,8 @@ use crate::wire::{
 };
 use crate::{
     Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult, RunnerError, RunnerExecRequest,
-    RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult, RunnerResizeResult,
-    RunnerWriteStdin, ShellRelease,
+    RunnerExecResult, RunnerIdentity, RunnerLifecycle, RunnerProcessStatus, RunnerReadProcess,
+    RunnerReadResult, RunnerResizeResult, RunnerWriteStdin, ShellRelease,
 };
 
 /// Transport deadline for one RPC. Longer than the default exec timeout
@@ -37,11 +41,34 @@ pub const RUNNER_CALL_DEADLINE: Duration = Duration::from_secs(120);
 
 pub type DisconnectHook = Arc<dyn Fn() + Send + Sync>;
 
+/// What the worker's `Hello` stated about its lifecycle (P1R-C01).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerHello {
+    pub lifecycle: RunnerLifecycle,
+    pub identity: Option<RunnerIdentity>,
+    /// An earlier gateway controlled this independent Runner.
+    pub previous_controller: bool,
+    /// Processes still running when this connection began.
+    pub inherited_processes: u32,
+}
+
+/// The refusal of a request to an independent Runner after the gateway's connection to it
+/// ended (P1R-C01): the request never left, and the gateway does not reconnect.
+pub fn runner_disconnected() -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::RunnerDisconnected,
+        "this gateway lost its connection to the independent Runner and does not reconnect; \
+         the Runner's processes keep running. Restart the gateway to reach them",
+    )
+}
+
 struct Shared {
     writer: Mutex<tokio::net::unix::OwnedWriteHalf>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<WireEnvelope, RunnerError>>>>,
     alive: AtomicBool,
     on_disconnect: DisconnectHook,
+    /// What the worker's `Hello` stated (P1R-C01).
+    hello: OnceLock<RunnerHello>,
     /// The worker's `Hello` stated that it answers `Registration` (CSRG-U2).
     #[cfg(feature = "devguard")]
     registration: AtomicBool,
@@ -56,6 +83,7 @@ struct Shared {
 pub struct UdsRunner {
     shared: Arc<Shared>,
     next_id: Arc<AtomicU64>,
+    call_deadline: Duration,
 }
 
 impl Clone for UdsRunner {
@@ -63,6 +91,7 @@ impl Clone for UdsRunner {
         Self {
             shared: self.shared.clone(),
             next_id: self.next_id.clone(),
+            call_deadline: self.call_deadline,
         }
     }
 }
@@ -103,6 +132,7 @@ impl UdsRunner {
             pending: Mutex::new(HashMap::new()),
             alive: AtomicBool::new(true),
             on_disconnect,
+            hello: OnceLock::new(),
             #[cfg(feature = "devguard")]
             registration: AtomicBool::new(false),
             #[cfg(feature = "devguard")]
@@ -117,12 +147,35 @@ impl UdsRunner {
         Self {
             shared,
             next_id: Arc::new(AtomicU64::new(1)),
+            call_deadline: RUNNER_CALL_DEADLINE,
         }
+    }
+
+    /// This client with another deadline per call than [`RUNNER_CALL_DEADLINE`]. For tests.
+    #[doc(hidden)]
+    pub fn with_call_deadline(mut self, deadline: Duration) -> Self {
+        self.call_deadline = deadline;
+        self
     }
 
     pub async fn handshake(&self) -> Result<(), RunnerError> {
         match self.call(RunnerOp::Hello).await {
             Ok(hello @ RunnerOpResult::Hello { protocol, .. }) if protocol == WIRE_PROTOCOL => {
+                if let RunnerOpResult::Hello {
+                    lifecycle,
+                    identity,
+                    previous_controller,
+                    inherited_processes,
+                    ..
+                } = &hello
+                {
+                    let _ = self.shared.hello.set(RunnerHello {
+                        lifecycle: *lifecycle,
+                        identity: identity.clone(),
+                        previous_controller: *previous_controller,
+                        inherited_processes: *inherited_processes,
+                    });
+                }
                 #[cfg(feature = "devguard")]
                 if let RunnerOpResult::Hello {
                     registration,
@@ -161,6 +214,52 @@ impl UdsRunner {
         }
     }
 
+    /// What the worker's `Hello` stated about its lifecycle (P1R-C01); before the handshake, a
+    /// managed worker's defaults.
+    pub fn hello(&self) -> RunnerHello {
+        self.shared.hello.get().cloned().unwrap_or_default()
+    }
+
+    fn independent(&self) -> bool {
+        self.shared
+            .hello
+            .get()
+            .is_some_and(|hello| hello.lifecycle == RunnerLifecycle::Independent)
+    }
+
+    /// The worker is an independent Runner that an earlier gateway controlled (P1R-C01). This
+    /// gateway then queries, reads, writes to, resizes and terminates the processes it inherits,
+    /// but starts no new execution, patch or approval resume: the Runner refuses them as well.
+    pub fn refuses_new_work(&self) -> bool {
+        self.shared.hello.get().is_some_and(|hello| {
+            hello.lifecycle == RunnerLifecycle::Independent && hello.previous_controller
+        })
+    }
+
+    /// Leave the independent Runner, whose processes, output and timeouts carry on, and close
+    /// the connection (P1R-C01).
+    pub async fn detach(&self) -> Result<(), RunnerError> {
+        let detached = match self.call(RunnerOp::Detach).await {
+            Ok(RunnerOpResult::Detached) => Ok(()),
+            Ok(other) => Err(unexpected(other)),
+            Err(err) => Err(err),
+        };
+        self.close().await;
+        detached
+    }
+
+    /// Stop the independent Runner: it ends every process and exits (P1R-C01). How many
+    /// processes were still running.
+    pub async fn stop_runner(&self) -> Result<u32, RunnerError> {
+        let stopped = match self.call(RunnerOp::Stop).await {
+            Ok(RunnerOpResult::Stopped { terminated }) => Ok(terminated),
+            Ok(other) => Err(unexpected(other)),
+            Err(err) => Err(err),
+        };
+        self.close().await;
+        stopped
+    }
+
     /// Whether the worker's `Hello` stated that it answers `Registration` (CSRG-U2).
     #[cfg(feature = "devguard")]
     pub fn states_registration(&self) -> bool {
@@ -182,6 +281,9 @@ impl UdsRunner {
         }
         match self.call(RunnerOp::Registration).await {
             Ok(RunnerOpResult::Registration(info)) => Ok(info),
+            Err(RunnerError::Execution(body)) if body.code == ErrorCode::RunnerDisconnected => {
+                Err(ResourceRegistrationState::OwnerUnreachable)
+            }
             Err(RunnerError::Execution(_)) => Err(ResourceRegistrationState::UnsupportedMode),
             _ => Err(ResourceRegistrationState::OwnerUnreachable),
         }
@@ -319,6 +421,10 @@ impl UdsRunner {
 
     async fn call(&self, op: RunnerOp) -> Result<RunnerOpResult, RunnerError> {
         if !self.shared.alive.load(Ordering::SeqCst) {
+            // An independent Runner's connection is not made again (P1R-C01).
+            if self.independent() {
+                return Err(RunnerError::execution(runner_disconnected()));
+            }
             return Err(RunnerError::before_dispatch("runner socket closed"));
         }
         let request_id = format!("rrpc-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
@@ -342,7 +448,7 @@ impl UdsRunner {
             }
             return Err(err);
         }
-        match timeout(RUNNER_CALL_DEADLINE, rx).await {
+        match timeout(self.call_deadline, rx).await {
             Ok(Ok(Ok(response))) => decode_response(response),
             Ok(Ok(Err(err))) => Err(err),
             Ok(Err(_)) => Err(RunnerError::ambiguous("runner socket closed")),

@@ -16,6 +16,38 @@ pub enum RunnerMode {
     Uds,
 }
 
+/// How a UDS Runner's processes relate to the gateway (P1R-C01).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum RunnerLifecycleMode {
+    /// The worker belongs to the gateway, which starts it or connects to it through
+    /// `--runner-socket`; its processes end with the gateway's connection.
+    #[default]
+    Managed,
+    /// An independent Runner that an operator or a harness started: the gateway only connects
+    /// to it through `--runner-socket`, and its processes outlive the gateway. Not a supported
+    /// mode yet.
+    Independent,
+}
+
+/// What a gateway asks of its independent Runner when it shuts down normally (P1R-C01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RunnerExitIntent {
+    /// Leave the Runner, whose processes keep running.
+    Detach,
+    /// Stop the Runner: it ends its processes and exits.
+    Stop,
+}
+
+/// The gateway's Runner lifecycle once its settings were checked together (P1R-C01).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GatewayLifecycle {
+    /// The in-process runner, or a worker that belongs to the gateway.
+    #[default]
+    Managed,
+    /// An independent Runner, and what a normal shutdown asks of it.
+    Independent { exit_intent: RunnerExitIntent },
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "codespace-mcp",
@@ -69,6 +101,18 @@ pub struct Cli {
     #[arg(long, env = "CODESPACE_RUNTIME_BIN")]
     pub runtime_bin: Option<std::path::PathBuf>,
 
+    /// The UDS Runner's lifecycle: `managed` (default), or `independent` for a Runner that an
+    /// operator or a harness started, which the gateway only connects to through
+    /// `--runner-socket` (P1R-C01). `independent` is not a supported mode yet.
+    #[arg(long, value_enum, default_value_t = RunnerLifecycleMode::Managed)]
+    pub runner_lifecycle: RunnerLifecycleMode,
+
+    /// Required with `--runner-lifecycle independent`, and only with it: what a normal
+    /// shutdown (end of stdin, SIGTERM, SIGINT) asks of the Runner, `detach` or `stop`. SIGUSR1
+    /// ends the gateway for a restart and always detaches.
+    #[arg(long, value_enum)]
+    pub runner_exit_intent: Option<RunnerExitIntent>,
+
     /// Opt-in DevGuard connection: status (CSRG-U1) or the execution owner's registration
     /// (CSRG-U2).
     #[cfg(feature = "devguard")]
@@ -77,6 +121,41 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// The gateway's Runner lifecycle, or why its settings do not fit together (P1R-C01).
+    pub fn lifecycle(&self) -> Result<GatewayLifecycle, String> {
+        let exit_intent = match (self.runner_lifecycle, self.runner_exit_intent) {
+            (RunnerLifecycleMode::Managed, None) => return Ok(GatewayLifecycle::Managed),
+            (RunnerLifecycleMode::Managed, Some(_)) => {
+                return Err(
+                    "--runner-exit-intent is only for --runner-lifecycle independent".into(),
+                )
+            }
+            (RunnerLifecycleMode::Independent, None) => {
+                return Err(
+                    "--runner-lifecycle independent needs --runner-exit-intent detach \
+                            or stop"
+                        .into(),
+                )
+            }
+            (RunnerLifecycleMode::Independent, Some(exit_intent)) => exit_intent,
+        };
+        if self.runner != RunnerMode::Uds {
+            return Err("--runner-lifecycle independent needs --runner uds".into());
+        }
+        if self.runtime_bin.is_some() || self.runner_dir.is_some() {
+            return Err(
+                "--runner-lifecycle independent connects to a Runner that an operator \
+                        or a harness started; --runtime-bin and --runner-dir are for a worker \
+                        the gateway starts"
+                    .into(),
+            );
+        }
+        if self.runner_socket.is_none() {
+            return Err("--runner-lifecycle independent needs --runner-socket".into());
+        }
+        Ok(GatewayLifecycle::Independent { exit_intent })
+    }
+
     pub fn mode(&self) -> TransportMode {
         if self.http {
             TransportMode::Http
@@ -124,6 +203,83 @@ mod tests {
         let host =
             Cli::try_parse_from(["codespace-mcp", "--runner", "in-process"]).expect("in-process");
         assert_eq!(host.runner, RunnerMode::InProcess);
+    }
+
+    /// An independent Runner is only connected to, through `--runner-socket`, and a normal
+    /// shutdown's intent toward it is always stated; a managed one takes no intent (P1R-C01).
+    #[test]
+    fn only_an_independent_runner_with_an_exit_intent_is_accepted() {
+        let lifecycle = |args: &[&str]| {
+            let mut argv = vec!["codespace-mcp"];
+            argv.extend_from_slice(args);
+            let mut cli = Cli::try_parse_from(argv).expect("parses");
+            // Runner settings that the environment of the test run may give.
+            if !args.contains(&"--runner") {
+                cli.runner = RunnerMode::InProcess;
+            }
+            if !args.contains(&"--runner-socket") {
+                cli.runner_socket = None;
+            }
+            if !args.contains(&"--runner-dir") {
+                cli.runner_dir = None;
+            }
+            if !args.contains(&"--runtime-bin") {
+                cli.runtime_bin = None;
+            }
+            cli.lifecycle()
+        };
+        let socket = ["--runner", "uds", "--runner-socket", "/run/cs/runner.sock"];
+        let independent = ["--runner-lifecycle", "independent"];
+        assert_eq!(lifecycle(&[]), Ok(GatewayLifecycle::Managed));
+        assert_eq!(lifecycle(&socket), Ok(GatewayLifecycle::Managed));
+        for (intent, exit_intent) in [
+            ("detach", RunnerExitIntent::Detach),
+            ("stop", RunnerExitIntent::Stop),
+        ] {
+            assert_eq!(
+                lifecycle(&[&socket[..], &independent, &["--runner-exit-intent", intent]].concat()),
+                Ok(GatewayLifecycle::Independent { exit_intent })
+            );
+        }
+        let detach = ["--runner-exit-intent", "detach"];
+        for (args, problem) in [
+            ([&socket[..], &detach].concat(), "only for"),
+            (
+                [&socket[..], &independent].concat(),
+                "needs --runner-exit-intent",
+            ),
+            ([&independent[..], &detach].concat(), "needs --runner uds"),
+            (
+                [&["--runner", "uds"][..], &independent, &detach].concat(),
+                "needs --runner-socket",
+            ),
+            (
+                [
+                    &socket[..],
+                    &independent,
+                    &detach,
+                    &["--runtime-bin", "/usr/local/bin/codespace-codex-runtime"],
+                ]
+                .concat(),
+                "--runtime-bin",
+            ),
+            (
+                [
+                    &socket[..],
+                    &independent,
+                    &detach,
+                    &["--runner-dir", "/run/cs"],
+                ]
+                .concat(),
+                "--runner-dir",
+            ),
+        ] {
+            let err = lifecycle(&args).expect_err(problem);
+            assert!(err.contains(problem), "{args:?}: {err}");
+        }
+        let err = Cli::try_parse_from(["codespace-mcp", "--runner-lifecycle", "detached"])
+            .expect_err("an unknown lifecycle");
+        assert!(err.to_string().contains("detached"), "{err}");
     }
 
     /// Without the `devguard` feature the gateway has no DevGuard setting at all.

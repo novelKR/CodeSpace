@@ -50,6 +50,8 @@ pub struct CodeSpace {
     /// The execution owner's registration `workspace_info` reports (CSRG-U2).
     #[cfg(feature = "devguard")]
     pub(crate) registration: Option<Arc<crate::devguard::Registration>>,
+    /// Whether the runner is an independent Runner, and what a shutdown asks of it (P1R-C01).
+    pub(crate) lifecycle: crate::config::GatewayLifecycle,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -143,6 +145,62 @@ tty_size is not an exec_command argument.
 
 Claim user intents only at major checkpoints and before work_finish.";
 
+/// The lifetime paragraph of [`MCP_INSTRUCTIONS`]: the in-process runner's, or a worker's that
+/// belongs to the gateway.
+const MANAGED_LIFETIME: &str = "\
+Managed process lifetime is owned by the runner instance, not the MCP \
+session. Client or HTTP disconnect keeps the process running. Losing the \
+UDS worker connection or shutting down the gateway terminates the owned \
+subtree and drops handles. Restart does not recover process_id. If you lose \
+the spawn response before receiving process_id, do not search for the lost \
+handle and do not start a duplicate command.";
+
+/// The lifetime paragraph for an independent Runner (P1R-C01), after what the gateway's
+/// shutdown does. It states only what the Runner guarantees: a pipe process has no process
+/// group of its own, so terminating one signals that process alone.
+const INDEPENDENT_LIFETIME: &str = "\
+Managed process lifetime is owned by an independent Runner that this \
+gateway did not start, not by the MCP session or the gateway. Client or \
+HTTP disconnect keeps the process running. {shutdown} If this gateway \
+loses its Runner connection, the processes keep running, but this gateway \
+refuses every later request that needs the Runner with RUNNER_DISCONNECTED \
+until it is restarted. A restarted gateway can read the output and status \
+of, write to, resize and terminate the processes started before, with the \
+same process_id, but it refuses new exec_command, apply_patch and \
+operation_resume with RECOVERY_PENDING until the Runner is stopped and a \
+new one is started. Terminating a pipe process signals that process only, \
+not its process group, so processes it started may outlive it. If you lose \
+the spawn response before receiving process_id, do not search for the lost \
+handle and do not start a duplicate command.";
+
+const DETACH_SHUTDOWN: &str = "\
+When this gateway shuts down it detaches: the Runner keeps the processes, \
+their output and their timeouts.";
+
+const STOP_SHUTDOWN: &str = "\
+When this gateway shuts down it stops the Runner, which terminates every \
+process, a pipe process alone and a tty process with its process group, \
+and exits, so their handles are lost. A gateway ended to be restarted \
+detaches instead and leaves them running.";
+
+/// The instructions for the gateway's runner (P1R-C01).
+fn instructions(lifecycle: crate::config::GatewayLifecycle) -> String {
+    use crate::config::{GatewayLifecycle, RunnerExitIntent};
+    match lifecycle {
+        GatewayLifecycle::Managed => MCP_INSTRUCTIONS.to_string(),
+        GatewayLifecycle::Independent { exit_intent } => {
+            let shutdown = match exit_intent {
+                RunnerExitIntent::Detach => DETACH_SHUTDOWN,
+                RunnerExitIntent::Stop => STOP_SHUTDOWN,
+            };
+            MCP_INSTRUCTIONS.replace(
+                MANAGED_LIFETIME,
+                &INDEPENDENT_LIFETIME.replace("{shutdown}", shutdown),
+            )
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 struct OkBody {
     ok: bool,
@@ -181,7 +239,47 @@ impl CodeSpace {
             resource_authority: None,
             #[cfg(feature = "devguard")]
             registration: None,
+            lifecycle: crate::config::GatewayLifecycle::Managed,
         }
+    }
+
+    /// The handler of a gateway connected to an independent Runner (P1R-C01): its instructions
+    /// and `workspace_info` state that Runner's process lifetime.
+    pub fn with_lifecycle(mut self, lifecycle: crate::config::GatewayLifecycle) -> Self {
+        self.lifecycle = lifecycle;
+        self
+    }
+
+    /// New work is refused when the runner is an independent Runner that an earlier gateway
+    /// controlled (P1R-C01), before any approval, lease or claim: what that gateway left is not
+    /// recovered yet.
+    fn refuse_new_work(&self) -> Result<(), ErrorBody> {
+        if self.runner.refuses_new_work() {
+            return Err(codespace_runner::recovery_pending());
+        }
+        Ok(())
+    }
+
+    /// `info` with the process lifetime of the gateway's runner (P1R-C01).
+    fn with_lifetime(&self, mut info: WorkspaceInfo) -> WorkspaceInfo {
+        use crate::config::{GatewayLifecycle, RunnerExitIntent};
+        use codespace_domain::ProcessDisconnectAction;
+        let GatewayLifecycle::Independent { exit_intent } = self.lifecycle else {
+            return info;
+        };
+        if let Some(lifetime) = info
+            .execution
+            .as_mut()
+            .and_then(|execution| execution.process.capabilities.as_mut())
+            .map(|capabilities| &mut capabilities.lifetime)
+        {
+            lifetime.runner_disconnect = ProcessDisconnectAction::KeepRunning;
+            lifetime.gateway_shutdown = match exit_intent {
+                RunnerExitIntent::Detach => ProcessDisconnectAction::KeepRunning,
+                RunnerExitIntent::Stop => ProcessDisconnectAction::Terminate,
+            };
+        }
+        info
     }
 
     #[tool(
@@ -193,6 +291,7 @@ impl CodeSpace {
         Parameters(params): Parameters<WorkspaceInfoParams>,
     ) -> Result<Json<WorkspaceInfo>, String> {
         let info = lookup(&self.registry, params.workspace_id).map_err(err_json)?;
+        let info = self.with_lifetime(info);
         #[cfg(feature = "devguard")]
         let info = self.with_resource_authority_status(info).await;
         Ok(Json(info))
@@ -256,6 +355,7 @@ impl CodeSpace {
             .map_err(err_json)?;
         allow(ws, Action::Write, &ClientClaims::default()).map_err(err_json)?;
         ws.require_file_write().map_err(err_json)?;
+        self.refuse_new_work().map_err(err_json)?;
         if let Err(err) = self.maybe_hold_patch(ws, &params) {
             return Err(err_json(err));
         }
@@ -296,6 +396,7 @@ impl CodeSpace {
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(invalid_argv()));
         }
+        self.refuse_new_work().map_err(err_json)?;
         // A workspace this gateway cannot govern is refused before any approval or lease.
         self.participation(ws).await.map_err(err_json)?;
         if let Err(err) = self.maybe_hold_exec(ws, &params) {
@@ -711,6 +812,8 @@ impl CodeSpace {
         &self,
         params: OperationResumeParams,
     ) -> Result<OperationResumeResult, ErrorBody> {
+        // Before the claim, so the approval stays as it is (P1R-C01).
+        self.refuse_new_work()?;
         match self.store.claim_resume(&params.approval_id)? {
             ResumeClaim::ReplaySuccess(result) => Ok(result),
             ResumeClaim::ReplayError(err) => Err(err),
@@ -1202,7 +1305,9 @@ impl CodeSpace {
         store: Arc<Store>,
         runner: RuntimeBackend,
     ) -> Self {
-        let handler = Self::with_store_and_runner(registry, store, runner);
+        let lifecycle = cli.lifecycle().unwrap_or_default();
+        let handler =
+            Self::with_store_and_runner(registry, store, runner).with_lifecycle(lifecycle);
         #[cfg(feature = "devguard")]
         if let Some(settings) = cli.devguard.settings() {
             if cli.devguard.mode == crate::devguard::DevGuardMode::Register {
@@ -1217,10 +1322,16 @@ impl CodeSpace {
                         );
                     }
                 }
+                // A worker the gateway starts registers itself, and so does an independent
+                // Runner (P1R-C01).
                 let registration = crate::devguard::Registration::new(
                     settings,
                     cli.runner,
-                    cli.runtime_bin.is_some(),
+                    cli.runtime_bin.is_some()
+                        || matches!(
+                            lifecycle,
+                            crate::config::GatewayLifecycle::Independent { .. }
+                        ),
                     launcher,
                 );
                 tracing::info!(
@@ -1296,7 +1407,7 @@ impl ServerHandler for CodeSpace {
                 codespace_domain::SERVER_NAME,
                 codespace_domain::SERVER_VERSION,
             ))
-            .with_instructions(MCP_INSTRUCTIONS.to_string())
+            .with_instructions(instructions(self.lifecycle))
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -2784,8 +2895,8 @@ mod devguard_tests {
     #[tokio::test]
     async fn a_preparation_lost_with_the_worker_is_unknown() {
         use codespace_runner::{
-            read_frame, write_frame, RunnerOp, RunnerOpResult, UdsRunner, WireEnvelope,
-            WIRE_PROTOCOL,
+            read_frame, write_frame, RunnerLifecycle, RunnerOp, RunnerOpResult, UdsRunner,
+            WireEnvelope, WIRE_PROTOCOL,
         };
         let dir = short_directory();
         std::fs::write(dir.path().join("a.txt"), "kept").unwrap();
@@ -2799,6 +2910,10 @@ mod devguard_tests {
                     Some(RunnerOp::Hello) => {
                         let hello = RunnerOpResult::Hello {
                             protocol: WIRE_PROTOCOL,
+                            lifecycle: RunnerLifecycle::Managed,
+                            identity: None,
+                            previous_controller: false,
+                            inherited_processes: 0,
                             registration: true,
                             admission: true,
                             launch: false,
@@ -2881,8 +2996,8 @@ mod devguard_tests {
     #[tokio::test]
     async fn a_launch_lost_with_the_worker_is_unknown_and_never_sent_again() {
         use codespace_runner::{
-            read_frame, write_frame, RunnerOp, RunnerOpResult, UdsRunner, WireEnvelope,
-            WIRE_PROTOCOL,
+            read_frame, write_frame, RunnerLifecycle, RunnerOp, RunnerOpResult, UdsRunner,
+            WireEnvelope, WIRE_PROTOCOL,
         };
         use std::sync::atomic::AtomicUsize;
         let dir = short_directory();
@@ -2896,6 +3011,10 @@ mod devguard_tests {
                     Some(RunnerOp::Hello) => {
                         let hello = RunnerOpResult::Hello {
                             protocol: WIRE_PROTOCOL,
+                            lifecycle: RunnerLifecycle::Managed,
+                            identity: None,
+                            previous_controller: false,
+                            inherited_processes: 0,
                             registration: true,
                             admission: true,
                             launch: true,
@@ -4162,5 +4281,304 @@ mod devguard_tests {
             rounds * 4
         );
         drop(control);
+    }
+}
+
+/// A gateway connected to an independent Runner (P1R-C01).
+#[cfg(test)]
+mod independent_tests {
+    use super::tests::{exec_params, participation_registry};
+    use super::*;
+    use crate::config::{GatewayLifecycle, RunnerExitIntent};
+    use codespace_domain::{
+        ApprovalDecision, ProcessDisconnectAction, ProcessState, ProcessStatusParams,
+        TerminateProcessParams, WorkspaceId,
+    };
+    use codespace_runner::{host_worker, IndependentRunner, StopHandle, UdsRunner};
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
+    use tokio::net::UnixStream;
+    use tokio::sync::mpsc;
+
+    const DETACHING: GatewayLifecycle = GatewayLifecycle::Independent {
+        exit_intent: RunnerExitIntent::Detach,
+    };
+
+    /// An independent Runner in this process, serving the streams sent to it in turn. Dropping
+    /// it stops the Runner.
+    struct Runner {
+        streams: mpsc::UnboundedSender<UnixStream>,
+        stop: StopHandle,
+    }
+
+    impl Runner {
+        fn start() -> Self {
+            let (runner, events) = host_worker();
+            let independent = IndependentRunner::new(runner, events);
+            let stop = independent.stop_handle();
+            let (streams, incoming) = mpsc::unbounded_channel::<UnixStream>();
+            let incoming = Arc::new(tokio::sync::Mutex::new(incoming));
+            tokio::spawn(independent.run(
+                move || {
+                    let incoming = incoming.clone();
+                    async move {
+                        incoming
+                            .lock()
+                            .await
+                            .recv()
+                            .await
+                            .ok_or_else(|| std::io::Error::other("no more gateways"))
+                    }
+                },
+                |_| {},
+            ));
+            Self { streams, stop }
+        }
+
+        /// A gateway with its own handle on the operations database, connected to the Runner.
+        async fn gateway(&self, root: &std::path::Path, database: &std::path::Path) -> CodeSpace {
+            let store = Arc::new(Store::open(database).unwrap());
+            let (client, server) = UnixStream::pair().unwrap();
+            self.streams.send(server).unwrap();
+            let releases = store.clone();
+            let runner = UdsRunner::from_stream(
+                client,
+                Arc::new(move |process_id: &str| releases.release_process(process_id)),
+            );
+            runner.handshake().await.unwrap();
+            CodeSpace::with_store_and_runner(
+                participation_registry(root, "off"),
+                store,
+                RuntimeBackend::Uds(runner),
+            )
+            .with_lifecycle(DETACHING)
+        }
+    }
+
+    impl Drop for Runner {
+        fn drop(&mut self) {
+            self.stop.request();
+        }
+    }
+
+    async fn detach(gateway: &CodeSpace) {
+        match &gateway.runner {
+            RuntimeBackend::Uds(runner) => runner.detach().await.unwrap(),
+            RuntimeBackend::InProcess(_) => unreachable!("an independent Runner"),
+        }
+    }
+
+    fn refused<T>(result: Result<T, String>) -> ErrorBody {
+        match result {
+            Ok(_) => panic!("not refused"),
+            Err(err) => serde_json::from_str(&err).unwrap(),
+        }
+    }
+
+    /// After a detach the next gateway reads and controls the processes it inherits, but new
+    /// executions, patches and approval resumes are refused before anything is claimed, so a
+    /// granted approval stays granted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_gateway_after_a_detach_starts_nothing_and_keeps_the_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let first = runner.gateway(&root, &database).await;
+        assert!(!first.runner.refuses_new_work());
+        let touch = format!("{}/resumed", root.display());
+        let held = refused(
+            first
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/usr/bin/touch", &touch],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(held.code, ErrorCode::ApprovalRequired, "{held:?}");
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        first
+            .approval_resolve(Parameters(ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let started = first
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/sh", "-c", "echo inherited; exec sleep 30"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        detach(&first).await;
+
+        let next = runner.gateway(&root, &database).await;
+        assert!(next.runner.refuses_new_work());
+        let info = next
+            .workspace_info(Parameters(WorkspaceInfoParams {
+                workspace_id: Some("demo".into()),
+            }))
+            .await
+            .unwrap()
+            .0;
+        let lifetime = info
+            .execution
+            .unwrap()
+            .process
+            .capabilities
+            .unwrap()
+            .lifetime;
+        assert_eq!(
+            lifetime.runner_disconnect,
+            ProcessDisconnectAction::KeepRunning
+        );
+        assert_eq!(
+            lifetime.gateway_shutdown,
+            ProcessDisconnectAction::KeepRunning
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let read = next
+                .read_process(Parameters(ReadProcessParams {
+                    process_id: started.process_id.clone(),
+                    cursor: 0,
+                }))
+                .await
+                .unwrap()
+                .0;
+            if read.chunk.contains("inherited") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{read:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let status = |gateway: &CodeSpace| {
+            let process_id = started.process_id.clone();
+            let gateway = gateway.clone();
+            async move {
+                gateway
+                    .process_status(Parameters(ProcessStatusParams { process_id }))
+                    .await
+                    .unwrap()
+                    .0
+                    .state
+            }
+        };
+        assert_eq!(status(&next).await, ProcessState::Running);
+        let refusal = refused(
+            next.exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/echo", "new"],
+                false,
+            )))
+            .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        let refusal = refused(
+            next.apply_patch(Parameters(ApplyPatchParams {
+                workspace_id: WorkspaceId("demo".into()),
+                patch: "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch\n".into(),
+                expected_versions: BTreeMap::new(),
+                operation_key: None,
+                check_only: false,
+                work_id: None,
+            }))
+            .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        let refusal = refused(
+            next.operation_resume(Parameters(OperationResumeParams {
+                approval_id: approval_id.clone(),
+            }))
+            .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert_eq!(
+            next.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Granted
+        );
+        next.terminate_process(Parameters(TerminateProcessParams {
+            process_id: started.process_id.clone(),
+        }))
+        .await
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while status(&next).await != ProcessState::Exited {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!root.join("resumed").exists());
+        assert!(!root.join("added.txt").exists());
+    }
+
+    /// The first gateway of a fresh independent Runner works as a managed one does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_first_independent_gateway_works_normally() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let runner = Runner::start();
+        let gateway = runner
+            .gateway(&root, &dir.path().join("operations.db"))
+            .await;
+        // A patch reaches the Runner, which applies it as a managed worker does, given the
+        // patch helper.
+        match gateway
+            .apply_patch(Parameters(ApplyPatchParams {
+                workspace_id: WorkspaceId("demo".into()),
+                patch: "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch\n".into(),
+                expected_versions: BTreeMap::new(),
+                operation_key: None,
+                check_only: false,
+                work_id: None,
+            }))
+            .await
+        {
+            Ok(applied) => assert_eq!(applied.0.status, PatchStatus::Applied),
+            Err(err) => assert_ne!(refused::<()>(Err(err)).code, ErrorCode::RecoveryPending),
+        }
+        let started = gateway
+            .exec_command(Parameters(exec_params("demo", &["/bin/echo", "ok"], true)))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+    }
+
+    /// Each independent mode states only what its Runner guarantees, and the rest of the
+    /// instructions stay as they are.
+    #[test]
+    fn independent_instructions_replace_only_the_lifetime_paragraph() {
+        assert_eq!(MCP_INSTRUCTIONS.matches(MANAGED_LIFETIME).count(), 1);
+        assert_eq!(instructions(GatewayLifecycle::Managed), MCP_INSTRUCTIONS);
+        for (exit_intent, shutdown, says) in [
+            (RunnerExitIntent::Detach, DETACH_SHUTDOWN, "it detaches"),
+            (RunnerExitIntent::Stop, STOP_SHUTDOWN, "it stops the Runner"),
+        ] {
+            let text = instructions(GatewayLifecycle::Independent { exit_intent });
+            let lifetime = INDEPENDENT_LIFETIME.replace("{shutdown}", shutdown);
+            assert_eq!(text.replace(&lifetime, MANAGED_LIFETIME), MCP_INSTRUCTIONS);
+            for expected in [
+                "owned by an independent Runner",
+                "Client or HTTP disconnect keeps the process running",
+                "RUNNER_DISCONNECTED",
+                "RECOVERY_PENDING",
+                "same process_id",
+                "signals that process only",
+                says,
+            ] {
+                assert!(text.contains(expected), "{expected}: {text}");
+            }
+            assert!(!text.contains("subtree"), "{text}");
+            assert!(
+                !text.contains("Restart does not recover process_id"),
+                "{text}"
+            );
+        }
     }
 }
