@@ -2,7 +2,8 @@
 //! newly allocated unique dir when run standalone). Parent chmod is the
 //! gateway's job: this process never calls
 //! `prepare_private_socket_directory`. One `InProcessRunner` per
-//! process. P0 is 1:1 — serve one connection, then exit.
+//! process. By default (`--lifecycle managed`) it is 1:1 — serve one
+//! connection, then exit.
 //!
 //! Built with the `devguard` feature, the worker is CodeSpace's execution owner in DevGuard
 //! (CSRG-U2). A gateway started with `--devguard register` passes, after the socket, the
@@ -11,15 +12,25 @@
 //! before anything else, registers itself in the background and answers the gateway's
 //! `Registration` requests from then on. With `--devguard-launch-helper` too, it launches the
 //! governed executions it prepares through that helper, as their helper's parent (CSRG-U4).
+//!
+//! With `--lifecycle independent` (P1R-C01) an operator or a harness starts the worker, not a
+//! gateway: it is an independent Runner. It prepares its socket's directory itself, created
+//! with mode 0700 or accepted only as a private directory of its user, and serves one gateway
+//! connection at a time. Its processes, their output and their timeouts outlive each connection
+//! until a gateway's `Stop`, or the Runner's own SIGTERM or SIGINT, ends them and the Runner.
+//! With DevGuard it reads the consumer secret from `--devguard-credential-file`, as no gateway
+//! hands it one.
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 #[cfg(not(feature = "devguard"))]
 use codespace_runner::serve_runner_connection;
 #[cfg(feature = "devguard")]
 use codespace_runner::serve_runner_connection_with_registration;
 use codespace_runner::{
-    allocate_private_runner_dir, host_worker, reclaim_leftover_socket, runner_socket_path,
+    allocate_private_runner_dir, host_worker, prepare_runner_socket_dir, reclaim_leftover_socket,
+    runner_socket_path, IndependentRunner, RunnerLifecycle, Served, STOP_DRAIN_BOUND,
 };
 
 fn main() {
@@ -33,38 +44,250 @@ fn main() {
         .block_on(serve());
 }
 
+/// The worker's command line: `[SOCKET] [--lifecycle managed|independent] [--devguard-* VALUE]...`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Arguments {
+    socket: Option<PathBuf>,
+    lifecycle: RunnerLifecycle,
+    /// The DevGuard settings, in order. A worker built without DevGuard ignores them, as it
+    /// always has.
+    devguard: Vec<OsString>,
+}
+
+fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Arguments, String> {
+    let mut parsed = Arguments::default();
+    let mut args = args.into_iter().peekable();
+    if args
+        .peek()
+        .is_some_and(|first| !first.to_string_lossy().starts_with("--"))
+    {
+        parsed.socket = args.next().map(PathBuf::from);
+    }
+    while let Some(flag) = args.next() {
+        let name = flag.to_str().ok_or("a non-UTF-8 argument")?.to_owned();
+        let value = args.next().ok_or_else(|| format!("{name} needs a value"))?;
+        match name.as_str() {
+            "--lifecycle" => {
+                parsed.lifecycle = match value.to_str() {
+                    Some("managed") => RunnerLifecycle::Managed,
+                    Some("independent") => RunnerLifecycle::Independent,
+                    _ => return Err("--lifecycle must be managed or independent".into()),
+                }
+            }
+            devguard if devguard.starts_with("--devguard-") => {
+                parsed.devguard.push(flag);
+                parsed.devguard.push(value);
+            }
+            _ => return Err(format!("unknown argument {name}")),
+        }
+    }
+    Ok(parsed)
+}
+
+/// Report a problem with the worker's settings or socket and exit with `code`.
+fn refuse(code: i32, problem: impl std::fmt::Display) -> ! {
+    eprintln!("codespace-codex-runtime: {problem}");
+    std::process::exit(code);
+}
+
 async fn serve() {
     codex_process_hardening::pre_main_hardening();
+    let arguments = parse(std::env::args_os().skip(1)).unwrap_or_else(|problem| refuse(2, problem));
     // First of all, so the handed descriptor is closed before this process can start a child.
     #[cfg(feature = "devguard")]
-    let (registration, launcher) = devguard::start(std::env::args_os().skip(2));
-    let socket = match std::env::args().nth(1) {
-        Some(path) => PathBuf::from(path),
-        None => match std::env::var_os("CODESPACE_RUNNER_SOCKET") {
-            Some(path) => PathBuf::from(path),
-            None => {
-                let dir = allocate_private_runner_dir(None).expect("private runner dir");
-                let socket = runner_socket_path(&dir);
-                eprintln!("codespace-codex-runtime listening on {}", socket.display());
-                socket
-            }
-        },
-    };
-    reclaim_leftover_socket(&socket).expect("runner socket");
-    let mut listener = codex_uds::UnixListener::bind(&socket)
-        .await
-        .expect("bind runner socket");
-    let (runner, events) = host_worker();
-    let stream = listener.accept().await.expect("accept runner socket");
-    // Keep the listener bound so a live connect-probe sees AddrInUse
-    // instead of unlinking this rendezvous.
-    let _listener = listener;
-    #[cfg(feature = "devguard")]
-    let _ =
-        serve_runner_connection_with_registration(stream, runner, events, registration, launcher)
-            .await;
+    let (registration, launcher) = devguard::start(arguments.devguard, arguments.lifecycle);
     #[cfg(not(feature = "devguard"))]
-    let _ = serve_runner_connection(stream, runner, events).await;
+    let _ = arguments.devguard;
+    match arguments.lifecycle {
+        RunnerLifecycle::Managed => {
+            let socket = match arguments.socket {
+                Some(path) => path,
+                None => match std::env::var_os("CODESPACE_RUNNER_SOCKET") {
+                    Some(path) => PathBuf::from(path),
+                    None => {
+                        let dir = allocate_private_runner_dir(None).expect("private runner dir");
+                        let socket = runner_socket_path(&dir);
+                        eprintln!("codespace-codex-runtime listening on {}", socket.display());
+                        socket
+                    }
+                },
+            };
+            reclaim_leftover_socket(&socket).expect("runner socket");
+            let mut listener = codex_uds::UnixListener::bind(&socket)
+                .await
+                .expect("bind runner socket");
+            let (runner, events) = host_worker();
+            let stream = listener.accept().await.expect("accept runner socket");
+            // Keep the listener bound so a live connect-probe sees AddrInUse
+            // instead of unlinking this rendezvous.
+            let _listener = listener;
+            #[cfg(feature = "devguard")]
+            let _ = serve_runner_connection_with_registration(
+                stream,
+                runner,
+                events,
+                registration,
+                launcher,
+            )
+            .await;
+            #[cfg(not(feature = "devguard"))]
+            let _ = serve_runner_connection(stream, runner, events).await;
+        }
+        RunnerLifecycle::Independent => {
+            let socket = arguments.socket.unwrap_or_else(|| {
+                refuse(2, "--lifecycle independent needs the socket's path first")
+            });
+            let (runner, events) = host_worker();
+            let independent = IndependentRunner::new(runner, events);
+            #[cfg(feature = "devguard")]
+            let independent = independent.with_registration(registration, launcher);
+            std::process::exit(serve_independent(&socket, independent).await);
+        }
+    }
+}
+
+/// An independent Runner's life (P1R-C01): its socket, the connections it serves one at a
+/// time, and its stop, after which its socket, and the directory it created for it, are
+/// removed. The exit code.
+async fn serve_independent(socket: &Path, independent: IndependentRunner) -> i32 {
+    let dir = match socket.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => refuse(2, "the socket's path needs a directory"),
+    };
+    let created = prepare_runner_socket_dir(dir).unwrap_or_else(|err| refuse(1, err));
+    let rendezvous = Rendezvous {
+        socket: socket.to_path_buf(),
+        dir: created.then(|| dir.to_path_buf()),
+    };
+    if let Err(err) = reclaim_leftover_socket(socket) {
+        rendezvous.remove_dir();
+        refuse(1, err);
+    }
+    let listener = match codex_uds::UnixListener::bind(socket).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            rendezvous.remove_dir();
+            refuse(1, format!("bind {}: {err}", socket.display()));
+        }
+    };
+    let stop = independent.stop_handle();
+    let mut terminate = signal(tokio::signal::unix::SignalKind::terminate());
+    let mut interrupt = signal(tokio::signal::unix::SignalKind::interrupt());
+    let watchdog = Rendezvous {
+        socket: rendezvous.socket.clone(),
+        dir: rendezvous.dir.clone(),
+    };
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+        // Its own signal stops the Runner as a gateway's `Stop` does.
+        stop.request();
+        // A connection whose gateway no longer reads cannot keep the Runner from stopping:
+        // its processes are already terminated.
+        tokio::time::sleep(STOP_DRAIN_BOUND * 2).await;
+        eprintln!("codespace-codex-runtime: the connection did not end; stopping without it");
+        watchdog.remove();
+        std::process::exit(1);
+    });
+    eprintln!(
+        "codespace-codex-runtime: independent Runner {} listening on {}",
+        std::process::id(),
+        socket.display()
+    );
+    let listener = std::sync::Arc::new(tokio::sync::Mutex::new(listener));
+    let terminated = independent
+        .run(
+            move || {
+                let listener = listener.clone();
+                async move { listener.lock().await.accept().await }
+            },
+            |ending| match ending {
+                Ok(Served::Detached) => {
+                    eprintln!("codespace-codex-runtime: a gateway detached; its processes go on")
+                }
+                Ok(Served::Lost) => eprintln!(
+                    "codespace-codex-runtime: a gateway's connection ended without a detach or a \
+                     stop; its processes go on"
+                ),
+                Ok(Served::Stopped { .. }) => {}
+                Err(err) => eprintln!("codespace-codex-runtime: accept: {err}"),
+            },
+        )
+        .await;
+    eprintln!("codespace-codex-runtime: stopped; {terminated} processes were terminated");
+    rendezvous.remove();
+    0
+}
+
+fn signal(kind: tokio::signal::unix::SignalKind) -> tokio::signal::unix::Signal {
+    tokio::signal::unix::signal(kind).unwrap_or_else(|err| refuse(1, format!("signals: {err}")))
+}
+
+/// An independent Runner's socket, and its directory when the Runner created it.
+struct Rendezvous {
+    socket: PathBuf,
+    dir: Option<PathBuf>,
+}
+
+impl Rendezvous {
+    fn remove(&self) {
+        let _ = std::fs::remove_file(&self.socket);
+        self.remove_dir();
+    }
+
+    /// Only a directory the Runner created, and only while it is empty.
+    fn remove_dir(&self) {
+        if let Some(dir) = &self.dir {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_socket_comes_first_and_the_lifecycle_defaults_to_managed() {
+        assert_eq!(parse(args(&[])).unwrap(), Arguments::default());
+        assert_eq!(
+            parse(args(&["/run/cs/runner.sock", "--lifecycle", "independent"])).unwrap(),
+            Arguments {
+                socket: Some("/run/cs/runner.sock".into()),
+                lifecycle: RunnerLifecycle::Independent,
+                devguard: Vec::new(),
+            }
+        );
+        assert_eq!(
+            parse(args(&[
+                "/run/cs/runner.sock",
+                "--devguard-consumer",
+                "codespace",
+                "--lifecycle",
+                "managed",
+            ]))
+            .unwrap(),
+            Arguments {
+                socket: Some("/run/cs/runner.sock".into()),
+                lifecycle: RunnerLifecycle::Managed,
+                devguard: args(&["--devguard-consumer", "codespace"]),
+            }
+        );
+        for wrong in [
+            &["--lifecycle", "detached"][..],
+            &["/run/cs/runner.sock", "--lifecycle"],
+            &["/run/cs/runner.sock", "--stop", "now"],
+            &["/run/cs/runner.sock", "/run/cs/other.sock"],
+        ] {
+            assert!(parse(args(wrong)).is_err(), "{wrong:?}");
+        }
+    }
 }
 
 #[cfg(feature = "devguard")]
@@ -78,7 +301,7 @@ mod devguard {
     use codespace_runner::registration::{
         handoff, Owner, OwnerCredential, OwnerSettings, ResourceOwner,
     };
-    use codespace_runner::OwnerRegistration;
+    use codespace_runner::{OwnerRegistration, RunnerLifecycle};
 
     /// The worker's DevGuard settings after its socket. None of them is a secret.
     #[derive(Debug, Default, PartialEq, Eq)]
@@ -87,6 +310,9 @@ mod devguard {
         pub(crate) consumer: Option<String>,
         pub(crate) generation: Option<String>,
         pub(crate) credential_fd: Option<RawFd>,
+        /// An independent Runner's consumer secret, which it reads from this private file
+        /// itself (P1R-C01).
+        pub(crate) credential_file: Option<PathBuf>,
         pub(crate) launch_helper: Option<PathBuf>,
     }
 
@@ -110,6 +336,7 @@ mod devguard {
                             .map_err(|_| format!("{flag} needs a number"))?,
                     )
                 }
+                "--devguard-credential-file" => parsed.credential_file = Some(value.into()),
                 "--devguard-launch-helper" => parsed.launch_helper = Some(value.into()),
                 _ => return Err(format!("unknown argument {flag}")),
             }
@@ -119,9 +346,12 @@ mod devguard {
 
     /// Consume the handed descriptor, then register in the background. No registration when
     /// the worker was started without DevGuard settings: it then answers that its mode cannot
-    /// register. A launch helper only with a registration.
+    /// register. A launch helper only with a registration. A managed worker gets its secret
+    /// through the descriptor from the gateway that starts it; an independent Runner reads it
+    /// from its file (P1R-C01).
     pub(crate) fn start(
         args: impl IntoIterator<Item = OsString>,
+        lifecycle: RunnerLifecycle,
     ) -> (Option<Arc<OwnerRegistration>>, Option<Launcher>) {
         let arguments = match parse(args) {
             Ok(arguments) => arguments,
@@ -130,13 +360,32 @@ mod devguard {
                 std::process::exit(2);
             }
         };
-        let credential = match arguments.credential_fd {
+        let credential = match (
+            lifecycle,
+            arguments.credential_fd,
+            arguments.credential_file,
+        ) {
             // SAFETY: the gateway started this process with this dedicated descriptor, which
             // nothing in this process has taken yet.
-            Some(fd) => unsafe { handoff::receive(fd) }
+            (RunnerLifecycle::Managed, Some(fd), None) => unsafe { handoff::receive(fd) }
                 .map(OwnerCredential::Handed)
                 .unwrap_or(OwnerCredential::Unavailable),
-            None => OwnerCredential::Unavailable,
+            (RunnerLifecycle::Independent, None, Some(file)) => OwnerCredential::File(file),
+            (_, None, None) => OwnerCredential::Unavailable,
+            (RunnerLifecycle::Managed, ..) => {
+                eprintln!(
+                    "codespace-codex-runtime: a worker its gateway starts gets the consumer \
+                     secret through --devguard-credential-fd only"
+                );
+                std::process::exit(2);
+            }
+            (RunnerLifecycle::Independent, ..) => {
+                eprintln!(
+                    "codespace-codex-runtime: an independent Runner reads the consumer secret \
+                     from --devguard-credential-file only"
+                );
+                std::process::exit(2);
+            }
         };
         let launcher = match arguments.launch_helper.map(Launcher::new) {
             Some(Err(problem)) => {
@@ -197,8 +446,18 @@ mod devguard {
                     consumer: Some("codespace".into()),
                     generation: Some("g1".into()),
                     credential_fd: Some(3),
+                    credential_file: None,
                     launch_helper: Some("/opt/devguard/bin/devguard-launch".into()),
                 }
+            );
+            assert_eq!(
+                parse(args(&[
+                    "--devguard-credential-file",
+                    "/Users/op/.config/codespace/consumer.secret"
+                ]))
+                .unwrap()
+                .credential_file,
+                Some("/Users/op/.config/codespace/consumer.secret".into())
             );
             assert_eq!(parse(args(&[])).unwrap(), Arguments::default());
             for wrong in [

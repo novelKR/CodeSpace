@@ -78,8 +78,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "3158dd7bc4040281e0666a63aa6675bd34df702c20d9a84a039db6fcd25efb6d",
-      "translation_sha256": "845f9a126b8e34948fd21d51ac168d9beb0f7d66c0577e6ed7d4919e58bb95f1"
+      "source_sha256": "2baf08aad540a8065010299f5f48d2614492938e2df400133dfaa08cb10bfb2c",
+      "translation_sha256": "9d0ee4193edbc99e725622d78b6178850c7658a7354a9f40184c36c127ec7f09"
     },
     {
       "id": "cs-rg-qualification",
@@ -257,8 +257,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "eb38ede0d2c1f2457e238c92ee554c7dc292ba50841835f0c658431f6c9a6f33",
-      "translation_sha256": "a71c333f14a70d9848e14fe1633e34de3d9616fca1ab5e432d0ed1387aa3c218"
+      "source_sha256": "a0ac8251ae13700936d1f2011aeb709100b1c3ea5cfd60ec9053575f463c4909",
+      "translation_sha256": "ea48623f485e9b683065e990a1d3cca15f05b83f315384fbb8792116a8df7e80"
     },
     {
       "id": "operations",
@@ -309,8 +309,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "de7bbd350892090e5fb352a06e47ce8e95f96b0c2b2dc6128a4edef5f1d9af2b",
-      "translation_sha256": "aed949328aff2698dbc138d4335ceb97f5c42f0fb1ed8499eb6c0e6469fdc90d"
+      "source_sha256": "99d45a3addf7a209b087b3663af59dddf73b3a0043c0f0e9194e73fd24732c07",
+      "translation_sha256": "972fd7b98c226bb7607b17e6cbd872ae584cd189c6017ae49a8c9b6a3f8bd385"
     },
     {
       "id": "chatgpt-connector",
@@ -399,8 +399,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "df2bd3224b5f47d28038f11bf065ec48ed08bc8a4bc30c3163adcec65b0eecba",
-      "translation_sha256": "300c857fa22a155c01070a7c4f7867e43085d8c15773acd19e60d745917cd2d2"
+      "source_sha256": "ff67a5d9dcfa1943b2a54eb27c41e3ca3d2e24f532c12f4b06091f0f5e31821c",
+      "translation_sha256": "6ea5c1e57e1dafea7e2d2806fca18574584b9308b411e810e9ae704a7c6ef751"
     },
     {
       "id": "execution-substrate",
@@ -590,6 +590,7 @@
         "compose-픽스처가-하는-일",
         "container-fixture-and-verification",
         "host-and-worker-execution",
+        "independent-runner",
         "later-process-split",
         "linux-command-sandbox",
         "linux-명령-샌드박스",
@@ -601,13 +602,14 @@
         "what-the-compose-fixture-does",
         "이후-프로세스-분리",
         "네트워크와-파일-접근-범위",
+        "독립-runner",
         "러너-격리",
         "이후-프로세스-분리",
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "50fe627ce573f1b77b4a35a71a83d897d06ad62f17077425d36d01b32f8f51e4",
-      "translation_sha256": "69ac617af227ade40277d11c48dccda71d287caee9a0e0a6357eeddaa5da6c26"
+      "source_sha256": "513bdd237464fa077354b3279b336dae6d9276403b13ca3bf3465dea9898d08c",
+      "translation_sha256": "c49af49c145ae3e13c07ee7eb58da5179685720aa039fd66c6dc05680a9061f1"
     },
     {
       "id": "error-codes",
@@ -635,8 +637,8 @@
         "전송-실패",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "04e3006bc1d7eed2b8a94f44b71dbaa417fceb23f168d0ed4b480825af0c8629",
-      "translation_sha256": "f286fa26fa1055491de9245c537716ada252177a0d699b7dda37ecd20eee485c"
+      "source_sha256": "d37b93d073a059ff993b2309efdedc98d51a80f3f32b5802f66b62d0e9e1338a",
+      "translation_sha256": "9e100facbb0cc372e235733e6c093eb1a4a3e4d9903343bf6b098df8e745e294"
     },
     {
       "id": "codex-reuse",
@@ -717,8 +719,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "121d4af8ffeecbe2cf1cf34c23046664637e6d906a38f7cfd2f7a7a0d5ebe656",
-      "translation_sha256": "fd1b6ffcc4f23f07caad0421546ee59fcae3b0ad6926a0b1900df16e8ac9c911"
+      "source_sha256": "cfacce5889ed00ed9a7338f98b80c20f05947ee0af5e913fb29e4b64869a403b",
+      "translation_sha256": "bef8eb0b952cf5c47e6df069076dca6dfbae97dcb07f78609f52f977172a79cb"
     },
     {
       "id": "upstream-lock",

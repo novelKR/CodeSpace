@@ -54,6 +54,8 @@ Errors use uppercase identifiers and a message. An `operation_id` may be present
 | `APPROVAL_NOT_FOUND` | Unknown confirmation-hold id |
 | `APPROVAL_CONFLICT` | Hold is still pending, already decided, or a resume is already in progress |
 | `APPROVAL_AMBIGUOUS` | Resume was interrupted and the terminal result is not on disk. Includes `approval_id`; patch cases may also include `operation_id` |
+| `RECOVERY_PENDING` | An earlier gateway started work on this gateway's [independent Runner](runner-isolation.md#independent-runner). The processes it left can be queried, read, written to, resized and terminated, but no execution, patch or approval resume starts until the Runner is stopped and a new one is started. The approval stays as it was. Not occupancy; retrying does not help |
+| `RUNNER_DISCONNECTED` | The gateway lost its connection to its [independent Runner](runner-isolation.md#independent-runner) and does not reconnect. The request was not sent, and the Runner's processes keep running; restart the gateway to reach them |
 | `INTERNAL` | Scheduler or store invariant failed. Not occupancy; do not retry as `WORKSPACE_BUSY` |
 
 ## Dispatch and completion

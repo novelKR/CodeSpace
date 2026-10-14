@@ -57,6 +57,8 @@
 | `APPROVAL_NOT_FOUND` | 알 수 없는 확인 홀드 ID |
 | `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 이미 결정되었거나, 재개가 이미 진행 중임 |
 | `APPROVAL_AMBIGUOUS` | 재개가 중단되어 단말 결과가 디스크에 없음. `approval_id` 포함. 패치는 `operation_id`도 있을 수 있음 |
+| `RECOVERY_PENDING` | 이 게이트웨이의 [독립 Runner](runner-isolation.md#independent-runner)에서 이전 게이트웨이가 작업을 시작함. 남은 프로세스는 조회, 출력 읽기, stdin 쓰기, 크기 변경, 종료가 가능하지만, Runner를 중지하고 새로 시작하기 전에는 실행, 패치, 승인 재개를 시작하지 않음. 승인은 그대로 남음. 점유가 아니므로 재시도해도 소용없음 |
+| `RUNNER_DISCONNECTED` | 게이트웨이가 [독립 Runner](runner-isolation.md#independent-runner)와의 연결을 잃었고 다시 연결하지 않음. 요청은 보내지 않았고 Runner의 프로세스는 계속 실행됨. 그 프로세스에 닿으려면 게이트웨이를 재시작할 것 |
 | `INTERNAL` | 스케줄러·스토어 불변조건 실패. 점유가 아니므로 `WORKSPACE_BUSY`로 재시도하지 말 것 |
 
 ## 실행 요청과 완료의 구분

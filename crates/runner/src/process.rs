@@ -1121,6 +1121,33 @@ impl InProcessRunner {
         }
         Ok(killed)
     }
+
+    /// Terminate every process of every workspace, as `terminate_process` does each one: a pipe
+    /// process alone, a PTY process with its process group. How many were still running that
+    /// nothing had asked to end yet, through a timeout or a termination. An independent Runner
+    /// does this when it stops (P1R-C01).
+    pub fn terminate_all(&self) -> u32 {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        map.values()
+            .filter(|slot| {
+                let unasked = slot
+                    .lifecycle
+                    .lock()
+                    .map(|life| life.kill_intent.is_none())
+                    .unwrap_or(false);
+                request_kill(slot).unwrap_or(false) && unasked
+            })
+            .count() as u32
+    }
+
+    /// Processes whose output has not ended yet: an independent Runner's next connection
+    /// inherits them (P1R-C01).
+    pub fn live_processes(&self) -> u32 {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        live_count(&map) as u32
+    }
 }
 
 /// A pipe child's one reaper (CSRG-U5): no other path waits for it. Timeout and termination

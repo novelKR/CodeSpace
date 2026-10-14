@@ -52,6 +52,53 @@ pub fn allocate_private_runner_dir(base: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
+/// The directory of an independent Runner's socket, which the Runner prepares itself (P1R-C01):
+/// created with mode 0700 when it does not exist yet, otherwise accepted only as a directory of
+/// this user with mode 0700 that is not a symbolic link. Its parent must exist. Never chmods an
+/// existing directory. Returns whether it was created.
+pub fn prepare_runner_socket_dir(dir: &Path) -> Result<bool> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    if is_forbidden_runner_dir(dir) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "the runner socket's directory must not be /, /tmp, /var/tmp, or $HOME (got {})",
+                dir.display()
+            ),
+        ));
+    }
+    let mut builder = DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(dir) {
+        Ok(()) => return Ok(true),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    let mode = meta.permissions().mode() & 0o777;
+    if !meta.file_type().is_dir() || meta.uid() != euid || mode != 0o700 {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            format!(
+                "the runner socket's directory {} must be a directory of this user with mode 0700 \
+                 (found {}, owner {}, mode {mode:o}); it is never changed",
+                dir.display(),
+                if meta.file_type().is_symlink() {
+                    "a symbolic link"
+                } else if meta.file_type().is_dir() {
+                    "a directory"
+                } else {
+                    "not a directory"
+                },
+                meta.uid(),
+            ),
+        ));
+    }
+    Ok(false)
+}
+
 /// Connect-probe a rendezvous path. Live listeners are not unlinked.
 /// `ConnectionRefused` leftover files are removed. Missing paths are ok.
 pub fn reclaim_leftover_socket(path: &Path) -> Result<()> {
@@ -204,5 +251,46 @@ mod tests {
     fn missing_socket_is_ok() {
         let dir = tempfile::tempdir().unwrap();
         reclaim_leftover_socket(&dir.path().join("missing.sock")).unwrap();
+    }
+
+    /// An independent Runner creates its socket's directory, or accepts only a private one of
+    /// its user, and never changes an existing one (P1R-C01).
+    #[test]
+    fn an_independent_runner_prepares_only_a_private_directory() {
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mode = |path: &Path| {
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        let created = parent.path().join("runner");
+        assert!(prepare_runner_socket_dir(&created).unwrap());
+        assert_eq!(mode(&created), 0o700);
+        assert_eq!(mode(parent.path()), 0o755);
+        // The same directory again is accepted as it is.
+        assert!(!prepare_runner_socket_dir(&created).unwrap());
+        let shared = parent.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let err = prepare_runner_socket_dir(&shared).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::PermissionDenied, "{err}");
+        assert_eq!(mode(&shared), 0o750);
+        let link = parent.path().join("link");
+        std::os::unix::fs::symlink(&created, &link).unwrap();
+        let err = prepare_runner_socket_dir(&link).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::PermissionDenied, "{err}");
+        let file = parent.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert!(prepare_runner_socket_dir(&file).is_err());
+        assert_eq!(
+            prepare_runner_socket_dir(Path::new("/tmp"))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidInput
+        );
+        assert!(prepare_runner_socket_dir(&parent.path().join("missing/runner")).is_err());
     }
 }

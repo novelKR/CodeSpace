@@ -80,12 +80,18 @@ def stages():
         # launch helper, and the DevGuard tests of the runner (registration, its wire, the
         # preparation of governed executions, CSRG-U3, and their launch, CSRG-U4), the worker
         # and the gateway where socket creation is not atomically close-on-exec, the gateway's
-        # against the worker, the fixture authority and the helper built here.
+        # against the worker, the fixture authority and the helper built here. With them, the
+        # independent Runner (P1R-C01): its identity, socket directory and wire, the gateway's
+        # settings and refusals, then the worker binary and the gateway binary against it,
+        # with the default worker built again over the DevGuard one.
         + devguard_binaries()
         + [cargo('test', 'devguard'),
            cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
-           cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire', 'admission', 'launch'),
-           cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard')],
+           cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire', 'admission', 'launch', 'independent', 'lifecycle'),
+           cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard', 'independent'),
+           cargo('build', 'codex-runtime', '--bin', 'codespace-codex-runtime'),
+           cargo('test', 'codex-runtime', '--test', 'runtime_binary', '--', 'independent'),
+           cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--test', 'independent_runner')],
         # Children killed inside fork on macOS: fresh-process trials of reads concurrent with
         # pipe spawns (crates/runner/tests/fork_race.rs); any child without an exit code fails.
         'macos-fork-race': [cargo('test', 'root', '-p', 'codespace-runner', '--test', 'fork_race', '--',

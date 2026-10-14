@@ -108,6 +108,7 @@ mod files;
 mod fork_handlers;
 #[cfg(feature = "devguard")]
 pub mod launch;
+mod lifecycle;
 mod linux_sandbox;
 mod patch_helper;
 mod patch_verify;
@@ -142,19 +143,21 @@ pub fn linux_sandbox_available() -> bool {
     linux_sandbox::probe()
 }
 
+pub use lifecycle::{RunnerIdentity, RunnerLifecycle};
 #[cfg(feature = "devguard")]
 pub use registration::OwnerRegistration;
 pub use socket::{
-    allocate_private_runner_dir, is_forbidden_runner_dir, reclaim_leftover_socket,
-    runner_socket_path, RUNNER_SOCKET_NAME,
+    allocate_private_runner_dir, is_forbidden_runner_dir, prepare_runner_socket_dir,
+    reclaim_leftover_socket, runner_socket_path, RUNNER_SOCKET_NAME,
 };
-pub use uds::{DisconnectHook, UdsRunner, RUNNER_CALL_DEADLINE};
+pub use uds::{runner_disconnected, DisconnectHook, RunnerHello, UdsRunner, RUNNER_CALL_DEADLINE};
 pub use watch::{FsWatchEvent, FsWatchKind, WatchClosed, WatchSubscription};
 #[cfg(feature = "devguard")]
 pub use wire::serve_runner_connection_with_registration;
 pub use wire::{
-    host_worker, read_frame, serve_runner_connection, write_frame, RunnerEvent, RunnerOp,
-    RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,
+    host_worker, read_frame, recovery_pending, serve_runner_connection, write_frame,
+    IndependentRunner, RunnerEvent, RunnerOp, RunnerOpResult, Served, StopHandle, WireEnvelope,
+    WireKind, STOP_DRAIN_BOUND, WIRE_PROTOCOL,
 };
 
 /// Execution-plane API. Control-plane fields (`work_id`, coordination,
@@ -317,6 +320,16 @@ pub enum RuntimeBackend {
 impl RuntimeBackend {
     pub fn in_process(on_release: ShellRelease) -> Self {
         Self::InProcess(InProcessRunner::new(on_release))
+    }
+
+    /// The backend is an independent Runner that an earlier gateway controlled, so this gateway
+    /// starts no new execution, patch or approval resume (P1R-C01): see
+    /// [`UdsRunner::refuses_new_work`].
+    pub fn refuses_new_work(&self) -> bool {
+        match self {
+            Self::InProcess(_) => false,
+            Self::Uds(runner) => runner.refuses_new_work(),
+        }
     }
 }
 

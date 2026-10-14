@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use codespace_runner::{allocate_private_runner_dir, runner_socket_path, ShellRelease, UdsRunner};
+use codespace_runner::{
+    allocate_private_runner_dir, runner_socket_path, RunnerLifecycle, ShellRelease, UdsRunner,
+};
 use codespace_store::Store;
 use tokio::net::UnixStream;
 use tokio::process::Command;
@@ -125,6 +127,69 @@ impl RuntimeProcess {
             .handshake()
             .await
             .map_err(|err| anyhow!("runner hello: {err}"))?;
+        // Its processes would outlive a connection that this gateway treats as theirs (P1R-C01).
+        if runner.hello().lifecycle == RunnerLifecycle::Independent {
+            runner.close().await;
+            return Err(anyhow!(
+                "the worker at {} is an independent Runner; connect to it with \
+                 --runner-lifecycle independent",
+                socket.display()
+            ));
+        }
+        Ok(runner)
+    }
+
+    /// Connect to an independent Runner that an operator or a harness started (P1R-C01). Its
+    /// processes outlive this connection: a lost connection releases nothing, and every later
+    /// request is refused until the gateway is restarted. A worker that is not an independent
+    /// Runner is refused. `leaving` is set before the gateway itself ends the connection.
+    pub async fn connect_independent(
+        socket: &Path,
+        on_process_exit: ShellRelease,
+        leaving: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<UdsRunner> {
+        let stream = UnixStream::connect(socket)
+            .await
+            .with_context(|| format!("connect {}", socket.display()))?;
+        let runner = UdsRunner::from_stream_with_disconnect(
+            stream,
+            on_process_exit,
+            Arc::new(move || {
+                if !leaving.load(std::sync::atomic::Ordering::SeqCst) {
+                    tracing::error!(
+                        "lost the connection to the independent Runner: its processes keep \
+                         running, and this gateway refuses every request that needs the Runner \
+                         until it is restarted"
+                    );
+                }
+            }),
+        );
+        runner
+            .handshake()
+            .await
+            .map_err(|err| anyhow!("runner hello: {err}"))?;
+        let hello = runner.hello();
+        if hello.lifecycle != RunnerLifecycle::Independent {
+            runner.close().await;
+            return Err(anyhow!(
+                "--runner-lifecycle independent: the worker at {} is {}, not an independent Runner",
+                socket.display(),
+                hello.lifecycle.as_str()
+            ));
+        }
+        tracing::info!(
+            runner_pid = hello.identity.as_ref().map(|identity| identity.pid),
+            previous_controller = hello.previous_controller,
+            inherited_processes = hello.inherited_processes,
+            "connected to an independent Runner; it is not a supported mode yet"
+        );
+        if hello.previous_controller {
+            tracing::warn!(
+                "an earlier gateway controlled this independent Runner: its processes can be \
+                 queried, read, written to, resized and terminated, but new executions, patches \
+                 and approval resumes are refused with RECOVERY_PENDING"
+            );
+        }
         Ok(runner)
     }
 
@@ -164,7 +229,7 @@ impl Drop for RuntimeProcess {
 
 /// A worker whose `Hello` did not state that it registers was built without DevGuard.
 #[cfg(feature = "devguard")]
-pub(crate) fn require_registration(runner: &UdsRunner, bin: &Path) -> Result<()> {
+pub fn require_registration(runner: &UdsRunner, bin: &Path) -> Result<()> {
     if runner.states_registration() {
         return Ok(());
     }
