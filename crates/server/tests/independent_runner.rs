@@ -340,6 +340,15 @@ async fn still_beating(beat: &Path) -> bool {
     before != read()
 }
 
+/// The parent of the live process `pid`, as `ps` reports it on Linux and macOS.
+fn parent_of(pid: u32) -> Option<u32> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
 /// A gateway killed while its process runs leaves the process to the Runner: the next gateway
 /// reads it and sees it end at its original timeout, not at one restarted when that gateway
 /// connected, but starts nothing itself, and its normal shutdown with the intent `stop` then
@@ -623,13 +632,18 @@ async fn a_restarted_gateway_waits_for_the_one_before_it_and_finds_its_records()
     );
     assert_eq!(record.exit_code, Some(4));
     assert_eq!(record.runner.pid, runner_pid);
-    assert_eq!(
-        record.root.map(|root| root.pid.to_string()),
-        Some(root_pid.trim().to_string())
-    );
+    let root = record.root.expect("its root process");
+    // Unsandboxed, the root is the shell itself. The Linux sandbox's root is its helper, and
+    // the shell's `$$` is its PID in the sandbox's own PID namespace.
+    if !codespace_runner::linux_sandbox_available() {
+        assert_eq!(root.pid.to_string(), root_pid.trim());
+    }
     let record = store.process_record(&running).unwrap().expect("its record");
     assert_eq!(record.phase, ProcessPhase::Running, "{record:?}");
     assert_eq!(record.runner.pid, runner_pid);
+    // The running execution's root is a live process that the Runner created, sandboxed or not.
+    let root = record.root.expect("its root process");
+    assert_eq!(parent_of(root.pid), Some(runner_pid), "{root:?}");
     let version: i64 = rusqlite::Connection::open(setup.database())
         .unwrap()
         .query_row("PRAGMA user_version", [], |row| row.get(0))

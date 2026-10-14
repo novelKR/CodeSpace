@@ -4825,7 +4825,11 @@ mod independent_tests {
         );
         assert_eq!((record.exit_code, record.signal), (Some(3), None));
         let root_process = record.root.clone().expect("the root process");
-        assert_eq!(root_process.pid.to_string(), output.chunk.trim());
+        // Unsandboxed, the root is the shell itself. The Linux sandbox's root is its helper, and
+        // the shell's `$$` is its PID in the sandbox's own PID namespace.
+        if !codespace_runner::linux_sandbox_available() {
+            assert_eq!(root_process.pid.to_string(), output.chunk.trim());
+        }
         if cfg!(any(target_os = "linux", target_os = "macos")) {
             assert!(root_process.started.is_some(), "{record:?}");
         }
