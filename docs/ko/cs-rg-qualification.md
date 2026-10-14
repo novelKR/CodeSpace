@@ -6,7 +6,7 @@
 
 이 문서는 CodeSpace가 DevGuard를 쓰는 방식(CS-RG)을 qualification하는 절차입니다. 어떤 조합을 qualification하는지, 어떤 모드를 지원한다고 주장하는지, 각 주장을 어떻게 시험하고 측정하는지, 무엇이 통과인지, 실행이 어떤 증거를 남기는지를 정합니다. 이 절차는 하네스 [`scripts/qualify-devguard.py`](../../scripts/qualify-devguard.py)와 함께, 첫 qualification 실행 전에 고정합니다. 첫 qualification 실행 뒤에 절차나 하네스를 바꾸면 새 절차가 됩니다. 다른 변경처럼 검토하고, 영향받는 실행은 다시 합니다. 각 단위가 무엇을 만들었는지는 [결합 로드맵](devguard-integration.md)에 있고, 이 문서는 그 결과가 qualification을 통과하는지를 판단합니다.
 
-**현재 상태:** 절차와 하네스만 있습니다. qualification 실행은 아직 하지 않았고, 이 문서의 어떤 내용도 qualification 결과가 아닙니다. 이 절차로 한 실행이 통과하고 그 증거를 검토할 때까지 CS-RG는 진행 중이며 qualification을 마치지 않은 상태입니다.
+**현재 상태:** 첫 qualification 실행 전에 하네스와 함께 고정했습니다([#97](https://github.com/novelKR/CodeSpace/pull/97)). 후보 `ca306ee`에서 한 실행이 통과해 CS-RG는 그 조합으로 qualification을 마쳤으며, 결과와 증거는 [qualification 보고서](cs-rg-qualification-report.md)에 있습니다. [회귀 명령](#regressions)은 실행 뒤에 바로잡았고, 보고서의 [수정 기록](cs-rg-qualification-report.md#report-amendments)에 남겼습니다. 그 밖에 바뀐 것은 없습니다.
 
 <a id="candidate"></a>
 
@@ -200,7 +200,7 @@ fixture authority를 쓰는 gateway 시험은 DevGuard 시험 바이너리가 �
 
 ## 회귀와 동등성
 
-후보 조합에서, qualification 호스트의 최소 환경으로 `python3 scripts/validate-upstream.py all macos-core macos-fork-race`를 실행해 모든 단계를 돌립니다. DevGuard 시험 바이너리를 쓰는 단계에서는 그 바이너리가 꼭 있어야 합니다. Linux는 후보 head의 CI가 보여 주며, 그 `dependencies` 단계가 `devguard` feature를 켠 의존성 그래프와 끈 그래프를 모두 확인합니다. 어느 단계에서든 회귀가 있으면 qualification은 실패합니다.
+후보 조합에서, qualification 호스트의 최소 환경으로 두 번 실행해 모든 단계를 돌립니다. 먼저 `python3 scripts/validate-upstream.py all`, 다음에 `python3 scripts/validate-upstream.py macos-core macos-fork-race`입니다. DevGuard 시험 바이너리를 쓰는 단계에서는 그 바이너리가 꼭 있어야 합니다. `all`은 macOS 전용 단계를 뺀 모든 단계를 돌리고 함께 적은 다른 단계 이름을 대신하므로, macOS 전용 단계는 따로 실행해야 합니다. Linux는 후보 head의 CI가 보여 주며, 그 `dependencies` 단계가 `devguard` feature를 켠 의존성 그래프와 끈 그래프를 모두 확인합니다. 어느 단계에서든 회귀가 있으면 qualification은 실패합니다.
 
 <a id="evidence"></a>
 
