@@ -1043,18 +1043,26 @@ impl InProcessRunner {
         let slot = map
             .get(&process_id.0)
             .ok_or_else(|| missing(&process_id.0))?;
-        let snap = slot.lifecycle.lock().expect("lifecycle").snapshot;
-        let buf = slot.output.lock().expect("output");
-        Ok(RunnerProcessStatus {
-            process_id: process_id.clone(),
-            state: snap.state,
-            exit_code: snap.exit_code,
-            termination: snap.termination,
-            signal: snap.signal.map(process_signal),
-            output_total: buf.total,
-            output_retained_from: buf.dropped,
-            eof: buf.eof,
-        })
+        Ok(slot_status(process_id, slot))
+    }
+
+    /// Every process the runner holds, with its workspace and status, ended ones it still
+    /// keeps included, in `process_id` order: what a gateway that claims an independent Runner
+    /// inherits (P1R-C03).
+    pub fn inventory(&self) -> Vec<(String, RunnerProcessStatus)> {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        let mut inventory: Vec<_> = map
+            .iter()
+            .map(|(process_id, slot)| {
+                (
+                    slot.workspace_id.clone(),
+                    slot_status(&ProcessId(process_id.clone()), slot),
+                )
+            })
+            .collect();
+        inventory.sort_by(|a, b| a.1.process_id.0.cmp(&b.1.process_id.0));
+        inventory
     }
 
     pub fn host_resize(
@@ -1317,6 +1325,22 @@ async fn pump_reader<R: tokio::io::AsyncRead + Unpin>(
             }
             Err(_) => break,
         }
+    }
+}
+
+/// A process's status, from its slot.
+fn slot_status(process_id: &ProcessId, slot: &Slot) -> RunnerProcessStatus {
+    let snap = slot.lifecycle.lock().expect("lifecycle").snapshot;
+    let buf = slot.output.lock().expect("output");
+    RunnerProcessStatus {
+        process_id: process_id.clone(),
+        state: snap.state,
+        exit_code: snap.exit_code,
+        termination: snap.termination,
+        signal: snap.signal.map(process_signal),
+        output_total: buf.total,
+        output_retained_from: buf.dropped,
+        eof: buf.eof,
     }
 }
 

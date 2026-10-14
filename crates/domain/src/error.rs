@@ -64,10 +64,20 @@ pub enum ErrorCode {
     /// approval being resumed is left as it was. Stopping the Runner and starting a new one ends
     /// it. Not occupancy; do not retry as busy.
     RecoveryPending,
-    /// This gateway lost its connection to its independent Runner and does not reconnect
-    /// (P1R-C01). The request never reached the Runner, whose processes keep running;
-    /// restarting the gateway reaches them again.
+    /// This gateway lost its connection to its independent Runner and cannot claim it again
+    /// (P1R-C01, P1R-C03): the Runner stopped, another Runner answers at its socket, or it
+    /// refused this gateway. The request never reached a Runner. Restart the gateway once the
+    /// Runner can be reached; a Runner that did not stop keeps its processes running.
     RunnerDisconnected,
+    /// This gateway lost its connection to its independent Runner and is claiming it again
+    /// (P1R-C03). The request never reached the Runner, whose processes keep running; retry
+    /// once the gateway has reconnected. Not occupancy.
+    RunnerReconnecting,
+    /// The independent Runner refused the request because it does not come from its current
+    /// controller (P1R-C03): another connection claimed the Runner after the request was
+    /// prepared, or the request's connection never claimed it. Nothing was started or changed.
+    /// Not occupancy; do not retry as busy.
+    StaleController,
     /// Scheduler or store invariant failed. Not occupancy; do not retry as busy.
     Internal,
 }
@@ -187,6 +197,10 @@ mod tests {
         assert_eq!(json, "\"RECOVERY_PENDING\"");
         let json = serde_json::to_string(&ErrorCode::RunnerDisconnected).unwrap();
         assert_eq!(json, "\"RUNNER_DISCONNECTED\"");
+        let json = serde_json::to_string(&ErrorCode::RunnerReconnecting).unwrap();
+        assert_eq!(json, "\"RUNNER_RECONNECTING\"");
+        let json = serde_json::to_string(&ErrorCode::StaleController).unwrap();
+        assert_eq!(json, "\"STALE_CONTROLLER\"");
         let json = serde_json::to_string(&ErrorCode::Internal).unwrap();
         assert_eq!(json, "\"INTERNAL\"");
     }

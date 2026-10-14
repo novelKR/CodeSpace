@@ -115,7 +115,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다. 프로세스가 게이트웨이보다 오래 살고 게이트웨이가 그 프로세스를 작업 데이터베이스에 기록하는 [독립 Runner](runner-isolation.md#independent-runner)는 아직 지원하는 모드가 아닙니다.
+worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다. 프로세스가 게이트웨이보다 오래 살고, 게이트웨이가 그 프로세스를 작업 데이터베이스에 기록하며, 연결을 잃은 게이트웨이가 다시 Claim하는 [독립 Runner](runner-isolation.md#independent-runner)는 아직 지원하는 모드가 아닙니다.
 
 <a id="로그"></a>
 <a id="로그"></a>
@@ -137,7 +137,7 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 
 <a id="operations-database"></a>
 
-**스키마 버전과 이전 버전.** 작업 데이터베이스에는 스키마 버전이 적혀 있습니다. CodeSpace는 자기보다 새 스키마 버전의 데이터베이스를 아무것도 쓰기 전에 거부하고 그대로 둡니다. 그런 데이터베이스는 그것을 쓴 CodeSpace 버전으로 여세요. [독립 Runner](runner-isolation.md#process-records)에 연결한 게이트웨이는 실행도 이 데이터베이스에 기록하며, 실행 중에는 그 옆의 lock 파일 `<database>.gateway.lock`을 잡고 있습니다. 실행 기록이 생기기 전의 CodeSpace 버전도 이런 데이터베이스를 열 수 있고 기록은 건드리지 않지만, 스키마 버전을 확인하지도 lock을 걸지도 않습니다. 그러니 독립 Runner의 게이트웨이가 쓰는 데이터베이스에서는 이전 버전을 실행하지 마세요. 독립 모드에서 되돌아갈 때는 그 모드를 쓰지 않고 데이터베이스는 그대로 둡니다. 이전 사본을 복원하면 그 뒤에 쓴 패치 중복 실행 방지 기록, 확인 홀드, 실행 기록이 사라집니다.
+**스키마 버전과 이전 버전.** 작업 데이터베이스에는 스키마 버전이 적혀 있습니다. CodeSpace는 자기보다 새 스키마 버전의 데이터베이스를 아무것도 쓰기 전에 거부하고 그대로 둡니다. 그런 데이터베이스는 그것을 쓴 CodeSpace 버전으로 여세요. [독립 Runner](runner-isolation.md#process-records)에 연결한 게이트웨이는 실행도 이 데이터베이스에 기록하고, [Runner를 Claim](runner-isolation.md#claim)할 때 밝히는 데이터베이스의 임의 식별자를 이 데이터베이스에 두며, 실행 중에는 그 옆의 lock 파일 `<database>.gateway.lock`을 잡고 있습니다. 실행 기록이 생기기 전의 CodeSpace 버전도 이런 데이터베이스를 열 수 있고 기록은 건드리지 않지만, 스키마 버전을 확인하지도 lock을 걸지도 않습니다. 그러니 독립 Runner의 게이트웨이가 쓰는 데이터베이스에서는 이전 버전을 실행하지 마세요. 독립 모드에서 되돌아갈 때는 그 모드를 쓰지 않고 데이터베이스는 그대로 둡니다. 이전 사본을 복원하면 그 뒤에 쓴 패치 중복 실행 방지 기록, 확인 홀드, 실행 기록이 사라집니다.
 
 패치 응답을 받지 못했다면 `operation_id` 또는 `operation_key` 중 하나만 지정해 `operation_status`를 조회합니다. 재시작 후 미완료 기록은 `unknown`이 되므로 파일을 확인한 뒤 다음 행동을 결정하세요. 프로세스는 `process_id`로 관리하며 `operation_status`로 복구할 수 없습니다. 프로세스가 죽을 때 `queued`이던 확인 홀드는 다시 acquire합니다. `resuming`이던 홀드는 패치 원장에서 복구하거나, 저장된 단말 결과를 재현하거나, `APPROVAL_AMBIGUOUS`를 반환할 수 있습니다. exec는 다시 spawn하지 않습니다. [재시도와 복구 규칙](agent-integration.md)을 참고하세요.
 

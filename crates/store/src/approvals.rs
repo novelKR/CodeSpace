@@ -266,6 +266,9 @@ impl Store {
         if state == ApprovalState::Granted.as_str() {
             return Ok(());
         }
+        // A resume refused before its approval was marked `resuming` stays queued: by the
+        // scheduler, or because the independent Runner could not be sent the execution
+        // (P1R-C01, P1R-C03).
         let queued = state == ApprovalState::Queued.as_str();
         if queued
             && matches!(
@@ -273,7 +276,12 @@ impl Store {
                 Err(err)
                     if matches!(
                         err.code,
-                        ErrorCode::WorkspaceBusy | ErrorCode::ResourceQueueFull
+                        ErrorCode::WorkspaceBusy
+                            | ErrorCode::ResourceQueueFull
+                            | ErrorCode::RecoveryPending
+                            | ErrorCode::RunnerReconnecting
+                            | ErrorCode::RunnerDisconnected
+                            | ErrorCode::StaleController
                     )
             )
         {
@@ -829,9 +837,17 @@ mod tests {
 
     #[test]
     fn queued_scheduler_errors_do_not_consume_approval() {
-        for (index, code) in [ErrorCode::WorkspaceBusy, ErrorCode::ResourceQueueFull]
-            .into_iter()
-            .enumerate()
+        for (index, code) in [
+            ErrorCode::WorkspaceBusy,
+            ErrorCode::ResourceQueueFull,
+            // An independent Runner that could not be sent the execution (P1R-C03).
+            ErrorCode::RecoveryPending,
+            ErrorCode::RunnerReconnecting,
+            ErrorCode::RunnerDisconnected,
+            ErrorCode::StaleController,
+        ]
+        .into_iter()
+        .enumerate()
         {
             let store = Store::memory().unwrap();
             let created = store

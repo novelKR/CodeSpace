@@ -86,9 +86,10 @@ def stages():
         # preparation of governed executions, CSRG-U3, and their launch, CSRG-U4), the worker
         # and the gateway where socket creation is not atomically close-on-exec, the gateway's
         # against the worker, the fixture authority and the helper built here. With them, the
-        # independent Runner (P1R-C01): its identity, socket directory and wire, the gateway's
-        # settings and refusals, then the worker binary and the gateway binary against it,
-        # with the default worker built again over the DevGuard one.
+        # independent Runner (P1R-C01): its identity, socket directory and wire, its Claim with
+        # the peer credentials that macOS reads through `getpeereid` (P1R-C03), the gateway's
+        # settings, refusals and reconnect, then the worker binary and the gateway binary
+        # against it, with the default worker built again over the DevGuard one.
         + devguard_binaries()
         + [cargo('test', 'devguard'),
            cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),

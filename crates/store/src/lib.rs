@@ -40,6 +40,15 @@ pub use writer::WriterLock;
 /// without one (0) predates it and is brought up to it; a newer one is refused.
 pub const SCHEMA_VERSION: i64 = 1;
 
+/// The database's own identity (P1R-C03): one row, written the first time it is asked for. A
+/// table that an older CodeSpace does not know, which it leaves alone, so the schema version
+/// stays.
+const STORE_IDENTITY_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS store_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    store_id TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);";
+
 #[derive(Debug, Clone)]
 pub struct StoredOperation {
     pub operation_id: OperationId,
@@ -237,6 +246,8 @@ impl Store {
         )
         .map_err(|e| e.to_string())?;
         conn.execute_batch(processes::SCHEMA)
+            .map_err(|e| e.to_string())?;
+        conn.execute_batch(STORE_IDENTITY_SCHEMA)
             .map_err(|e| e.to_string())?;
         migrate_operations(&conn)?;
         migrate_approvals(&conn)?;
@@ -480,6 +491,44 @@ impl Store {
         )
         .map_err(sql_err)?;
         Ok(Begin::Fresh(operation_id))
+    }
+
+    /// Forget an operation begun here that no runner acted on (P1R-C03): its row is removed
+    /// while it has no result, so its `operation_key` begins afresh. Returns whether a row was
+    /// removed.
+    pub fn abandon(&self, operation_id: &OperationId) -> Result<bool, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let removed = conn
+            .execute(
+                "DELETE FROM operations WHERE operation_id = ?1 AND finished_at IS NULL",
+                params![operation_id.0],
+            )
+            .map_err(sql_err)?;
+        Ok(removed == 1)
+    }
+
+    /// This operations database's identity (P1R-C03), created the first time it is asked for
+    /// and the same from then on. An independent Runner remembers the identity of the first
+    /// gateway that claims it and refuses a gateway with another one: a guard against a
+    /// mistaken database, not an authentication.
+    pub fn store_id(&self) -> Result<String, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let created_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        conn.execute(
+            "INSERT OR IGNORE INTO store_identity (singleton, store_id, created_at_ms)
+             VALUES (1, ?1, ?2)",
+            params![format!("store-{}", uuid::Uuid::new_v4()), created_at_ms],
+        )
+        .map_err(sql_err)?;
+        conn.query_row(
+            "SELECT store_id FROM store_identity WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_err)
     }
 
     pub fn finish(
@@ -1176,6 +1225,7 @@ mod tests {
             .record_dispatch(&NewProcessRecord {
                 process_id,
                 runner: &runner(),
+                controller_epoch: None,
                 workspace_id: "demo",
                 approval_id: None,
                 attempt_id: None,
@@ -1366,5 +1416,52 @@ mod tests {
                 "result_json"
             ]
         );
+    }
+
+    /// A database keeps its identity across reopenings, and another database has its own
+    /// (P1R-C03). The schema version stays.
+    #[test]
+    fn an_operations_database_keeps_its_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.sqlite");
+        let first = Store::open(&path).unwrap().store_id().unwrap();
+        assert!(first.starts_with("store-"), "{first}");
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.store_id().unwrap(), first);
+        assert_eq!(store.store_id().unwrap(), first);
+        assert_eq!(user_version(&path), SCHEMA_VERSION);
+        let other = Store::open(&dir.path().join("other.sqlite")).unwrap();
+        assert_ne!(other.store_id().unwrap(), first);
+    }
+
+    /// An operation that never reached a runner is forgotten, so its key begins afresh; one
+    /// with a result is kept (P1R-C03).
+    #[test]
+    fn an_abandoned_operation_begins_afresh() {
+        let store = Store::memory().unwrap();
+        let key = OperationKey("patch-key".into());
+        let Begin::Fresh(abandoned) = store.begin(Some(&key), "demo", "fp").unwrap() else {
+            panic!("a fresh operation");
+        };
+        assert!(store.abandon(&abandoned).unwrap());
+        assert_eq!(
+            store.get(&abandoned).unwrap_err().code,
+            ErrorCode::OperationNotFound
+        );
+        let Begin::Fresh(finished) = store.begin(Some(&key), "demo", "fp").unwrap() else {
+            panic!("the key begins afresh");
+        };
+        assert_ne!(finished, abandoned);
+        store
+            .finish(
+                &finished,
+                &ApplyPatchResult::new(PatchStatus::Applied, finished.clone()),
+            )
+            .unwrap();
+        assert!(!store.abandon(&finished).unwrap());
+        assert!(matches!(
+            store.begin(Some(&key), "demo", "fp").unwrap(),
+            Begin::Replayed(_)
+        ));
     }
 }

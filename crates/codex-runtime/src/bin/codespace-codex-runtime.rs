@@ -15,11 +15,12 @@
 //!
 //! With `--lifecycle independent` (P1R-C01) an operator or a harness starts the worker, not a
 //! gateway: it is an independent Runner. It prepares its socket's directory itself, created
-//! with mode 0700 or accepted only as a private directory of its user, and serves one gateway
-//! connection at a time. Its processes, their output and their timeouts outlive each connection
-//! until a gateway's `Stop`, or the Runner's own SIGTERM or SIGINT, ends them and the Runner.
-//! With DevGuard it reads the consumer secret from `--devguard-credential-file`, as no gateway
-//! hands it one.
+//! with mode 0700 or accepted only as a private directory of its user, and serves every
+//! connection it accepts, of which one at a time, after its `Claim`, controls it (P1R-C03).
+//! It logs each Claim with the process ID of its peer. Its processes, their output and their
+//! timeouts outlive each connection until its controller's `Stop`, or the Runner's own SIGTERM
+//! or SIGINT, ends them and the Runner. With DevGuard it reads the consumer secret from
+//! `--devguard-credential-file`, as no gateway hands it one.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ use codespace_runner::serve_runner_connection;
 use codespace_runner::serve_runner_connection_with_registration;
 use codespace_runner::{
     allocate_private_runner_dir, host_worker, prepare_runner_socket_dir, reclaim_leftover_socket,
-    runner_socket_path, IndependentRunner, RunnerLifecycle, Served, STOP_DRAIN_BOUND,
+    runner_socket_path, ClaimNote, IndependentRunner, RunnerLifecycle, Served, STOP_DRAIN_BOUND,
 };
 
 fn main() {
@@ -138,7 +139,8 @@ async fn serve() {
                 refuse(2, "--lifecycle independent needs the socket's path first")
             });
             let (runner, events) = host_worker();
-            let independent = IndependentRunner::new(runner, events);
+            let independent = IndependentRunner::new(runner, events)
+                .with_claim_observer(std::sync::Arc::new(log_claim));
             #[cfg(feature = "devguard")]
             let independent = independent.with_registration(registration, launcher);
             std::process::exit(serve_independent(&socket, independent).await);
@@ -146,9 +148,39 @@ async fn serve() {
     }
 }
 
-/// An independent Runner's life (P1R-C01): its socket, the connections it serves one at a
-/// time, and its stop, after which its socket, and the directory it created for it, are
-/// removed. The exit code.
+/// What an independent Runner logs of each Claim (P1R-C03): any process of its user that can
+/// reach its socket may claim it while no connection controls it.
+fn log_claim(note: ClaimNote) {
+    let peer = |pid: Option<i32>| pid.map_or_else(|| "unknown".into(), |pid| pid.to_string());
+    match note {
+        ClaimNote::Claimed {
+            epoch,
+            previous_controller,
+            peer_pid,
+        } => eprintln!(
+            "codespace-codex-runtime: process {} claimed the Runner under epoch {epoch}{}",
+            peer(peer_pid),
+            if previous_controller {
+                "; an earlier controller started work, so it starts nothing"
+            } else {
+                ""
+            }
+        ),
+        ClaimNote::Refused {
+            refusal,
+            message,
+            peer_pid,
+        } => eprintln!(
+            "codespace-codex-runtime: refused the Claim of process {} ({}): {message}",
+            peer(peer_pid),
+            refusal.as_str()
+        ),
+    }
+}
+
+/// An independent Runner's life (P1R-C01): its socket, the connections it serves, and its
+/// stop, after which its socket, and the directory it created for it, are removed. The exit
+/// code.
 async fn serve_independent(socket: &Path, independent: IndependentRunner) -> i32 {
     let dir = match socket.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
@@ -163,7 +195,9 @@ async fn serve_independent(socket: &Path, independent: IndependentRunner) -> i32
         rendezvous.remove_dir();
         refuse(1, err);
     }
-    let listener = match codex_uds::UnixListener::bind(socket).await {
+    // Tokio's listener, as codex-uds binds on Unix: a Claim needs its peer's credentials from
+    // the accepted stream (P1R-C03).
+    let listener = match tokio::net::UnixListener::bind(socket) {
         Ok(listener) => listener,
         Err(err) => {
             rendezvous.remove_dir();
@@ -196,20 +230,20 @@ async fn serve_independent(socket: &Path, independent: IndependentRunner) -> i32
         std::process::id(),
         socket.display()
     );
-    let listener = std::sync::Arc::new(tokio::sync::Mutex::new(listener));
+    let listener = std::sync::Arc::new(listener);
     let terminated = independent
         .run(
             move || {
                 let listener = listener.clone();
-                async move { listener.lock().await.accept().await }
+                async move { listener.accept().await.map(|(stream, _)| stream) }
             },
             |ending| match ending {
-                Ok(Served::Detached) => {
-                    eprintln!("codespace-codex-runtime: a gateway detached; its processes go on")
-                }
+                Ok(Served::Detached) => eprintln!(
+                    "codespace-codex-runtime: the controlling gateway detached; its processes go on"
+                ),
                 Ok(Served::Lost) => eprintln!(
-                    "codespace-codex-runtime: a gateway's connection ended without a detach or a \
-                     stop; its processes go on"
+                    "codespace-codex-runtime: the controlling gateway's connection ended without a \
+                     detach or a stop; its processes go on"
                 ),
                 Ok(Served::Stopped { .. }) => {}
                 Err(err) => eprintln!("codespace-codex-runtime: accept: {err}"),

@@ -16,7 +16,7 @@ CodeSpace uses selected libraries from a pinned Codex checkout to implement exec
 | Adapter | Codex components | Current role |
 | --- | --- | --- |
 | `crates/patch` | `codex-apply-patch`, `codex-exec-server::LOCAL_FS`, path utilities, process hardening | V4A parsing/application in `codespace-patch` |
-| `crates/codex-runtime` | `codex-process-hardening`, `codex-uds` | Optional hardened worker and Unix socket |
+| `crates/codex-runtime` | `codex-process-hardening`, `codex-uds` | Optional hardened worker and Unix socket. An [independent Runner](runner-isolation.md#claim) binds Tokio's listener, which `codex-uds` wraps on Unix, to read each connection's peer credentials |
 | `crates/pty` | `codex-utils-pty` | Terminal-backed execution for `tty: true` |
 | `crates/file-system` | `codex-file-system`, `LOCAL_FS`, path utilities | Runner file I/O and bounded walks with no-follow handling |
 | `crates/linux-sandbox` | `codex-linux-sandbox`, `codex-sandboxing`, `codex-protocol`, `codex-network-proxy` | Binary-only command sandbox helper and enabled-network proxy |
@@ -37,7 +37,7 @@ Agent → CodeSpace MCP/policy/store → Runner contract
 
 Core crates have no direct Codex dependencies. Adapter crates are separate Cargo workspaces to accommodate the pinned upstream workspace dependencies. The filesystem and PTY adapters are library dependencies of the Runner; patch and Linux sandbox operations use helper processes. An isolated Cargo workspace alone does not create a process or security boundary.
 
-The Linux sandbox helper is binary-only. `codespace-linux-sandbox-protocol` contains its CodeSpace-owned handshake data and no Codex types. Worker UDS protocol version 9 and sandbox-helper protocol version 1 are separate contracts.
+The Linux sandbox helper is binary-only. `codespace-linux-sandbox-protocol` contains its CodeSpace-owned handshake data and no Codex types. Worker UDS protocol version 10 and sandbox-helper protocol version 1 are separate contracts.
 
 <a id="policy-vs-mechanism"></a>
 <a id="why-supervisor-code-still-exists"></a>

@@ -79,12 +79,14 @@ impl ProcessRecords {
         records
     }
 
-    /// Record an execution before it is sent to the Runner, and mark the approval it resumes
-    /// `resuming` with it. When the record cannot be written, nothing is sent.
+    /// Record an execution before it is sent to the Runner under the controller epoch
+    /// `controller_epoch` (P1R-C03), and mark the approval it resumes `resuming` with it. When
+    /// the record cannot be written, nothing is sent.
     pub(crate) fn dispatching(
         &self,
         process_id: &ProcessId,
         params: &ExecCommandParams,
+        controller_epoch: Option<u64>,
         participation: RecordedParticipation,
         attempt_id: Option<&str>,
         resume: Option<&ApprovalId>,
@@ -93,6 +95,7 @@ impl ProcessRecords {
             .record_dispatch(&NewProcessRecord {
                 process_id: &process_id.0,
                 runner: &self.runner,
+                controller_epoch,
                 workspace_id: &params.workspace_id.0,
                 approval_id: resume,
                 attempt_id,

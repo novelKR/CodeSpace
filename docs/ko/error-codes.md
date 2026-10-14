@@ -57,8 +57,10 @@
 | `APPROVAL_NOT_FOUND` | 알 수 없는 확인 홀드 ID |
 | `APPROVAL_CONFLICT` | 홀드가 아직 대기 중이거나 이미 결정되었거나, 재개가 이미 진행 중임 |
 | `APPROVAL_AMBIGUOUS` | 재개가 중단되어 단말 결과가 디스크에 없음. `approval_id` 포함. 패치는 `operation_id`도 있을 수 있음 |
-| `RECOVERY_PENDING` | 이 게이트웨이의 [독립 Runner](runner-isolation.md#independent-runner)에서 이전 게이트웨이가 작업을 시작함. 남은 프로세스는 조회, 출력 읽기, stdin 쓰기, 크기 변경, 종료가 가능하지만, Runner를 중지하고 새로 시작하기 전에는 실행, 패치, 승인 재개를 시작하지 않음. 승인은 그대로 남음. 점유가 아니므로 재시도해도 소용없음 |
-| `RUNNER_DISCONNECTED` | 게이트웨이가 [독립 Runner](runner-isolation.md#independent-runner)와의 연결을 잃었고 다시 연결하지 않음. 요청은 보내지 않았고 Runner의 프로세스는 계속 실행됨. 그 프로세스에 닿으려면 게이트웨이를 재시작할 것 |
+| `RECOVERY_PENDING` | 이 게이트웨이가 Claim하기 전의 controller가 [독립 Runner](runner-isolation.md#claim)에서 작업을 시작함. 연결을 잃기 전의 이 게이트웨이 자신도 포함함. 남은 프로세스는 조회, 출력 읽기, stdin 쓰기, 크기 변경, 종료가 가능하지만, Runner를 중지하고 새로 시작하기 전에는 실행, 패치, 승인 재개를 시작하지 않음. 승인은 그대로 남음. 점유가 아니므로 재시도해도 소용없음 |
+| `RUNNER_RECONNECTING` | 게이트웨이가 [독립 Runner](runner-isolation.md#independent-runner)와의 연결을 잃었고 Runner를 다시 Claim하는 중임. 요청은 보내지 않았음. 그 요청을 위해 시작하거나 예약하거나 기록한 것은 없고, 재개하려던 승인은 소비되지 않음. Runner의 프로세스는 계속 실행됨. 잠시 뒤 재시도할 것 |
+| `RUNNER_DISCONNECTED` | 게이트웨이가 [독립 Runner](runner-isolation.md#independent-runner)와의 연결을 잃었고 다시 Claim할 수 없음. 소켓에서 연결을 받지 않거나, 다른 Runner가 응답하거나, 기다려도 풀리지 않는 이유로 Runner가 Claim을 거부함. 요청은 보내지 않았고 Runner의 프로세스는 계속 실행됨. 그 프로세스에 닿으려면 게이트웨이를 재시작할 것 |
+| `STALE_CONTROLLER` | [독립 Runner](runner-isolation.md#claim)가 다른 Claim으로 바뀐 Claim 아래에서 보낸 요청, 또는 Runner를 제어하지 않는 연결의 요청을 거부함. 요청이 요구한 일은 하나도 하지 않았고, 요청이 재개한 승인은 다시 승인된 상태가 됨. 재시도하면 게이트웨이의 현재 Claim 아래에서 요청을 보냄 |
 | `INTERNAL` | 스케줄러·스토어 불변조건 실패, 또는 [독립 Runner](runner-isolation.md#process-records)에 연결한 게이트웨이가 실행을 기록하지 못해 시작하지 않음. 점유가 아니므로 `WORKSPACE_BUSY`로 재시도하지 말 것 |
 
 ## 실행 요청과 완료의 구분

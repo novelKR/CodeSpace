@@ -150,14 +150,18 @@ pub use socket::{
     allocate_private_runner_dir, is_forbidden_runner_dir, prepare_runner_socket_dir,
     reclaim_leftover_socket, runner_socket_path, RUNNER_SOCKET_NAME,
 };
-pub use uds::{runner_disconnected, DisconnectHook, RunnerHello, UdsRunner, RUNNER_CALL_DEADLINE};
+pub use uds::{
+    runner_disconnected, runner_reconnecting, ClaimError, DisconnectHook, LinkEvent, LinkObserver,
+    RunnerHello, UdsRunner, CLAIM_START_BOUND, RECLAIM_BACKOFF_MAX, RUNNER_CALL_DEADLINE,
+};
 pub use watch::{FsWatchEvent, FsWatchKind, WatchClosed, WatchSubscription};
 #[cfg(feature = "devguard")]
 pub use wire::serve_runner_connection_with_registration;
 pub use wire::{
-    host_worker, read_frame, recovery_pending, serve_runner_connection, write_frame,
-    IndependentRunner, RunnerEvent, RunnerOp, RunnerOpResult, Served, StopHandle, WireEnvelope,
-    WireKind, STOP_DRAIN_BOUND, WIRE_PROTOCOL,
+    host_worker, read_frame, recovery_pending, serve_runner_connection, write_frame, ClaimNote,
+    ClaimObserver, ClaimRefusal, IndependentRunner, RunnerClaim, RunnerEvent, RunnerEvents,
+    RunnerInventoryEntry, RunnerOp, RunnerOpResult, Served, StopHandle, WireEnvelope, WireKind,
+    CLAIM_WAIT_BOUND, STOP_DRAIN_BOUND, WIRE_PROTOCOL,
 };
 
 /// Execution-plane API. Control-plane fields (`work_id`, coordination,
@@ -322,13 +326,28 @@ impl RuntimeBackend {
         Self::InProcess(InProcessRunner::new(on_release))
     }
 
-    /// The backend is an independent Runner that an earlier gateway controlled, so this gateway
-    /// starts no new execution, patch or approval resume (P1R-C01): see
-    /// [`UdsRunner::refuses_new_work`].
-    pub fn refuses_new_work(&self) -> bool {
+    /// The controller epoch under which this gateway sends a new execution, patch or approval
+    /// resume, none for a runner it does not claim, or why it starts none (P1R-C01, P1R-C03):
+    /// see [`UdsRunner::dispatch_epoch`].
+    pub fn dispatch_epoch(&self) -> Result<Option<u64>, ErrorBody> {
         match self {
-            Self::InProcess(_) => false,
-            Self::Uds(runner) => runner.refuses_new_work(),
+            Self::InProcess(_) => Ok(None),
+            Self::Uds(runner) => runner.dispatch_epoch(),
+        }
+    }
+
+    /// Why this gateway starts no new execution, patch or approval resume, if it does not
+    /// (P1R-C01, P1R-C03): see [`UdsRunner::dispatch_epoch`].
+    pub fn new_work_refusal(&self) -> Option<ErrorBody> {
+        self.dispatch_epoch().err()
+    }
+
+    /// This backend, sending its requests under the controller epoch `epoch` when there is one
+    /// (P1R-C03): see [`UdsRunner::at_epoch`].
+    pub fn at_epoch(&self, epoch: Option<u64>) -> Self {
+        match (self, epoch) {
+            (Self::Uds(runner), Some(epoch)) => Self::Uds(runner.at_epoch(epoch)),
+            _ => self.clone(),
         }
     }
 }

@@ -158,23 +158,35 @@ subtree and drops handles. Restart does not recover process_id. If you lose \
 the spawn response before receiving process_id, do not search for the lost \
 handle and do not start a duplicate command.";
 
-/// The lifetime paragraph for an independent Runner (P1R-C01), after what the gateway's
-/// shutdown does. It states only what the Runner guarantees: a pipe process has no process
-/// group of its own, so terminating one signals that process alone.
+/// The lifetime paragraph for an independent Runner (P1R-C01, P1R-C03), after what the
+/// gateway's shutdown does. It states only what the Runner guarantees: a pipe process has no
+/// process group of its own, so terminating one signals that process alone; and one gateway at a
+/// time controls the Runner, but nothing keeps another process of the same user from claiming it
+/// while none does.
 const INDEPENDENT_LIFETIME: &str = "\
 Managed process lifetime is owned by an independent Runner that this \
 gateway did not start, not by the MCP session or the gateway. Client or \
-HTTP disconnect keeps the process running. {shutdown} If this gateway \
-loses its Runner connection, the processes keep running, but this gateway \
-refuses every later request that needs the Runner with RUNNER_DISCONNECTED \
-until it is restarted. A restarted gateway can read the output and status \
-of, write to, resize and terminate the processes started before, with the \
-same process_id, but it refuses new exec_command, apply_patch and \
+HTTP disconnect keeps the process running. {shutdown} One gateway at a \
+time controls the Runner. If this gateway loses its Runner connection, the \
+processes keep running and the gateway claims the Runner again; meanwhile \
+every request that needs the Runner returns RUNNER_RECONNECTING and can be \
+retried once the gateway has reconnected. If the gateway cannot claim the \
+Runner again, those requests return RUNNER_DISCONNECTED until it is \
+restarted. STALE_CONTROLLER means that the Runner refused a request sent \
+under an earlier claim; nothing was started or changed. After a reconnect \
+or a restart, the gateway can read the output and status of, write to, \
+resize and terminate the processes started before, with the same \
+process_id, but if work was started on the Runner under an earlier claim, \
+this gateway's own included, it refuses new exec_command, apply_patch and \
 operation_resume with RECOVERY_PENDING until the Runner is stopped and a \
-new one is started. Terminating a pipe process signals that process only, \
-not its process group, so processes it started may outlive it. If you lose \
-the spawn response before receiving process_id, do not search for the lost \
-handle and do not start a duplicate command.";
+new one is started. A request refused with one of these codes consumes no \
+approval, and a patch refused with one keeps no result for its \
+operation_key. While no gateway controls the Runner, any process of the \
+same user that can reach its socket, such as a command run without a \
+sandbox, can take control of it. Terminating a pipe process signals that \
+process only, not its process group, so processes it started may outlive \
+it. If you lose the spawn response before receiving process_id, do not \
+search for the lost handle and do not start a duplicate command.";
 
 const DETACH_SHUTDOWN: &str = "\
 When this gateway shuts down it detaches: the Runner keeps the processes, \
@@ -261,14 +273,30 @@ impl CodeSpace {
         self
     }
 
-    /// New work is refused when the runner is an independent Runner that an earlier gateway
-    /// controlled (P1R-C01), before any approval, lease or claim: what that gateway left is not
-    /// recovered yet.
+    /// New work is refused before any approval, lease or claim when the runner is an
+    /// independent Runner that this gateway cannot send it to (P1R-C01, P1R-C03): an earlier
+    /// controller started work on it, which is not recovered yet, or the connection to it is
+    /// lost or being made again.
     fn refuse_new_work(&self) -> Result<(), ErrorBody> {
-        if self.runner.refuses_new_work() {
-            return Err(codespace_runner::recovery_pending());
+        match self.runner.new_work_refusal() {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
         }
-        Ok(())
+    }
+
+    /// Give back the approval being resumed, unconsumed, after a refusal that proves its
+    /// execution or patch never started (CSRG-U5, P1R-C03).
+    fn give_back(&self, resume: Option<&ApprovalId>) {
+        let Some(approval_id) = resume else {
+            return;
+        };
+        if let Err(err) = self.store.return_resume(approval_id) {
+            tracing::warn!(
+                approval_id = %approval_id.0,
+                error = %err.message,
+                "the approval could not be given back; its resume consumes it"
+            );
+        }
     }
 
     /// `info` with the process lifetime of the gateway's runner (P1R-C01).
@@ -668,6 +696,9 @@ impl CodeSpace {
         codespace_policy::allow(ws, Action::Write, &ClientClaims::default())?;
         ws.require_file_write()?;
         let _lease = self.store.acquire_write(&params.workspace_id.0).await?;
+        // Checked again once the lease is held, before the approval being resumed is marked
+        // (P1R-C03): a refusal here leaves it queued.
+        let epoch = self.runner.dispatch_epoch()?;
         if let Some(id) = resume {
             self.store.mark_resuming(id)?;
         }
@@ -685,6 +716,7 @@ impl CodeSpace {
             Begin::Fresh(operation_id) => {
                 let result = match self
                     .runner
+                    .at_epoch(epoch)
                     .apply_patch(
                         ws,
                         RunnerApplyPatchRequest {
@@ -704,6 +736,19 @@ impl CodeSpace {
                         work_id: None,
                         coordination: None,
                     },
+                    // No Runner acted on it (P1R-C03): the operation is forgotten, so its
+                    // operation_key begins afresh, and the approval is given back.
+                    Err(RunnerError::Execution(err)) if never_sent(&err) => {
+                        if let Err(forgotten) = self.store.abandon(&operation_id) {
+                            tracing::warn!(
+                                operation_id = %operation_id.0,
+                                error = %forgotten.message,
+                                "the operation that no Runner acted on could not be forgotten"
+                            );
+                        }
+                        self.give_back(resume);
+                        return Err(err);
+                    }
                     Err(RunnerError::Execution(err)) => {
                         let failed =
                             ApplyPatchResult::new(PatchStatus::Rejected, operation_id.clone());
@@ -997,14 +1042,20 @@ impl CodeSpace {
             .store
             .acquire_shell_busy(&params.workspace_id.0, &process_id.0)
             .await?;
+        // Checked again once the workspace is reserved, before the approval being resumed is
+        // marked (P1R-C03): a refusal here leaves it queued and releases the reservation.
+        let epoch = self.runner.dispatch_epoch()?;
+        let runner = self.runner.at_epoch(epoch);
         // A governed execution's DevGuard attempt, minted before its record names it.
         let attempt_id = participation.attempt_id();
         match &self.records {
-            // Recorded before it is sent to an independent Runner, in the transaction that marks
-            // the approval it resumes (P1R-C02).
+            // Recorded before it is sent to an independent Runner, under the controller epoch it
+            // is sent with, in the transaction that marks the approval it resumes (P1R-C02,
+            // P1R-C03).
             Some(records) => records.dispatching(
                 &process_id,
                 &params,
+                epoch,
                 participation.recorded(),
                 attempt_id.as_deref(),
                 resume,
@@ -1030,14 +1081,14 @@ impl CodeSpace {
                 {
                     // The workspace lease is held while the owner prepares; nothing is started,
                     // so it is released with the answer whatever the attempt's own state.
-                    let refused = self.prepare_governed(ws, req, attempt_id).await;
+                    let refused = self.prepare_governed(&runner, ws, req, attempt_id).await;
                     self.record_not_started(&process_id);
                     reservation.abort();
                     return Err(self.refused_governed(resume, refused));
                 }
                 // The owner may create a process from here on (CSRG-U4).
                 reservation.arm_dispatch();
-                return match self.launch_governed(ws, req, attempt_id).await {
+                return match self.launch_governed(&runner, ws, req, attempt_id).await {
                     Ok(launch) => {
                         reservation.confirm();
                         self.record_launch(&launch);
@@ -1065,7 +1116,7 @@ impl CodeSpace {
             }
         }
         reservation.arm_dispatch();
-        match self.runner.exec(ws, req).await {
+        match runner.exec(ws, req).await {
             Ok(result) => {
                 reservation.confirm();
                 if let Some(records) = &self.records {
@@ -1093,7 +1144,12 @@ impl CodeSpace {
             Err(err) => {
                 reservation.abort();
                 self.record_not_started(&process_id);
-                Err(err.into_error_body())
+                let err = err.into_error_body();
+                // No Runner acted on it (P1R-C03).
+                if never_sent(&err) {
+                    self.give_back(resume);
+                }
+                Err(err)
             }
         }
     }
@@ -1147,6 +1203,27 @@ impl NotStarted {
             proven: false,
         }
     }
+
+    /// The owner's refusal of a request, which proves that nothing started when no Runner acted
+    /// on the request (P1R-C03).
+    fn refused(body: ErrorBody) -> Self {
+        Self {
+            proven: never_sent(&body),
+            body,
+        }
+    }
+}
+
+/// A refusal of a request that no independent Runner acted on, so nothing it asked for started
+/// (P1R-C01, P1R-C03): the gateway could not send it, or the Runner refused it before acting.
+fn never_sent(err: &ErrorBody) -> bool {
+    matches!(
+        err.code,
+        ErrorCode::StaleController
+            | ErrorCode::RecoveryPending
+            | ErrorCode::RunnerReconnecting
+            | ErrorCode::RunnerDisconnected
+    )
 }
 
 /// How a new execution in a workspace takes part in the resource authority.
@@ -1216,6 +1293,7 @@ impl CodeSpace {
     #[cfg(feature = "devguard")]
     async fn prepare_governed(
         &self,
+        runner: &RuntimeBackend,
         ws: &Workspace,
         req: RunnerExecRequest,
         attempt_id: String,
@@ -1226,12 +1304,9 @@ impl CodeSpace {
                 "no execution owner registration",
             ));
         };
-        match registration
-            .prepare(&self.runner, ws, req, attempt_id)
-            .await
-        {
+        match registration.prepare(runner, ws, req, attempt_id).await {
             Ok(report) => NotStarted::report(report, &ws.id.0),
-            Err(err) => NotStarted::unproven(err),
+            Err(err) => NotStarted::refused(err),
         }
     }
 
@@ -1240,6 +1315,7 @@ impl CodeSpace {
     #[cfg(feature = "devguard")]
     async fn launch_governed(
         &self,
+        runner: &RuntimeBackend,
         ws: &Workspace,
         req: RunnerExecRequest,
         attempt_id: String,
@@ -1251,9 +1327,9 @@ impl CodeSpace {
             )));
         };
         match registration
-            .launch(&self.runner, ws, req, attempt_id)
+            .launch(runner, ws, req, attempt_id)
             .await
-            .map_err(NotStarted::unproven)?
+            .map_err(NotStarted::refused)?
         {
             codespace_runner::launch::LaunchReport::Launched(launch) => Ok(launch),
             codespace_runner::launch::LaunchReport::NotLaunched(report) => {
@@ -1263,18 +1339,12 @@ impl CodeSpace {
     }
 
     /// The refusal of a governed execution. An approval being resumed gets its hold back when
-    /// the authority proves that the command never started (CSRG-U5); otherwise the resume
-    /// consumes it as before.
+    /// the authority proves that the command never started (CSRG-U5), or no Runner acted on it
+    /// (P1R-C03); otherwise the resume consumes it as before.
     #[cfg(feature = "devguard")]
     fn refused_governed(&self, resume: Option<&ApprovalId>, refused: NotStarted) -> ErrorBody {
-        if let (Some(approval_id), true) = (resume, refused.proven) {
-            if let Err(err) = self.store.return_resume(approval_id) {
-                tracing::warn!(
-                    approval_id = %approval_id.0,
-                    error = %err.message,
-                    "the approval could not be given back; its resume consumes it"
-                );
-            }
+        if refused.proven {
+            self.give_back(resume);
         }
         refused.body
     }
@@ -3017,8 +3087,6 @@ mod devguard_tests {
                             protocol: WIRE_PROTOCOL,
                             lifecycle: RunnerLifecycle::Managed,
                             identity: None,
-                            previous_controller: false,
-                            inherited_processes: 0,
                             registration: true,
                             admission: true,
                             launch: false,
@@ -3118,8 +3186,6 @@ mod devguard_tests {
                             protocol: WIRE_PROTOCOL,
                             lifecycle: RunnerLifecycle::Managed,
                             identity: None,
-                            previous_controller: false,
-                            inherited_processes: 0,
                             registration: true,
                             admission: true,
                             launch: true,
@@ -4397,10 +4463,13 @@ mod independent_tests {
     use crate::config::{GatewayLifecycle, RunnerExitIntent};
     use crate::records::ProcessRecords;
     use codespace_domain::{
-        ApprovalDecision, ProcessDisconnectAction, ProcessState, ProcessStatusParams,
+        ApprovalDecision, OperationKey, ProcessDisconnectAction, ProcessState, ProcessStatusParams,
         ProcessTermination, TerminateProcessParams, WorkspaceId,
     };
-    use codespace_runner::{host_worker, IndependentRunner, RunnerIdentity, StopHandle, UdsRunner};
+    use codespace_runner::{
+        host_worker, IndependentRunner, LinkEvent, RunnerIdentity, RunnerOp, RunnerOpResult,
+        StopHandle, UdsRunner,
+    };
     use codespace_store::{
         ProcessOutcome, ProcessPhase, ProcessRecord, RecordedParticipation, RunnerRef,
     };
@@ -4453,8 +4522,8 @@ mod independent_tests {
         }
     }
 
-    /// A gateway connected to an independent Runner through `stream`, recording its executions
-    /// in `database`.
+    /// A gateway connected to an independent Runner through `stream`, which it claims for
+    /// `database` (P1R-C03), recording its executions there.
     async fn recording_gateway(
         root: &std::path::Path,
         database: &std::path::Path,
@@ -4464,6 +4533,7 @@ mod independent_tests {
         let (release, exits) = ProcessRecords::release_hook(store.clone());
         let runner = UdsRunner::from_stream(stream, release);
         runner.handshake().await.unwrap();
+        runner.claim(&store.store_id().unwrap()).await.unwrap();
         let identity = runner
             .hello()
             .identity
@@ -4573,16 +4643,35 @@ mod independent_tests {
         }
     }
 
-    /// A Runner that answers `Hello` as the independent Runner `identity`, hands the first
-    /// execution it is sent to `on_exec`, and then is lost without answering it.
+    /// A Runner that answers `Hello` as the independent Runner `identity` and a `Claim` with
+    /// epoch 1, hands the first execution it is sent to `on_exec`, and then is lost without
+    /// answering it.
     async fn fake_runner(
-        mut stream: UnixStream,
+        stream: UnixStream,
         identity: RunnerIdentity,
         on_exec: impl FnOnce(RunnerExecRequest),
     ) {
+        let mut on_exec = Some(on_exec);
+        fake_runner_answering(stream, identity, |op| match (op, on_exec.take()) {
+            (RunnerOp::Exec { request, .. }, Some(on_exec)) => {
+                on_exec(request);
+                None
+            }
+            (other, _) => panic!("a request the fake Runner does not answer: {other:?}"),
+        })
+        .await
+    }
+
+    /// A Runner that answers `Hello` as the independent Runner `identity` and a `Claim` with
+    /// epoch 1, and any other request as `answer` says, until it returns none: the Runner is
+    /// then lost without answering.
+    async fn fake_runner_answering(
+        mut stream: UnixStream,
+        identity: RunnerIdentity,
+        mut answer: impl FnMut(RunnerOp) -> Option<Result<RunnerOpResult, ErrorBody>>,
+    ) {
         use codespace_runner::{
-            read_frame, write_frame, RunnerLifecycle, RunnerOp, RunnerOpResult, WireEnvelope,
-            WIRE_PROTOCOL,
+            read_frame, write_frame, RunnerClaim, RunnerLifecycle, WireEnvelope, WIRE_PROTOCOL,
         };
         while let Ok(Some(frame)) = read_frame(&mut stream).await {
             let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
@@ -4601,9 +4690,160 @@ mod independent_tests {
                     let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
                     write_frame(&mut stream, &reply).await.unwrap();
                 }
-                Some(RunnerOp::Exec { request, .. }) => return on_exec(request),
-                other => panic!("a request the fake Runner does not answer: {other:?}"),
+                Some(RunnerOp::Claim { .. }) => {
+                    let claimed = RunnerOpResult::Claimed(RunnerClaim {
+                        epoch: 1,
+                        previous_controller: false,
+                        processes: Vec::new(),
+                        events_through: 0,
+                    });
+                    let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(claimed));
+                    write_frame(&mut stream, &reply).await.unwrap();
+                }
+                Some(op) => match answer(op) {
+                    Some(result) => {
+                        let reply = WireEnvelope::response(request.request_id.unwrap(), result);
+                        write_frame(&mut stream, &reply).await.unwrap();
+                    }
+                    None => return,
+                },
+                None => panic!("a request without an operation"),
             }
+        }
+    }
+
+    /// A relay between gateways and the Runner in this process, listening on a socket, which
+    /// cuts its connections or holds new ones unanswered, as a lost connection does (P1R-C03).
+    struct Relay {
+        socket: std::path::PathBuf,
+        _dir: tempfile::TempDir,
+        links: Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>>,
+        held: Arc<tokio::sync::watch::Sender<bool>>,
+        accepting: tokio::task::AbortHandle,
+    }
+
+    impl Relay {
+        fn start(runner: &Runner) -> Self {
+            // A short path: a socket's path must fit `sun_path` on macOS.
+            let dir = tempfile::Builder::new()
+                .prefix("cs-")
+                .tempdir_in("/tmp")
+                .unwrap();
+            let socket = dir.path().join("relay.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let links: Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>> = Arc::default();
+            let held = Arc::new(tokio::sync::watch::Sender::new(false));
+            let streams = runner.streams.clone();
+            let accepting = tokio::spawn({
+                let (links, held) = (links.clone(), held.clone());
+                async move {
+                    while let Ok((mut gateway, _)) = listener.accept().await {
+                        let mut released = held.subscribe();
+                        let streams = streams.clone();
+                        let link = tokio::spawn(async move {
+                            let _ = released.wait_for(|held| !*held).await;
+                            let (mut runner, served) = UnixStream::pair().unwrap();
+                            if streams.send(served).is_ok() {
+                                let _ =
+                                    tokio::io::copy_bidirectional(&mut gateway, &mut runner).await;
+                            }
+                        });
+                        links.lock().unwrap().push(link.abort_handle());
+                    }
+                }
+            })
+            .abort_handle();
+            Self {
+                socket,
+                _dir: dir,
+                links,
+                held,
+                accepting,
+            }
+        }
+
+        /// Cut every connection: both of its ends see it end.
+        fn cut(&self) {
+            for link in self.links.lock().unwrap().drain(..) {
+                link.abort();
+            }
+        }
+
+        /// Hold each new connection, unanswered, until let go.
+        fn hold(&self, held: bool) {
+            self.held.send_replace(held);
+        }
+    }
+
+    impl Drop for Relay {
+        fn drop(&mut self) {
+            self.accepting.abort();
+            self.cut();
+        }
+    }
+
+    /// A gateway that connects to the independent Runner at `socket` and claims it for
+    /// `database` as `codespace-mcp` does (P1R-C03), claiming it again when its connection is
+    /// lost and recording its executions there, with what becomes of its connection.
+    async fn claiming_gateway(
+        root: &std::path::Path,
+        database: &std::path::Path,
+        socket: &std::path::Path,
+    ) -> (CodeSpace, mpsc::UnboundedReceiver<LinkEvent>) {
+        let store = Arc::new(Store::open(database).unwrap());
+        let (release, exits) = ProcessRecords::release_hook(store.clone());
+        let (noted, events) = mpsc::unbounded_channel();
+        let (runner, claim) = UdsRunner::claim_independent(
+            socket,
+            &store.store_id().unwrap(),
+            release,
+            Arc::new(move |event| {
+                let _ = noted.send(event);
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!((claim.epoch, claim.previous_controller), (1, false));
+        let identity = runner.hello().identity.unwrap();
+        let runner = RuntimeBackend::Uds(runner);
+        let records = ProcessRecords::start(store.clone(), &identity, runner.clone(), exits);
+        let gateway =
+            CodeSpace::with_store_and_runner(participation_registry(root, "off"), store, runner)
+                .with_lifecycle(DETACHING)
+                .with_records(records);
+        (gateway, events)
+    }
+
+    /// What next becomes of the gateway's connection, past its failed tries.
+    async fn next_link_event(events: &mut mpsc::UnboundedReceiver<LinkEvent>) -> LinkEvent {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(20), events.recv())
+                .await
+                .expect("a link event")
+                .expect("the client")
+            {
+                LinkEvent::Retrying { .. } => {}
+                event => return event,
+            }
+        }
+    }
+
+    /// How many executions the operations database records.
+    fn recorded_executions(database: &std::path::Path) -> u64 {
+        rusqlite::Connection::open(database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM processes", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn patch(workspace_id: &str, file: &str, operation_key: Option<&str>) -> ApplyPatchParams {
+        ApplyPatchParams {
+            workspace_id: WorkspaceId(workspace_id.into()),
+            patch: format!("*** Begin Patch\n*** Add File: {file}\n+added\n*** End Patch\n"),
+            expected_versions: BTreeMap::new(),
+            operation_key: operation_key.map(|key| OperationKey(key.into())),
+            check_only: false,
+            work_id: None,
         }
     }
 
@@ -4618,7 +4858,7 @@ mod independent_tests {
         let database = dir.path().join("operations.db");
         let runner = Runner::start();
         let first = runner.gateway(&root, &database).await;
-        assert!(!first.runner.refuses_new_work());
+        assert_eq!(first.runner.new_work_refusal(), None);
         let touch = format!("{}/resumed", root.display());
         let held = refused(
             first
@@ -4650,7 +4890,10 @@ mod independent_tests {
         detach(&first).await;
 
         let next = runner.gateway(&root, &database).await;
-        assert!(next.runner.refuses_new_work());
+        assert_eq!(
+            next.runner.new_work_refusal().map(|refusal| refusal.code),
+            Some(ErrorCode::RecoveryPending)
+        );
         let info = next
             .workspace_info(Parameters(WorkspaceInfoParams {
                 workspace_id: Some("demo".into()),
@@ -4809,7 +5052,8 @@ mod independent_tests {
         let output = output_of(&gateway, &started.process_id).await;
         let record = record_once(&database, &started.process_id, terminal).await;
         assert_eq!(record.runner, runner_ref(RunnerIdentity::this_process()));
-        assert_eq!(record.controller_epoch, None);
+        // Sent under the gateway's Claim, the Runner's first (P1R-C03).
+        assert_eq!(record.controller_epoch, Some(1));
         assert_eq!(record.workspace_id, "demo");
         assert_eq!(record.approval_id, None);
         assert_eq!(record.attempt_id, None);
@@ -4914,6 +5158,7 @@ mod independent_tests {
             drop(lost);
             let uds = UdsRunner::from_stream(client, release);
             uds.handshake().await.unwrap();
+            uds.claim(&store.store_id().unwrap()).await.unwrap();
             let identity = uds.hello().identity.unwrap();
             let backend = RuntimeBackend::Uds(uds);
             let (_, none) = ProcessRecords::release_hook(store.clone());
@@ -5219,6 +5464,313 @@ mod independent_tests {
         );
     }
 
+    /// A gateway whose connection to its independent Runner is lost refuses new executions,
+    /// patches and approval resumes with RUNNER_RECONNECTING while it claims the Runner again
+    /// (P1R-C03): nothing is reserved or recorded for them, and the approval stays granted. Once
+    /// it claimed the Runner again, a gateway that had started nothing works as before, under
+    /// the new epoch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gateway_refuses_new_work_while_it_claims_its_runner_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let relay = Relay::start(&runner);
+        let (gateway, mut events) = claiming_gateway(&root, &database, &relay.socket).await;
+        let touch = format!("{}/resumed", root.display());
+        let held = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/usr/bin/touch", &touch],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(held.code, ErrorCode::ApprovalRequired, "{held:?}");
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        gateway
+            .approval_resolve(Parameters(ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+
+        relay.hold(true);
+        relay.cut();
+        assert_eq!(next_link_event(&mut events).await, LinkEvent::Lost);
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RunnerReconnecting, "{refusal:?}");
+        let refusal = refused(
+            gateway
+                .apply_patch(Parameters(patch("demo", "added.txt", Some("patch-1"))))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RunnerReconnecting, "{refusal:?}");
+        let refusal = refused(
+            gateway
+                .operation_resume(Parameters(OperationResumeParams {
+                    approval_id: approval_id.clone(),
+                }))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RunnerReconnecting, "{refusal:?}");
+        assert_eq!(
+            gateway.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Granted
+        );
+        for workspace_id in ["demo", "gov-confirm"] {
+            drop(
+                gateway
+                    .store
+                    .try_acquire_write(workspace_id)
+                    .expect("nothing holds the workspace"),
+            );
+        }
+        assert_eq!(recorded_executions(&database), 0);
+        assert_eq!(
+            gateway
+                .store
+                .status_lookup(None, Some(&OperationKey("patch-1".into())))
+                .unwrap_err()
+                .code,
+            ErrorCode::OperationNotFound
+        );
+
+        relay.hold(false);
+        match next_link_event(&mut events).await {
+            LinkEvent::Reclaimed(claim) => {
+                assert_eq!((claim.epoch, claim.previous_controller), (2, false))
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(gateway.runner.new_work_refusal(), None);
+        let resumed = gateway
+            .operation_resume(Parameters(OperationResumeParams {
+                approval_id: approval_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        let started = resumed.exec_command.expect("the execution");
+        let record = record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(record.controller_epoch, Some(2));
+        assert_eq!(record.approval_id.as_ref(), Some(&approval_id));
+        assert_eq!(record.exit_code, Some(0));
+        assert!(root.join("resumed").exists());
+        assert_eq!(
+            gateway.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Consumed
+        );
+    }
+
+    /// A gateway that started work and claimed its Runner again after its connection was lost
+    /// is a controller after one that started work, its own earlier connection, so it starts
+    /// nothing more until recovery is built (P1R-C01, P1R-C03). It reads and ends the process it
+    /// started, under the new epoch, and records how that process ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gateway_that_started_work_claims_its_runner_again_and_starts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let relay = Relay::start(&runner);
+        let (gateway, mut events) = claiming_gateway(&root, &database, &relay.socket).await;
+        let started = gateway
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/sh", "-c", "echo before; exec sleep 30"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+
+        relay.cut();
+        assert_eq!(next_link_event(&mut events).await, LinkEvent::Lost);
+        match next_link_event(&mut events).await {
+            LinkEvent::Reclaimed(claim) => {
+                assert_eq!((claim.epoch, claim.previous_controller), (2, true));
+                assert!(
+                    claim
+                        .processes
+                        .iter()
+                        .any(|entry| entry.status.process_id == started.process_id
+                            && entry.status.state == ProcessState::Running),
+                    "{claim:?}"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let read = gateway
+                .read_process(Parameters(ReadProcessParams {
+                    process_id: started.process_id.clone(),
+                    cursor: 0,
+                }))
+                .await
+                .unwrap()
+                .0;
+            if read.chunk.contains("before") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{read:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        gateway
+            .terminate_process(Parameters(TerminateProcessParams {
+                process_id: started.process_id.clone(),
+            }))
+            .await
+            .unwrap();
+        let record = record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(record.controller_epoch, Some(1));
+        assert_eq!(
+            record.outcome,
+            Some(ProcessOutcome::Ended(ProcessTermination::Terminated)),
+            "{record:?}"
+        );
+        released(&gateway, "demo").await;
+    }
+
+    /// An execution, a patch or an approval resume that the Runner refuses as sent under an
+    /// earlier Claim never ran (P1R-C03): the approval is given back granted and can be resumed
+    /// again, the patch's operation_key begins afresh, the workspace is free again, and the
+    /// execution is recorded as not started.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_refused_as_stale_never_ran_and_gives_its_approval_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let (client, server) = UnixStream::pair().unwrap();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = sent.clone();
+        tokio::spawn(fake_runner_answering(server, fake_identity(), move |op| {
+            seen.lock().unwrap().push(match op {
+                RunnerOp::Exec { request, .. } => request.process_id.0,
+                RunnerOp::ApplyPatch { .. } => "apply_patch".into(),
+                other => panic!("a request the fake Runner does not answer: {other:?}"),
+            });
+            Some(Err(ErrorBody::new(
+                ErrorCode::StaleController,
+                "this connection does not control the Runner under epoch 1: it was claimed \
+                 again, under epoch 2",
+            )))
+        }));
+        let gateway = recording_gateway(&root, &database, client).await;
+        let touch = format!("{}/resumed", root.display());
+        let held = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/usr/bin/touch", &touch],
+                    false,
+                )))
+                .await,
+        );
+        let exec_approval = ApprovalId(held.approval_id.unwrap());
+        let held = refused(
+            gateway
+                .apply_patch(Parameters(patch(
+                    "gov-confirm",
+                    "held.txt",
+                    Some("patch-1"),
+                )))
+                .await,
+        );
+        let patch_approval = ApprovalId(held.approval_id.unwrap());
+        for approval_id in [&exec_approval, &patch_approval] {
+            gateway
+                .approval_resolve(Parameters(ApprovalResolveParams {
+                    approval_id: approval_id.clone(),
+                    decision: ApprovalDecision::Grant,
+                }))
+                .await
+                .unwrap();
+        }
+
+        for (approval_id, resumes) in [(&exec_approval, 2), (&patch_approval, 2)] {
+            for _ in 0..resumes {
+                let refusal = refused(
+                    gateway
+                        .operation_resume(Parameters(OperationResumeParams {
+                            approval_id: approval_id.clone(),
+                        }))
+                        .await,
+                );
+                assert_eq!(refusal.code, ErrorCode::StaleController, "{refusal:?}");
+                assert_eq!(
+                    gateway.store.inspect_approval(approval_id).unwrap().0,
+                    ApprovalState::Granted
+                );
+            }
+        }
+        assert_eq!(
+            gateway
+                .store
+                .status_lookup(None, Some(&OperationKey("patch-1".into())))
+                .unwrap_err()
+                .code,
+            ErrorCode::OperationNotFound
+        );
+        for _ in 0..2 {
+            let refusal = refused(
+                gateway
+                    .apply_patch(Parameters(patch("demo", "added.txt", Some("patch-2"))))
+                    .await,
+            );
+            assert_eq!(refusal.code, ErrorCode::StaleController, "{refusal:?}");
+        }
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 6, "{sent:?}");
+        assert_eq!(&sent[2..], ["apply_patch"; 4]);
+        for process_id in &sent[..2] {
+            let record = gateway
+                .store
+                .process_record(process_id)
+                .unwrap()
+                .expect("the record");
+            assert_eq!(
+                record.outcome,
+                Some(ProcessOutcome::NotStarted),
+                "{record:?}"
+            );
+            assert_eq!(record.approval_id.as_ref(), Some(&exec_approval));
+        }
+        for workspace_id in ["demo", "gov-confirm"] {
+            drop(
+                gateway
+                    .store
+                    .try_acquire_write(workspace_id)
+                    .expect("nothing holds the workspace"),
+            );
+        }
+        assert!(!root.join("resumed").exists());
+    }
+
     /// Each independent mode states only what its Runner guarantees, and the rest of the
     /// instructions stay as they are.
     #[test]
@@ -5235,8 +5787,13 @@ mod independent_tests {
             for expected in [
                 "owned by an independent Runner",
                 "Client or HTTP disconnect keeps the process running",
+                "One gateway at a time controls the Runner",
+                "RUNNER_RECONNECTING",
                 "RUNNER_DISCONNECTED",
+                "STALE_CONTROLLER",
                 "RECOVERY_PENDING",
+                "consumes no approval",
+                "any process of the same user",
                 "same process_id",
                 "signals that process only",
                 says,

@@ -15,6 +15,8 @@ The Runner executes approved requests. `PathSandbox` checks logical file scope; 
 
 The optional UDS worker separates processes on the same host. Its socket lives in a private directory, but process separation is not an OS command sandbox. The Linux helper supplies the command sandbox when its probe succeeds. [Runner isolation](runner-isolation.md) defines those conditions and failure behavior.
 
+An [independent Runner](runner-isolation.md#claim), not a supported mode yet, serves every connection of its own user and lets one at a time control it after a Claim. While no gateway controls it, any process of that user that can reach its socket can claim it, a command run without the Linux sandbox included; see [who can take control](runner-isolation.md#claim-exposure).
+
 <a id="workspace-registry"></a>
 <a id="profiles-mvp"></a>
 <a id="runner-isolation-linux"></a>
@@ -34,7 +36,7 @@ The operator-registered root is a trust anchor. Keep tokens, the operations data
 
 Version checks prevent applying a patch to an unexpected file version. Operation keys detect duplicate patch requests; they are not authorization tokens. Workspace occupancy serializes mutating patch and exec work. Request-owned conflicts wait in an in-memory FIFO that starts at acquire. A live process returns `WORKSPACE_BUSY` for trailing waiters and new arrivals. Occupancy is not durable. There is no durable process recovery.
 
-Confirmation holds in `CODESPACE_OPERATIONS_DB` (`approvals`) store the V4A patch or exec argv while the row is `pending`, `granted`, `queued`, or `resuming`. The patch operations ledger stores hashes, not patch text. After `denied` or `consumed`, the hold body is replaced with digest metadata (tool, workspace, fingerprint). A gateway with an [independent Runner](runner-isolation.md#process-records) also records its executions there (`processes`), each with the SHA-256 digest of its argv, never the argv, its environment or a secret. Keep this database outside the workspace root, with tokens and gateway configuration. The hold is a workflow pause: the same MCP caller can grant it. It is not an isolation boundary.
+Confirmation holds in `CODESPACE_OPERATIONS_DB` (`approvals`) store the V4A patch or exec argv while the row is `pending`, `granted`, `queued`, or `resuming`. The patch operations ledger stores hashes, not patch text. After `denied` or `consumed`, the hold body is replaced with digest metadata (tool, workspace, fingerprint). A gateway with an [independent Runner](runner-isolation.md#process-records) also records its executions there (`processes`), each with the SHA-256 digest of its argv, never the argv, its environment or a secret, and keeps there the database's random identity (`store_identity`), which it names when it claims the Runner: it tells one database from another and is not a secret. Keep this database outside the workspace root, with tokens and gateway configuration. The hold is a workflow pause: the same MCP caller can grant it. It is not an isolation boundary.
 
 Patch snapshot restoration is best effort and is not an all-failure rollback guarantee. On `unknown`, partial failure, or post-apply verification error, inspect affected files. See [patch behavior](behavior-differences.md) and [integration recovery rules](agent-integration.md).
 

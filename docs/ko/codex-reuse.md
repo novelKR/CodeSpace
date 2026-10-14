@@ -19,7 +19,7 @@ CodeSpace는 특정 버전에 고정한 Codex 소스의 실행 라이브러리�
 | 어댑터 | Codex 구성 요소 | 현재 역할 |
 | --- | --- | --- |
 | `crates/patch` | `codex-apply-patch`, `codex-exec-server::LOCAL_FS`, 경로 도구, 프로세스 보호 | `codespace-patch` 안에서 V4A 파싱·적용 |
-| `crates/codex-runtime` | `codex-process-hardening`, `codex-uds` | 선택적 worker의 보호 설정과 Unix 소켓 |
+| `crates/codex-runtime` | `codex-process-hardening`, `codex-uds` | 선택적 worker의 보호 설정과 Unix 소켓. [독립 Runner](runner-isolation.md#claim)는 연결마다 peer credential을 읽으려고, `codex-uds`가 Unix에서 감싸는 Tokio listener를 직접 엽니다 |
 | `crates/pty` | `codex-utils-pty` | `tty: true`의 터미널 실행 |
 | `crates/file-system` | `codex-file-system`, `LOCAL_FS`, 경로 도구 | 심볼릭 링크를 따라가지 않는 Runner 파일 I/O와 범위가 제한된 탐색 |
 | `crates/linux-sandbox` | `codex-linux-sandbox`, `codex-sandboxing`, `codex-protocol`, `codex-network-proxy` | 실행 파일 전용 명령 샌드박스 도우미와 enabled 네트워크 프록시 |
@@ -42,7 +42,7 @@ CodeSpace는 특정 버전에 고정한 Codex 소스의 실행 라이브러리�
 
 핵심 crate에는 직접적인 Codex 의존성이 없습니다. 어댑터는 고정된 업스트림의 workspace 의존성을 수용하기 위해 별도의 Cargo workspace로 구성합니다. 파일 시스템·PTY 어댑터는 Runner의 라이브러리 의존성이며, 패치와 Linux 샌드박스는 도우미 프로세스를 사용합니다. Cargo workspace를 분리하는 것만으로 프로세스나 보안 경계가 생기지는 않습니다.
 
-Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-linux-sandbox-protocol`에는 CodeSpace가 정의한 핸드셰이크 데이터만 있고 Codex 타입은 없습니다. worker의 UDS 프로토콜 버전 9와 샌드박스 도우미 프로토콜 버전 1은 별개의 계약입니다.
+Linux 샌드박스 도우미는 실행 파일만 제공합니다. `codespace-linux-sandbox-protocol`에는 CodeSpace가 정의한 핸드셰이크 데이터만 있고 Codex 타입은 없습니다. worker의 UDS 프로토콜 버전 10과 샌드박스 도우미 프로토콜 버전 1은 별개의 계약입니다.
 
 <a id="정책-대-메커니즘"></a>
 <a id="정책-대-메커니즘"></a>

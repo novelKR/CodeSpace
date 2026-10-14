@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use codespace_runner::{
-    allocate_private_runner_dir, runner_socket_path, RunnerLifecycle, ShellRelease, UdsRunner,
+    allocate_private_runner_dir, runner_socket_path, ClaimError, LinkEvent, LinkObserver,
+    RunnerClaim, RunnerLifecycle, ShellRelease, UdsRunner,
 };
 use codespace_store::Store;
 use tokio::net::UnixStream;
@@ -139,66 +140,47 @@ impl RuntimeProcess {
         Ok(runner)
     }
 
-    /// Connect to an independent Runner that an operator or a harness started (P1R-C01). Its
-    /// processes outlive this connection: a lost connection releases nothing, and every later
-    /// request is refused until the gateway is restarted. A worker that is not an independent
-    /// Runner is refused. `leaving` is set before the gateway itself ends the connection.
+    /// Connect to an independent Runner that an operator or a harness started (P1R-C01) and
+    /// claim it for the operations database `store_id` (P1R-C03). Its processes outlive the
+    /// connection: a lost connection releases nothing, and the gateway claims the Runner again,
+    /// refusing every request that needs it meanwhile. A worker that is not an independent
+    /// Runner stating its identity, and a Runner that refuses the Claim for any reason but
+    /// another connection controlling it, are refused; one that another connection controls is
+    /// asked again for up to [`codespace_runner::CLAIM_START_BOUND`].
     pub async fn connect_independent(
         socket: &Path,
+        store_id: &str,
         on_process_exit: ShellRelease,
-        leaving: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<UdsRunner> {
-        let stream = UnixStream::connect(socket)
-            .await
-            .with_context(|| format!("connect {}", socket.display()))?;
-        let runner = UdsRunner::from_stream_with_disconnect(
-            stream,
-            on_process_exit,
-            Arc::new(move || {
-                if !leaving.load(std::sync::atomic::Ordering::SeqCst) {
-                    tracing::error!(
-                        "lost the connection to the independent Runner: its processes keep \
-                         running, and this gateway refuses every request that needs the Runner \
-                         until it is restarted"
-                    );
-                }
-            }),
-        );
-        runner
-            .handshake()
-            .await
-            .map_err(|err| anyhow!("runner hello: {err}"))?;
+    ) -> Result<(UdsRunner, RunnerClaim)> {
+        let (runner, claim) =
+            UdsRunner::claim_independent(socket, store_id, on_process_exit, link_observer())
+                .await
+                .map_err(|err| match err {
+                    ClaimError::Refused { refusal, message } => anyhow!(
+                        "--runner-lifecycle independent: the Runner at {} refused this \
+                         gateway's Claim ({}): {message}",
+                        socket.display(),
+                        refusal.as_str()
+                    ),
+                    ClaimError::NotIndependent(message) => {
+                        anyhow!("--runner-lifecycle independent: {message}")
+                    }
+                    ClaimError::Transport(err) => anyhow!(
+                        "--runner-lifecycle independent: claim the Runner at {}: {err}",
+                        socket.display()
+                    ),
+                })?;
         let hello = runner.hello();
-        if hello.lifecycle != RunnerLifecycle::Independent {
-            runner.close().await;
-            return Err(anyhow!(
-                "--runner-lifecycle independent: the worker at {} is {}, not an independent Runner",
-                socket.display(),
-                hello.lifecycle.as_str()
-            ));
-        }
-        // Its executions are recorded under its identity (P1R-C02).
-        if hello.identity.is_none() {
-            runner.close().await;
-            return Err(anyhow!(
-                "--runner-lifecycle independent: the Runner at {} did not state its identity",
-                socket.display()
-            ));
-        }
         tracing::info!(
             runner_pid = hello.identity.as_ref().map(|identity| identity.pid),
-            previous_controller = hello.previous_controller,
-            inherited_processes = hello.inherited_processes,
-            "connected to an independent Runner; it is not a supported mode yet"
+            epoch = claim.epoch,
+            previous_controller = claim.previous_controller,
+            processes = claim.processes.len(),
+            events_through = claim.events_through,
+            "claimed an independent Runner; it is not a supported mode yet"
         );
-        if hello.previous_controller {
-            tracing::warn!(
-                "an earlier gateway controlled this independent Runner: its processes can be \
-                 queried, read, written to, resized and terminated, but new executions, patches \
-                 and approval resumes are refused with RECOVERY_PENDING"
-            );
-        }
-        Ok(runner)
+        warn_recovery_pending(&claim);
+        Ok((runner, claim))
     }
 
     pub fn socket(&self) -> &Path {
@@ -233,6 +215,66 @@ impl Drop for RuntimeProcess {
         let _ = std::fs::remove_file(&self.socket);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// After a Claim that found work an earlier controller started, this one included before it
+/// lost its connection: nothing new starts (P1R-C01, P1R-C03).
+fn warn_recovery_pending(claim: &RunnerClaim) {
+    if claim.previous_controller {
+        tracing::warn!(
+            epoch = claim.epoch,
+            "an earlier controller started work on this independent Runner: its processes can be \
+             queried, read, written to, resized and terminated, but new executions, patches and \
+             approval resumes are refused with RECOVERY_PENDING"
+        );
+    }
+}
+
+/// What the gateway logs of its connection to the independent Runner it claimed (P1R-C03): a
+/// failed try to claim it again is logged once for each new reason.
+fn link_observer() -> LinkObserver {
+    let last_reason = std::sync::Mutex::new(None::<String>);
+    Arc::new(move |event| match event {
+        LinkEvent::Lost => tracing::warn!(
+            "lost the connection to the independent Runner: its processes keep running, and \
+             this gateway claims it again, refusing requests that need it with \
+             RUNNER_RECONNECTING meanwhile"
+        ),
+        LinkEvent::Retrying { reason, retry } => {
+            let mut last = last_reason
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if last.as_deref() == Some(reason.as_str()) {
+                tracing::debug!(%reason, ?retry, "claiming the independent Runner again");
+            } else {
+                tracing::warn!(
+                    %reason,
+                    ?retry,
+                    "could not claim the independent Runner; trying again"
+                );
+                *last = Some(reason);
+            }
+        }
+        LinkEvent::Reclaimed(claim) => {
+            *last_reason
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            tracing::info!(
+                epoch = claim.epoch,
+                previous_controller = claim.previous_controller,
+                processes = claim.processes.len(),
+                events_through = claim.events_through,
+                "claimed the independent Runner again"
+            );
+            warn_recovery_pending(&claim);
+        }
+        LinkEvent::Gone(reason) => tracing::error!(
+            %reason,
+            "cannot claim the independent Runner again: its processes keep running if it did not \
+             stop, and this gateway refuses every request that needs the Runner with \
+             RUNNER_DISCONNECTED until it is restarted"
+        ),
+    })
 }
 
 /// A worker whose `Hello` did not state that it registers was built without DevGuard.
