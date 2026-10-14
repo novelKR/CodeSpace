@@ -78,6 +78,8 @@ pub struct Cli {
     pub config: Option<std::path::PathBuf>,
 
     /// SQLite file for operations. Unset uses an in-memory database (no replay across restarts).
+    /// Required with `--runner-lifecycle independent`, whose gateway records its executions there
+    /// and holds the lock file beside it (P1R-C02).
     #[arg(long, env = "CODESPACE_OPERATIONS_DB")]
     pub operations_db: Option<std::path::PathBuf>,
 
@@ -153,6 +155,10 @@ impl Cli {
         if self.runner_socket.is_none() {
             return Err("--runner-lifecycle independent needs --runner-socket".into());
         }
+        // Its executions outlive the gateway, so their records must too (P1R-C02).
+        if self.operations_db.is_none() {
+            return Err("--runner-lifecycle independent needs --operations-db".into());
+        }
         Ok(GatewayLifecycle::Independent { exit_intent })
     }
 
@@ -226,9 +232,19 @@ mod tests {
             if !args.contains(&"--runtime-bin") {
                 cli.runtime_bin = None;
             }
+            if !args.contains(&"--operations-db") {
+                cli.operations_db = None;
+            }
             cli.lifecycle()
         };
-        let socket = ["--runner", "uds", "--runner-socket", "/run/cs/runner.sock"];
+        let socket = [
+            "--runner",
+            "uds",
+            "--runner-socket",
+            "/run/cs/runner.sock",
+            "--operations-db",
+            "/var/lib/cs/operations.sqlite",
+        ];
         let independent = ["--runner-lifecycle", "independent"];
         assert_eq!(lifecycle(&[]), Ok(GatewayLifecycle::Managed));
         assert_eq!(lifecycle(&socket), Ok(GatewayLifecycle::Managed));
@@ -252,6 +268,10 @@ mod tests {
             (
                 [&["--runner", "uds"][..], &independent, &detach].concat(),
                 "needs --runner-socket",
+            ),
+            (
+                [&socket[..4], &independent, &detach].concat(),
+                "needs --operations-db",
             ),
             (
                 [

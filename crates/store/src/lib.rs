@@ -1,13 +1,18 @@
-//! Single-instance SQLite operations, confirmation holds, and in-memory
-//! resource occupancy. Occupancy is not a SQLite schema. Request-owned
+//! Single-instance SQLite operations, confirmation holds, process records and
+//! in-memory resource occupancy. Occupancy is not a SQLite schema. Request-owned
 //! conflicts wait on a per-resource FIFO that starts at `acquire()`. A live
 //! process rejects overlapping mutation immediately with `WORKSPACE_BUSY`
 //! and fails trailing waiters. Queue saturation is `RESOURCE_QUEUE_FULL`.
 //! HTTP/JSON-RPC request ids are never stored as [`OperationId`] values.
+//!
+//! The database carries a schema version (P1R-C02): a database that a newer
+//! CodeSpace wrote is never opened, so nothing here changes what it recorded.
 
 mod approvals;
 mod coord;
+mod processes;
 mod resource;
+mod writer;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -23,8 +28,17 @@ use sha2::{Digest, Sha256};
 
 pub use approvals::{ApprovalRecord, ResumeClaim};
 pub use coord::CreateIntent;
+pub use processes::{
+    NewProcessRecord, ProcessEnd, ProcessOutcome, ProcessPhase, ProcessRecord,
+    RecordedParticipation, RootProcess, RunnerRef,
+};
 use resource::AcquireOutcome;
 pub use resource::{LockMode, Resource, ResourceGuard};
+pub use writer::WriterLock;
+
+/// The schema version this CodeSpace writes in `PRAGMA user_version` (P1R-C02). A database
+/// without one (0) predates it and is brought up to it; a newer one is refused.
+pub const SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct StoredOperation {
@@ -153,6 +167,14 @@ impl Store {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
+        // Before anything is written: a database a newer CodeSpace wrote is left as it is.
+        let version = schema_version(&conn)?;
+        if version > SCHEMA_VERSION {
+            return Err(format!(
+                "the operations database has schema version {version}, newer than this \
+                 CodeSpace's {SCHEMA_VERSION}: open it with the CodeSpace that wrote it"
+            ));
+        }
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS operations (
                 operation_id TEXT PRIMARY KEY,
@@ -214,8 +236,15 @@ impl Store {
             );",
         )
         .map_err(|e| e.to_string())?;
+        conn.execute_batch(processes::SCHEMA)
+            .map_err(|e| e.to_string())?;
         migrate_operations(&conn)?;
         migrate_approvals(&conn)?;
+        // Last, so a database whose upgrade was cut short is upgraded again.
+        if version < SCHEMA_VERSION {
+            conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             locks: Mutex::new(resource::ResourceSerializer::default()),
@@ -669,6 +698,12 @@ fn migrate_approvals(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// The database's schema version: 0 for one that predates schema versions (P1R-C02).
+fn schema_version(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|err| format!("cannot read the operations database: {err}"))
+}
+
 fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
@@ -1048,5 +1083,288 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::Internal);
         assert_eq!(err.message, "resource waiter closed");
+    }
+
+    /// The statements with which CodeSpace before process records (main `feb5f52`) opens its
+    /// database, which an earlier binary still runs on one that this binary wrote.
+    const PRE_PROCESS_RECORDS_OPEN: &str = "
+        CREATE TABLE IF NOT EXISTS operations (
+            operation_id TEXT PRIMARY KEY,
+            operation_key TEXT,
+            workspace_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            finished_at INTEGER,
+            events_json TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_key
+            ON operations(operation_key)
+            WHERE operation_key IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS works (
+            work_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            title TEXT,
+            state TEXT NOT NULL,
+            queue_revision INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            closed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_works_workspace ON works(workspace_id);
+        CREATE TABLE IF NOT EXISTS intents (
+            intent_id TEXT PRIMARY KEY,
+            work_id TEXT,
+            workspace_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1,
+            kind TEXT NOT NULL,
+            delivery TEXT NOT NULL,
+            body TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            claimed_at INTEGER,
+            completed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_intents_work_state
+            ON intents(work_id, state, position);
+        CREATE INDEX IF NOT EXISTS idx_intents_workspace_next
+            ON intents(workspace_id, state)
+            WHERE work_id IS NULL;
+        CREATE TABLE IF NOT EXISTS approvals (
+            approval_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            resolved_at INTEGER,
+            result_json TEXT
+        );
+        DROP INDEX IF EXISTS idx_approvals_active_fp;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_fp
+        ON approvals(workspace_id, fingerprint)
+        WHERE state IN ('pending','granted','queued','resuming') AND length(fingerprint) > 0;";
+
+    fn user_version(path: &Path) -> i64 {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn open_refused(path: &Path) -> String {
+        match Store::open(path) {
+            Ok(_) => panic!("{} was opened", path.display()),
+            Err(err) => err,
+        }
+    }
+
+    fn runner() -> RunnerRef {
+        RunnerRef {
+            boot_id: Some("boot-a".into()),
+            pid: 4242,
+            started_at_ms: 1_760_000_000_000,
+            nonce: "nonce-a".into(),
+        }
+    }
+
+    fn dispatch(store: &Store, process_id: &str) {
+        store
+            .record_dispatch(&NewProcessRecord {
+                process_id,
+                runner: &runner(),
+                workspace_id: "demo",
+                approval_id: None,
+                attempt_id: None,
+                participation: RecordedParticipation::Off,
+                tty: false,
+                argv: &["true".to_string()],
+            })
+            .unwrap();
+    }
+
+    /// A database that CodeSpace before process records left, with no schema version and no
+    /// `processes` table, opens with its patches and approvals as they were, and is brought up
+    /// to this schema version.
+    #[test]
+    fn a_database_from_before_schema_versions_is_brought_up_to_this_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.sqlite");
+        let (operation_id, approval_id) = {
+            let store = Store::open(&path).unwrap();
+            let first = params("before", "k-before");
+            let Begin::Fresh(id) = store
+                .begin(
+                    first.operation_key.as_ref(),
+                    "demo",
+                    &Store::fingerprint(&first),
+                )
+                .unwrap()
+            else {
+                panic!("fresh");
+            };
+            store
+                .finish(
+                    &id,
+                    &ApplyPatchResult::new(PatchStatus::Applied, id.clone()),
+                )
+                .unwrap();
+            let approval = store
+                .create_approval(
+                    "demo",
+                    codespace_domain::ApprovalTargetTool::ApplyPatch,
+                    &Store::fingerprint(&first),
+                    serde_json::to_value(&first).unwrap(),
+                )
+                .unwrap();
+            (id, approval.approval_id)
+        };
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("DROP TABLE processes; PRAGMA user_version = 0;")
+                .unwrap();
+            conn.execute_batch(PRE_PROCESS_RECORDS_OPEN).unwrap();
+        }
+        assert_eq!(user_version(&path), 0);
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&path), SCHEMA_VERSION);
+        assert_eq!(
+            store.status(&operation_id).unwrap().status,
+            PatchStatus::Applied
+        );
+        assert_eq!(
+            store.inspect_approval(&approval_id).unwrap().0,
+            codespace_domain::ApprovalState::Pending
+        );
+        assert!(store.process_record("proc-1").unwrap().is_none());
+        dispatch(&store, "proc-1");
+        assert!(store.process_record("proc-1").unwrap().is_some());
+    }
+
+    /// A database that a newer CodeSpace wrote is refused before anything is written to it.
+    #[test]
+    fn a_newer_database_is_refused_and_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.sqlite");
+        dispatch(&Store::open(&path).unwrap(), "proc-1");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!("PRAGMA user_version = {}", SCHEMA_VERSION + 1))
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let err = open_refused(&path);
+        assert!(
+            err.contains(&format!(
+                "schema version {}, newer than this CodeSpace's {SCHEMA_VERSION}",
+                SCHEMA_VERSION + 1
+            )),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "nothing but the database"
+        );
+    }
+
+    /// An earlier CodeSpace does not know process records: it opens a database this one wrote
+    /// with its own statements and records patches, and leaves the records and the schema
+    /// version as they are.
+    #[test]
+    fn an_earlier_codespace_leaves_the_records_it_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.sqlite");
+        let recorded = {
+            let store = Store::open(&path).unwrap();
+            dispatch(&store, "proc-1");
+            store
+                .record_running(
+                    &runner(),
+                    "proc-1",
+                    Some(&RootProcess {
+                        pid: 777,
+                        started: Some("linux:100".into()),
+                    }),
+                    Some(1_760_000_030_000),
+                )
+                .unwrap();
+            store.process_record("proc-1").unwrap().unwrap()
+        };
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(PRE_PROCESS_RECORDS_OPEN).unwrap();
+            conn.execute(
+                "INSERT INTO operations
+                    (operation_id, operation_key, workspace_id, fingerprint, status, result_json,
+                     created_at, finished_at, events_json)
+                 VALUES ('op-earlier', NULL, 'demo', 'fp', 'unknown', '{}', 1, NULL, NULL)",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(user_version(&path), SCHEMA_VERSION);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.process_record("proc-1").unwrap(), Some(recorded));
+        assert_eq!(
+            store
+                .status(&OperationId("op-earlier".into()))
+                .unwrap()
+                .status,
+            PatchStatus::Unknown
+        );
+    }
+
+    /// A file that is not a database, such as one cut short by a crash, is refused and kept: it
+    /// is never replaced with an empty database.
+    #[test]
+    fn a_damaged_database_is_refused_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.sqlite");
+        let damaged = b"this is not an operations database, and it was cut sh".repeat(40);
+        std::fs::write(&path, &damaged).unwrap();
+        let err = open_refused(&path);
+        assert!(err.contains("cannot read the operations database"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), damaged);
+    }
+
+    /// The patch operations ledger and the approvals table keep the columns they had before
+    /// process records.
+    #[test]
+    fn the_patch_ledger_and_the_approvals_keep_their_columns() {
+        let store = Store::memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            table_columns(&conn, "operations").unwrap(),
+            [
+                "operation_id",
+                "operation_key",
+                "workspace_id",
+                "fingerprint",
+                "status",
+                "result_json",
+                "created_at",
+                "finished_at",
+                "events_json"
+            ]
+        );
+        assert_eq!(
+            table_columns(&conn, "approvals").unwrap(),
+            [
+                "approval_id",
+                "workspace_id",
+                "tool",
+                "fingerprint",
+                "params_json",
+                "state",
+                "created_at",
+                "resolved_at",
+                "result_json"
+            ]
+        );
     }
 }

@@ -76,6 +76,11 @@ def stages():
         # macOS path the Linux legs cannot exercise.
         + [cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'descriptors', 'fork_handlers', 'missing_executable_is_process_spawn_failed'),
            cargo('test', 'root', '-p', 'codespace-server', '--lib', '--', 'descriptors')]
+        # The process records of the gateway with an independent Runner (P1R-C02): the operations
+        # database's schema version, its records and its single writer's lock, and the root
+        # process that a spawn reports with its macOS start identity.
+        + [cargo('test', 'root', '-p', 'codespace-store', '--lib'),
+           cargo('test', 'root', '-p', 'codespace-runner', '--lib', '--', 'a_spawn_reports_its_root')]
         # The DevGuard adapter against an authority with native host evidence and DevGuard's
         # launch helper, and the DevGuard tests of the runner (registration, its wire, the
         # preparation of governed executions, CSRG-U3, and their launch, CSRG-U4), the worker

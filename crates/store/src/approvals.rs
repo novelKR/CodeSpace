@@ -337,27 +337,7 @@ impl Store {
 
     pub fn mark_resuming(&self, approval_id: &ApprovalId) -> Result<(), ErrorBody> {
         let conn = self.conn.lock().expect("sqlite mutex");
-        let row = load(&conn, &approval_id.0)?.ok_or_else(|| not_found(approval_id))?;
-        match row.state.as_str() {
-            "resuming" => Ok(()),
-            "queued" => {
-                let updated = conn
-                    .execute(
-                        "UPDATE approvals
-                         SET state = 'resuming'
-                         WHERE approval_id = ?1 AND state = 'queued'",
-                        params![approval_id.0],
-                    )
-                    .map_err(db_err)?;
-                if updated != 1 {
-                    return Err(conflict("approval is not queued for dispatch"));
-                }
-                Ok(())
-            }
-            other => Err(conflict(format!(
-                "approval is in an unknown state `{other}`"
-            ))),
-        }
+        mark_resuming_on(&conn, approval_id)
     }
 
     pub fn fail_next_finish(&self) {
@@ -419,6 +399,35 @@ impl Store {
         let set = *flag;
         *flag = false;
         set
+    }
+}
+
+/// Mark a queued approval as being resumed, on `conn`: the store's connection, or a transaction
+/// that also records the execution it resumes (P1R-C02).
+pub(crate) fn mark_resuming_on(
+    conn: &rusqlite::Connection,
+    approval_id: &ApprovalId,
+) -> Result<(), ErrorBody> {
+    let row = load(conn, &approval_id.0)?.ok_or_else(|| not_found(approval_id))?;
+    match row.state.as_str() {
+        "resuming" => Ok(()),
+        "queued" => {
+            let updated = conn
+                .execute(
+                    "UPDATE approvals
+                     SET state = 'resuming'
+                     WHERE approval_id = ?1 AND state = 'queued'",
+                    params![approval_id.0],
+                )
+                .map_err(db_err)?;
+            if updated != 1 {
+                return Err(conflict("approval is not queued for dispatch"));
+            }
+            Ok(())
+        }
+        other => Err(conflict(format!(
+            "approval is in an unknown state `{other}`"
+        ))),
     }
 }
 

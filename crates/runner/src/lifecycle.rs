@@ -103,6 +103,54 @@ fn boot_id() -> Option<String> {
     None
 }
 
+/// The start identity of process `pid` (P1R-C02): with the PID it names that one process, and
+/// tells it apart from a later process that reuses the PID. Read while the process cannot have
+/// been reaped yet, as a child that only its own reaper waits for, it is that process's. `None`
+/// where the host does not report it.
+#[cfg(target_os = "linux")]
+pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
+    // `stat`'s 22nd field: the start time in clock ticks since boot. The command name before it
+    // is in parentheses and may itself hold spaces and parentheses.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields = &stat[stat.rfind(')')? + 1..];
+    let ticks: u64 = fields.split_whitespace().nth(19)?.parse().ok()?;
+    Some(format!("linux-start-ticks:{ticks}"))
+}
+
+/// The start identity of process `pid` (P1R-C02): with the PID it names that one process, and
+/// tells it apart from a later process that reuses the PID. Read while the process cannot have
+/// been reaped yet, as a child that only its own reaper waits for, it is that process's. `None`
+/// where the host does not report it.
+#[cfg(target_os = "macos")]
+pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
+    // SAFETY: an all-zero `proc_bsdinfo` is a valid value of this plain C structure.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info`. A non-zero argument asks
+    // for an exited process that is not reaped yet too.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            libc::c_int::try_from(pid).ok()?,
+            libc::PROC_PIDTBSDINFO,
+            1,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if written != size || info.pbi_pid != pid {
+        return None;
+    }
+    Some(format!(
+        "macos-start:{}.{:06}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn process_start_identity(_pid: u32) -> Option<String> {
+    None
+}
+
 /// 128 random bits in hex. A host without `/dev/urandom` gets the time and the process ID
 /// instead: the nonce tells Runner processes apart, it guards nothing.
 fn nonce() -> String {
@@ -134,6 +182,65 @@ mod tests {
             assert!(identity.boot_id.is_some(), "{identity:?}");
         }
         assert_eq!(RunnerIdentity::this_process(), identity);
+    }
+
+    /// Whether the child `pid` has exited and is not reaped yet.
+    fn exited_unreaped(pid: u32) -> bool {
+        // SAFETY: an all-zero `siginfo_t` is valid, and zero `si_pid` is how `waitid` with
+        // `WNOHANG` reports that no child has exited.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a valid `siginfo_t`; `WNOWAIT` leaves the child waitable.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        // SAFETY: `waitid` filled `info`, or left the zero it was given.
+        result == 0 && unsafe { info.si_pid() } != 0
+    }
+
+    /// A process's start identity is the same for as long as the process holds its PID, until
+    /// it is reaped: a root whose identity the Runner reads before its reaper runs is never
+    /// confused with a later process that reuses the PID (P1R-C02).
+    #[test]
+    fn a_start_identity_names_one_process_until_it_is_reaped() {
+        let own = process_start_identity(std::process::id());
+        if cfg!(not(any(target_os = "linux", target_os = "macos"))) {
+            assert_eq!(own, None);
+            return;
+        }
+        let own = own.expect("this process's start identity");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = process_start_identity(pid).expect("a running child's start identity");
+        assert_ne!(started, own);
+        assert_eq!(process_start_identity(pid).as_ref(), Some(&started));
+        child.kill().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !exited_unreaped(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            process_start_identity(pid).as_ref(),
+            Some(&started),
+            "an exited child that is not reaped yet"
+        );
+        child.wait().unwrap();
+        assert_ne!(
+            process_start_identity(pid).as_ref(),
+            Some(&started),
+            "a reaped child"
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ There are three separate questions: which process runs the work, whether command
 
 `in-process` runs the supervisor inside `codespace-mcp`. `uds` (Unix domain socket) runs that supervisor inside `codespace-codex-runtime` on the same host. The worker starts with Codex process hardening and binds a private Unix socket. Hardening the worker does not sandbox its commands.
 
-The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 8, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery.
+The gateway creates a unique 0700 directory beneath its temporary directory or `CODESPACE_RUNNER_DIR`. The internal protocol is CodeSpace JSON with a u32 length prefix, handshake version 9, request IDs, and process-exit events. It is not Codex App Server RPC. Same-connection replay is not reconnect recovery.
 
 Managed process lifetime is owned by the runner instance, not the MCP connection. Streamable HTTP or MCP client disconnect keeps processes running. Gateway/worker UDS disconnect or gateway shutdown (including stdio EOF) ends the owned worker and its children; process handles are lost. At shutdown the gateway closes the worker's connection, so the worker ends its processes as it exits; a worker still running 5 seconds later is killed. Restart does not restore `process_id`. An [independent Runner](#independent-runner) is the exception: its processes outlive the gateway.
 
@@ -20,19 +20,20 @@ Managed process lifetime is owned by the runner instance, not the MCP connection
 
 ## Independent Runner
 
-> **Not a supported mode yet.** The independent Runner is the first step of Gateway recovery. A gateway does not reconnect to it, and a gateway that connects after another one cannot start new work. Later steps add reconnection and reconciliation, and the mode is supported only once it is qualified.
+> **Not a supported mode yet.** The independent Runner and the records of its executions are the first steps of Gateway recovery. A gateway does not reconnect to it, and a gateway that connects after another one cannot start new work. Later steps add reconnection and reconciliation, and the mode is supported only once it is qualified.
 
 An independent Runner outlives the gateways that connect to it: its processes, their output and their timeouts carry on when a gateway exits, restarts or is killed. An operator or a harness starts it, and a gateway only connects to it:
 
 ```bash
 codespace-codex-runtime "$RUNNER_DIR/runner.sock" --lifecycle independent
 codespace-mcp --runner uds --runner-socket "$RUNNER_DIR/runner.sock" \
-  --runner-lifecycle independent --runner-exit-intent detach
+  --runner-lifecycle independent --runner-exit-intent detach \
+  --operations-db "$STATE_DIR/operations.sqlite"
 ```
 
 The Runner creates its socket's directory with mode 0700, or accepts an existing one only when it is a directory of the same user with mode 0700 and not a symbolic link. It never changes an existing directory, and it refuses `/`, `/tmp`, `/var/tmp` and `$HOME`. It serves one gateway connection at a time, and accepts the next only after every request of the previous one has ended. When it stops, it removes its socket, and the directory if it created it.
 
-A gateway does not start when its `--runner-lifecycle` differs from the Runner's lifecycle, or when `--runner-lifecycle independent` comes without `--runner uds`, `--runner-socket` or `--runner-exit-intent`, or with `--runtime-bin` or `--runner-dir`. `--runner-exit-intent` is accepted only with `--runner-lifecycle independent`.
+A gateway does not start when its `--runner-lifecycle` differs from the Runner's lifecycle, when the Runner does not state its identity, or when `--runner-lifecycle independent` comes without `--runner uds`, `--runner-socket`, `--runner-exit-intent` or `--operations-db`, or with `--runtime-bin` or `--runner-dir`. `--runner-exit-intent` is accepted only with `--runner-lifecycle independent`.
 
 | Event | Managed worker (default) | Independent Runner |
 | --- | --- | --- |
@@ -48,6 +49,14 @@ Ending a process signals a tty process's process group, but a pipe process alone
 **A lost connection.** A gateway does not reconnect. Once its connection to the Runner has ended, it refuses every request that needs the Runner with `RUNNER_DISCONNECTED`, and it has to be restarted to reach the Runner's processes again. A request that was already sent when the connection ended keeps the uncertain result it has today, such as `dispatch_status: unknown` for an execution.
 
 **After an earlier gateway.** The first gateway that connects to a newly started Runner works as it does with a managed worker. Once a gateway has started work there (an execution, a patch, or with DevGuard a preparation or a launch), every later gateway inherits the Runner's processes: it can query, read, write to, resize and terminate them with their `process_id`, but it refuses new executions, patches and approval resumes with `RECOVERY_PENDING`, and leaves the approvals as they are. This holds after the inherited processes have ended too; to start work again, stop the Runner and start a new one. The gateway logs the Runner's identity (its process ID, boot and start time), whether a gateway controlled it before and how many processes it inherited.
+
+<a id="process-records"></a>
+
+**Process records.** The gateway records each execution in its operations database before it sends the execution to the Runner, and follows it to its end, so that a gateway that lost its memory can identify the same execution again. A record holds the `process_id`, the identity of the Runner it was sent to (its process ID, boot, start time and a random nonce), the workspace, the approval it resumes, its DevGuard attempt, whether it takes part in DevGuard, whether it has a tty, and the SHA-256 digest of its argv, never the argv, its environment or a secret. Its phase is `dispatching` until the Runner answers that it started the execution, and `running` after that. It becomes `terminal` once the Runner reports that the execution ended, with the termination, exit code and signal the Runner reported, or once the Runner answers that it did not start it. The record also keeps the deadline the Runner set, the root process the Runner created, by its process ID and the start time that tells it apart from a later process with the same ID (a `tty: true` root is not named), and how far a gateway read the output.
+
+An execution that resumes an approval is recorded in the transaction that marks the approval resuming. When the record cannot be written, the execution is refused with `INTERNAL` and nothing is sent. The next gateway records the exits that happened while no gateway was connected, which the Runner keeps for it, and `process_status` and `read_process` record what the Runner reports. A record never revives a handle, and never by itself proves that an execution started or how it ended: the Runner is the authority, and the record of an execution whose answer was lost stays `dispatching`. Recovering work from the records comes in later steps.
+
+**One writer.** A gateway with an independent Runner is its operations database's only writer. Before it opens the database it takes an exclusive lock on a file beside it, `<database>.gateway.lock`, which names the process ID of the gateway that holds it, and it keeps the lock until it exits, however it exits. A gateway that finds the lock held, such as one started while the gateway before it still detaches, logs that it waits, waits up to 15 seconds, and then refuses to start. Only this mode takes the lock. See [Operations](operations.md#operations-database) for the database's schema version and earlier CodeSpace versions.
 
 **DevGuard.** With the `devguard` feature, the independent Runner registers itself with the worker's DevGuard settings and reads the consumer secret from the private file given with `--devguard-credential-file`; its gateway, started with `--devguard register`, hands it no secret. Workspaces that require resource participation run only when the Runner states that it registers and launches through a launch helper, and are refused with `RESOURCE_POLICY_UNSUPPORTED` otherwise. See [DevGuard integration](devguard-integration.md#resource-gateway-recovery).
 

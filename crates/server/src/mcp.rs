@@ -8,10 +8,11 @@ use codespace_domain::{
     ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ExecDispatchStatus, FindParams,
     FindResult, NetworkPolicyState, OperationResumeParams, OperationResumeResult,
     OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ProcessResizeParams,
-    ProcessResizeResult, ProcessStatusParams, ProcessStatusResult, ReadParams, ReadProcessParams,
-    ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams, SteerStatusResult,
-    TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams, WorkOpenParams, WorkOpenResult,
-    WorkspaceExecutionInfo, WorkspaceInfo, WorkspaceInfoParams, WriteStdinParams,
+    ProcessResizeResult, ProcessState, ProcessStatusParams, ProcessStatusResult, ReadParams,
+    ReadProcessParams, ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams,
+    SteerStatusResult, TerminateProcessParams, WorkFinishResult, WorkId, WorkIdParams,
+    WorkOpenParams, WorkOpenResult, WorkspaceExecutionInfo, WorkspaceInfo, WorkspaceInfoParams,
+    WriteStdinParams,
 };
 use codespace_policy::{
     allow, Action, ClientClaims, EnvironmentKind, NetworkAxis, Participation, PermissionProfile,
@@ -52,6 +53,8 @@ pub struct CodeSpace {
     pub(crate) registration: Option<Arc<crate::devguard::Registration>>,
     /// Whether the runner is an independent Runner, and what a shutdown asks of it (P1R-C01).
     pub(crate) lifecycle: crate::config::GatewayLifecycle,
+    /// The records of the executions sent to an independent Runner (P1R-C02).
+    pub(crate) records: Option<Arc<crate::records::ProcessRecords>>,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -240,6 +243,7 @@ impl CodeSpace {
             #[cfg(feature = "devguard")]
             registration: None,
             lifecycle: crate::config::GatewayLifecycle::Managed,
+            records: None,
         }
     }
 
@@ -247,6 +251,13 @@ impl CodeSpace {
     /// and `workspace_info` state that Runner's process lifetime.
     pub fn with_lifecycle(mut self, lifecycle: crate::config::GatewayLifecycle) -> Self {
         self.lifecycle = lifecycle;
+        self
+    }
+
+    /// The handler of a gateway that records the executions it sends to an independent Runner
+    /// (P1R-C02).
+    pub fn with_records(mut self, records: Arc<crate::records::ProcessRecords>) -> Self {
+        self.records = Some(records);
         self
     }
 
@@ -445,6 +456,9 @@ impl CodeSpace {
             })
             .await
             .map_err(runner_err_json)?;
+        if let Some(records) = &self.records {
+            records.observed_output(&result.process_id, result.cursor);
+        }
         Ok(Json(ReadProcessResult {
             process_id: result.process_id,
             cursor: result.cursor,
@@ -469,6 +483,14 @@ impl CodeSpace {
             .process_status(&params.process_id)
             .await
             .map_err(runner_err_json)?;
+        if let Some(records) = &self.records {
+            match result.state {
+                ProcessState::Exited => records.ended(&result),
+                ProcessState::Running => {
+                    records.observed_output(&result.process_id, result.output_total)
+                }
+            }
+        }
         Ok(Json(ProcessStatusResult {
             process_id: result.process_id,
             state: result.state,
@@ -975,8 +997,23 @@ impl CodeSpace {
             .store
             .acquire_shell_busy(&params.workspace_id.0, &process_id.0)
             .await?;
-        if let Some(id) = resume {
-            self.store.mark_resuming(id)?;
+        // A governed execution's DevGuard attempt, minted before its record names it.
+        let attempt_id = participation.attempt_id();
+        match &self.records {
+            // Recorded before it is sent to an independent Runner, in the transaction that marks
+            // the approval it resumes (P1R-C02).
+            Some(records) => records.dispatching(
+                &process_id,
+                &params,
+                participation.recorded(),
+                attempt_id.as_deref(),
+                resume,
+            )?,
+            None => {
+                if let Some(id) = resume {
+                    self.store.mark_resuming(id)?;
+                }
+            }
         }
         let mut req = RunnerExecRequest::for_host(params.command, process_id.clone(), ws.profile);
         req.policy.network = ws.network;
@@ -985,6 +1022,7 @@ impl CodeSpace {
             Participating::Off => {}
             #[cfg(feature = "devguard")]
             Participating::Managed => {
+                let attempt_id = attempt_id.unwrap_or_else(new_attempt_id);
                 if !self
                     .registration
                     .as_ref()
@@ -992,15 +1030,17 @@ impl CodeSpace {
                 {
                     // The workspace lease is held while the owner prepares; nothing is started,
                     // so it is released with the answer whatever the attempt's own state.
-                    let refused = self.prepare_governed(ws, req).await;
+                    let refused = self.prepare_governed(ws, req, attempt_id).await;
+                    self.record_not_started(&process_id);
                     reservation.abort();
                     return Err(self.refused_governed(resume, refused));
                 }
                 // The owner may create a process from here on (CSRG-U4).
                 reservation.arm_dispatch();
-                return match self.launch_governed(ws, req).await {
+                return match self.launch_governed(ws, req, attempt_id).await {
                     Ok(launch) => {
                         reservation.confirm();
+                        self.record_launch(&launch);
                         Ok(ExecCommandResult {
                             process_id: launch.process_id,
                             dispatch_status: match launch.dispatch {
@@ -1018,6 +1058,7 @@ impl CodeSpace {
                     Err(refused) => {
                         // The command did not start; a helper that existed was reaped.
                         reservation.abort();
+                        self.record_not_started(&process_id);
                         Err(self.refused_governed(resume, refused))
                     }
                 };
@@ -1027,12 +1068,20 @@ impl CodeSpace {
         match self.runner.exec(ws, req).await {
             Ok(result) => {
                 reservation.confirm();
+                if let Some(records) = &self.records {
+                    records.running(
+                        &result.process_id,
+                        result.root.as_ref(),
+                        result.deadline_at_ms,
+                    );
+                }
                 Ok(ExecCommandResult {
                     process_id: result.process_id,
                     dispatch_status: ExecDispatchStatus::Confirmed,
                     coordination: self.hint(&params.workspace_id.0, params.work_id.as_ref()),
                 })
             }
+            // The record stays dispatching: the execution may or may not have started.
             Err(RunnerError::TransportAmbiguous { .. }) => {
                 reservation.confirm();
                 Ok(ExecCommandResult {
@@ -1043,7 +1092,33 @@ impl CodeSpace {
             }
             Err(err) => {
                 reservation.abort();
+                self.record_not_started(&process_id);
                 Err(err.into_error_body())
+            }
+        }
+    }
+
+    /// Record that the Runner did not start the execution, when this gateway records them.
+    fn record_not_started(&self, process_id: &ProcessId) {
+        if let Some(records) = &self.records {
+            records.not_started(process_id);
+        }
+    }
+
+    /// Record a governed launch: running once its helper exists, and still dispatching when its
+    /// answer was lost (P1R-C02).
+    #[cfg(feature = "devguard")]
+    fn record_launch(&self, launch: &codespace_runner::launch::ManagedLaunch) {
+        if let Some(records) = &self.records {
+            if launch
+                .phases
+                .contains(&codespace_runner::launch::LaunchPhase::HelperCreated)
+            {
+                records.running(
+                    &launch.process_id,
+                    launch.root.as_ref(),
+                    launch.deadline_at_ms,
+                );
             }
         }
     }
@@ -1084,6 +1159,32 @@ enum Participating {
     Managed,
 }
 
+impl Participating {
+    /// A governed execution's DevGuard attempt ID.
+    fn attempt_id(self) -> Option<String> {
+        match self {
+            Self::Off => None,
+            #[cfg(feature = "devguard")]
+            Self::Managed => Some(new_attempt_id()),
+        }
+    }
+
+    /// How a process record names it (P1R-C02).
+    fn recorded(self) -> codespace_store::RecordedParticipation {
+        match self {
+            Self::Off => codespace_store::RecordedParticipation::Off,
+            #[cfg(feature = "devguard")]
+            Self::Managed => codespace_store::RecordedParticipation::Required,
+        }
+    }
+}
+
+/// A new DevGuard attempt ID, minted by the gateway.
+#[cfg(feature = "devguard")]
+fn new_attempt_id() -> String {
+    format!("cs-attempt-{}", Uuid::new_v4().simple())
+}
+
 impl CodeSpace {
     /// How a new execution in `ws` takes part, or why this gateway refuses it. A workspace that
     /// requires resource participation is prepared through the execution owner's admission
@@ -1113,14 +1214,18 @@ impl CodeSpace {
     /// Have the execution owner prepare `req` without launching it (CSRG-U3): an owner that
     /// cannot launch cancels each preparation, so it ends in a refusal and nothing is started.
     #[cfg(feature = "devguard")]
-    async fn prepare_governed(&self, ws: &Workspace, req: RunnerExecRequest) -> NotStarted {
+    async fn prepare_governed(
+        &self,
+        ws: &Workspace,
+        req: RunnerExecRequest,
+        attempt_id: String,
+    ) -> NotStarted {
         let Some(registration) = &self.registration else {
             return NotStarted::unproven(ErrorBody::new(
                 ErrorCode::Internal,
                 "no execution owner registration",
             ));
         };
-        let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
         match registration
             .prepare(&self.runner, ws, req, attempt_id)
             .await
@@ -1137,6 +1242,7 @@ impl CodeSpace {
         &self,
         ws: &Workspace,
         req: RunnerExecRequest,
+        attempt_id: String,
     ) -> Result<codespace_runner::launch::ManagedLaunch, NotStarted> {
         let Some(registration) = &self.registration else {
             return Err(NotStarted::unproven(ErrorBody::new(
@@ -1144,7 +1250,6 @@ impl CodeSpace {
                 "no execution owner registration",
             )));
         };
-        let attempt_id = format!("cs-attempt-{}", Uuid::new_v4().simple());
         match registration
             .launch(&self.runner, ws, req, attempt_id)
             .await
@@ -4290,11 +4395,15 @@ mod independent_tests {
     use super::tests::{exec_params, participation_registry};
     use super::*;
     use crate::config::{GatewayLifecycle, RunnerExitIntent};
+    use crate::records::ProcessRecords;
     use codespace_domain::{
         ApprovalDecision, ProcessDisconnectAction, ProcessState, ProcessStatusParams,
-        TerminateProcessParams, WorkspaceId,
+        ProcessTermination, TerminateProcessParams, WorkspaceId,
     };
-    use codespace_runner::{host_worker, IndependentRunner, StopHandle, UdsRunner};
+    use codespace_runner::{host_worker, IndependentRunner, RunnerIdentity, StopHandle, UdsRunner};
+    use codespace_store::{
+        ProcessOutcome, ProcessPhase, ProcessRecord, RecordedParticipation, RunnerRef,
+    };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
     use tokio::net::UnixStream;
@@ -4335,24 +4444,35 @@ mod independent_tests {
             Self { streams, stop }
         }
 
-        /// A gateway with its own handle on the operations database, connected to the Runner.
+        /// A gateway with its own handle on the operations database, connected to the Runner,
+        /// that records its executions there as `codespace-mcp` does (P1R-C02).
         async fn gateway(&self, root: &std::path::Path, database: &std::path::Path) -> CodeSpace {
-            let store = Arc::new(Store::open(database).unwrap());
             let (client, server) = UnixStream::pair().unwrap();
             self.streams.send(server).unwrap();
-            let releases = store.clone();
-            let runner = UdsRunner::from_stream(
-                client,
-                Arc::new(move |process_id: &str| releases.release_process(process_id)),
-            );
-            runner.handshake().await.unwrap();
-            CodeSpace::with_store_and_runner(
-                participation_registry(root, "off"),
-                store,
-                RuntimeBackend::Uds(runner),
-            )
-            .with_lifecycle(DETACHING)
+            recording_gateway(root, database, client).await
         }
+    }
+
+    /// A gateway connected to an independent Runner through `stream`, recording its executions
+    /// in `database`.
+    async fn recording_gateway(
+        root: &std::path::Path,
+        database: &std::path::Path,
+        stream: UnixStream,
+    ) -> CodeSpace {
+        let store = Arc::new(Store::open(database).unwrap());
+        let (release, exits) = ProcessRecords::release_hook(store.clone());
+        let runner = UdsRunner::from_stream(stream, release);
+        runner.handshake().await.unwrap();
+        let identity = runner
+            .hello()
+            .identity
+            .expect("an independent Runner's identity");
+        let runner = RuntimeBackend::Uds(runner);
+        let records = ProcessRecords::start(store.clone(), &identity, runner.clone(), exits);
+        CodeSpace::with_store_and_runner(participation_registry(root, "off"), store, runner)
+            .with_lifecycle(DETACHING)
+            .with_records(records)
     }
 
     impl Drop for Runner {
@@ -4372,6 +4492,118 @@ mod independent_tests {
         match result {
             Ok(_) => panic!("not refused"),
             Err(err) => serde_json::from_str(&err).unwrap(),
+        }
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    /// How a record names the Runner with `identity`.
+    fn runner_ref(identity: RunnerIdentity) -> RunnerRef {
+        RunnerRef {
+            boot_id: identity.boot_id,
+            pid: identity.pid,
+            started_at_ms: identity.started_at_ms,
+            nonce: identity.nonce,
+        }
+    }
+
+    fn terminal(record: &ProcessRecord) -> bool {
+        record.phase == ProcessPhase::Terminal
+    }
+
+    /// The record of `process_id` once `done` holds of it, read as a gateway that has only the
+    /// operations database reads it.
+    async fn record_once(
+        database: &std::path::Path,
+        process_id: &ProcessId,
+        done: impl Fn(&ProcessRecord) -> bool,
+    ) -> ProcessRecord {
+        let store = Store::open(database).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match store.process_record(&process_id.0).unwrap() {
+                Some(record) if done(&record) => return record,
+                record => assert!(Instant::now() < deadline, "{record:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// The whole output of a process that ended.
+    async fn output_of(gateway: &CodeSpace, process_id: &ProcessId) -> ReadProcessResult {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let read = gateway
+                .read_process(Parameters(ReadProcessParams {
+                    process_id: process_id.clone(),
+                    cursor: 0,
+                }))
+                .await
+                .unwrap()
+                .0;
+            if read.eof {
+                return read;
+            }
+            assert!(Instant::now() < deadline, "{read:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Wait until the workspace is free again: the gateway heard that its process exited.
+    async fn released(gateway: &CodeSpace, workspace_id: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while gateway.store.try_acquire_write(workspace_id).is_err() {
+            assert!(Instant::now() < deadline, "{workspace_id} stays busy");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Another Runner than the one in this process.
+    fn fake_identity() -> RunnerIdentity {
+        RunnerIdentity {
+            boot_id: Some("fake-boot".into()),
+            pid: 4_194_000,
+            started_at_ms: 1_000,
+            nonce: "fake-runner".into(),
+        }
+    }
+
+    /// A Runner that answers `Hello` as the independent Runner `identity`, hands the first
+    /// execution it is sent to `on_exec`, and then is lost without answering it.
+    async fn fake_runner(
+        mut stream: UnixStream,
+        identity: RunnerIdentity,
+        on_exec: impl FnOnce(RunnerExecRequest),
+    ) {
+        use codespace_runner::{
+            read_frame, write_frame, RunnerLifecycle, RunnerOp, RunnerOpResult, WireEnvelope,
+            WIRE_PROTOCOL,
+        };
+        while let Ok(Some(frame)) = read_frame(&mut stream).await {
+            let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+            match request.op {
+                Some(RunnerOp::Hello) => {
+                    // From JSON, so that it suits a Runner built with DevGuard or without.
+                    let hello: RunnerOpResult = serde_json::from_value(serde_json::json!({
+                        "type": "hello",
+                        "data": {
+                            "protocol": WIRE_PROTOCOL,
+                            "lifecycle": RunnerLifecycle::Independent,
+                            "identity": identity,
+                        },
+                    }))
+                    .unwrap();
+                    let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(hello));
+                    write_frame(&mut stream, &reply).await.unwrap();
+                }
+                Some(RunnerOp::Exec { request, .. }) => return on_exec(request),
+                other => panic!("a request the fake Runner does not answer: {other:?}"),
+            }
         }
     }
 
@@ -4548,6 +4780,439 @@ mod independent_tests {
             .unwrap()
             .0;
         assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+    }
+
+    /// A gateway records each execution it sends to its independent Runner, naming the Runner,
+    /// and follows it to its end (P1R-C02): the root process the Runner created with its start
+    /// identity, the deadline the Runner set, how the execution ended and how far its output
+    /// went. The record keeps the argv's digest, not the argv.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gateway_records_an_execution_from_its_dispatch_to_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let gateway = runner.gateway(&root, &database).await;
+        let before = now_ms();
+        let started = gateway
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/sh", "-c", "echo $$; exit 3"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        let after = now_ms();
+        record_once(&database, &started.process_id, terminal).await;
+        let output = output_of(&gateway, &started.process_id).await;
+        let record = record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(record.runner, runner_ref(RunnerIdentity::this_process()));
+        assert_eq!(record.controller_epoch, None);
+        assert_eq!(record.workspace_id, "demo");
+        assert_eq!(record.approval_id, None);
+        assert_eq!(record.attempt_id, None);
+        assert_eq!(record.participation, RecordedParticipation::Off);
+        assert!(!record.tty);
+        assert!(
+            record.argv_digest.starts_with("sha256:") && !record.argv_digest.contains("exit"),
+            "{record:?}"
+        );
+        assert_eq!(
+            record.outcome,
+            Some(ProcessOutcome::Ended(ProcessTermination::Exited))
+        );
+        assert_eq!((record.exit_code, record.signal), (Some(3), None));
+        let root_process = record.root.clone().expect("the root process");
+        assert_eq!(root_process.pid.to_string(), output.chunk.trim());
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert!(root_process.started.is_some(), "{record:?}");
+        }
+        let timeout = codespace_runner::default_exec_timeout_ms();
+        let deadline = record.deadline_at_ms.expect("the deadline");
+        assert!(
+            (before + timeout..=after + timeout).contains(&deadline),
+            "{before} {deadline} {after}"
+        );
+        assert_eq!(record.output_cursor, Some(output.cursor));
+        assert!(before <= record.created_at_ms && record.created_at_ms <= record.updated_at_ms);
+    }
+
+    /// An execution that ends while no gateway is connected is recorded by the next gateway, to
+    /// which the Runner gives the exit it kept (P1R-C02): that gateway finds the execution by
+    /// the record the gateway before it wrote.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_end_while_no_gateway_is_connected_is_recorded_by_the_next_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let first = runner.gateway(&root, &database).await;
+        let started = first
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &[
+                    "/bin/sh",
+                    "-c",
+                    "while [ ! -e go ]; do sleep 0.02; done; touch gone; exit 7",
+                ],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        detach(&first).await;
+        // The Runner keeps an exit for its next connection once this one has ended.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        std::fs::write(root.join("go"), "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !root.join("gone").exists() {
+            assert!(Instant::now() < deadline, "the process does not end");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let left = Store::open(&database)
+            .unwrap()
+            .process_record(&started.process_id.0)
+            .unwrap()
+            .expect("the record the first gateway wrote");
+        assert_eq!(left.phase, ProcessPhase::Running, "{left:?}");
+
+        let _next = runner.gateway(&root, &database).await;
+        let record = record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(
+            record.outcome,
+            Some(ProcessOutcome::Ended(ProcessTermination::Exited))
+        );
+        assert_eq!(record.exit_code, Some(7));
+        assert_eq!((&record.runner, &record.root), (&left.runner, &left.root));
+    }
+
+    /// An end that reached a gateway that went away before recording it is recorded once the
+    /// next gateway asks the Runner about the execution (P1R-C02): a record never says more
+    /// than the Runner reported, and follows what the Runner reports.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_end_a_gateway_missed_is_recorded_when_the_next_gateway_asks_the_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        // A gateway that records its executions but loses each exit it hears of, as one that
+        // crashes before recording it does.
+        let first = {
+            let (client, server) = UnixStream::pair().unwrap();
+            runner.streams.send(server).unwrap();
+            let store = Arc::new(Store::open(&database).unwrap());
+            let (release, lost) = ProcessRecords::release_hook(store.clone());
+            drop(lost);
+            let uds = UdsRunner::from_stream(client, release);
+            uds.handshake().await.unwrap();
+            let identity = uds.hello().identity.unwrap();
+            let backend = RuntimeBackend::Uds(uds);
+            let (_, none) = ProcessRecords::release_hook(store.clone());
+            let records = ProcessRecords::start(store.clone(), &identity, backend.clone(), none);
+            CodeSpace::with_store_and_runner(participation_registry(&root, "off"), store, backend)
+                .with_lifecycle(DETACHING)
+                .with_records(records)
+        };
+        let started = first
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/sh", "-c", "exit 9"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        released(&first, "demo").await;
+        detach(&first).await;
+        let next = runner.gateway(&root, &database).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let missed = Store::open(&database)
+            .unwrap()
+            .process_record(&started.process_id.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(missed.phase, ProcessPhase::Running, "{missed:?}");
+        let status = next
+            .process_status(Parameters(ProcessStatusParams {
+                process_id: started.process_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(status.state, ProcessState::Exited);
+        let record = record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(
+            record.outcome,
+            Some(ProcessOutcome::Ended(ProcessTermination::Exited))
+        );
+        assert_eq!(record.exit_code, Some(9));
+    }
+
+    /// An execution that ends at once is recorded as it ended, whether its end or the Runner's
+    /// answer that it started reaches the gateway first (P1R-C02).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_execution_that_ends_at_once_is_recorded_as_it_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let gateway = runner.gateway(&root, &database).await;
+        for code in 0..24 {
+            let started = gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/sh", "-c", &format!("exit {code}")],
+                    false,
+                )))
+                .await
+                .unwrap()
+                .0;
+            let record = record_once(&database, &started.process_id, terminal).await;
+            assert_eq!(
+                record.outcome,
+                Some(ProcessOutcome::Ended(ProcessTermination::Exited)),
+                "{record:?}"
+            );
+            assert_eq!(record.exit_code, Some(code), "{record:?}");
+            assert!(
+                record.root.is_some() && record.deadline_at_ms.is_some(),
+                "{record:?}"
+            );
+            // The workspace is free for the next execution once its exit was heard.
+            released(&gateway, "demo").await;
+        }
+    }
+
+    /// An execution that resumes an approval is recorded with it (P1R-C02), in the transaction
+    /// that marks the approval resuming.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resumed_execution_is_recorded_with_its_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let gateway = runner.gateway(&root, &database).await;
+        let held = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/bin/sh", "-c", "exit 5"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(held.code, ErrorCode::ApprovalRequired, "{held:?}");
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        gateway
+            .approval_resolve(Parameters(ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        let resumed = gateway
+            .operation_resume(Parameters(OperationResumeParams {
+                approval_id: approval_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        let started = resumed.exec_command.expect("the execution");
+        let record = record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(record.approval_id.as_ref(), Some(&approval_id));
+        assert_eq!(record.workspace_id, "gov-confirm");
+        assert_eq!(record.exit_code, Some(5));
+        assert_eq!(
+            gateway.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Consumed
+        );
+    }
+
+    /// An execution whose record cannot be written is not sent (P1R-C02): nothing starts, the
+    /// workspace is free again, and an approval it would resume is answered with that failure
+    /// instead of being left resuming.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_execution_that_cannot_be_recorded_is_not_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let gateway = runner.gateway(&root, &database).await;
+        let touch = format!("{}/started", root.display());
+        let held = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/usr/bin/touch", &touch],
+                    false,
+                )))
+                .await,
+        );
+        let approval_id = ApprovalId(held.approval_id.unwrap());
+        gateway
+            .approval_resolve(Parameters(ApprovalResolveParams {
+                approval_id: approval_id.clone(),
+                decision: ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute_batch("DROP TABLE processes")
+            .unwrap();
+
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/usr/bin/touch", &touch],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::Internal, "{refusal:?}");
+        assert!(
+            refusal.message.contains("nothing was started"),
+            "{refusal:?}"
+        );
+        drop(
+            gateway
+                .store
+                .try_acquire_write("demo")
+                .expect("the workspace is free"),
+        );
+        let refusal = refused(
+            gateway
+                .operation_resume(Parameters(OperationResumeParams {
+                    approval_id: approval_id.clone(),
+                }))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::Internal, "{refusal:?}");
+        assert_eq!(
+            gateway.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Consumed
+        );
+        drop(
+            gateway
+                .store
+                .try_acquire_write("gov-confirm")
+                .expect("the workspace is free"),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!root.join("started").exists());
+    }
+
+    /// An execution whose answer is lost with the Runner may or may not have started: its
+    /// record stays dispatching, under the Runner it was sent to (P1R-C02).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_execution_whose_answer_is_lost_stays_dispatching() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("operations.db");
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(fake_runner(server, fake_identity(), |_| {}));
+        let gateway = recording_gateway(dir.path(), &database, client).await;
+        let sent = gateway
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/echo", "lost"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(sent.dispatch_status, ExecDispatchStatus::Unknown);
+        let record = gateway
+            .store
+            .process_record(&sent.process_id.0)
+            .unwrap()
+            .expect("the record");
+        assert_eq!(record.phase, ProcessPhase::Dispatching);
+        assert_eq!(record.runner, runner_ref(fake_identity()));
+        assert_eq!((record.root, record.outcome), (None, None));
+    }
+
+    /// A gateway records an execution before it sends it (P1R-C02): the record is there,
+    /// dispatching, when the Runner receives the execution, and a gateway that crashes at that
+    /// moment leaves it for the next gateway, naming the Runner it was sent to.
+    #[test]
+    fn an_execution_is_recorded_before_the_runner_receives_it() {
+        use std::os::unix::process::ExitStatusExt;
+        const DIRECTORY: &str = "CODESPACE_TEST_CRASH_AT_DISPATCH";
+        // SIGABRT, on Linux and macOS.
+        const ABORTED: i32 = 6;
+        if let Some(dir) = std::env::var_os(DIRECTORY) {
+            // The crashing gateway, in a copy of this test binary.
+            let dir = std::path::PathBuf::from(dir);
+            let database = dir.join("operations.db");
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let (client, server) = UnixStream::pair().unwrap();
+                    let (seen, received) = (database.clone(), dir.join("received"));
+                    tokio::spawn(fake_runner(server, fake_identity(), move |request| {
+                        let record = Store::open(&seen)
+                            .unwrap()
+                            .process_record(&request.process_id.0)
+                            .unwrap();
+                        let phase = record.map(|record| record.phase);
+                        std::fs::write(&received, format!("{} {phase:?}", request.process_id.0))
+                            .unwrap();
+                        std::process::abort();
+                    }));
+                    let gateway = recording_gateway(&dir, &database, client).await;
+                    let sent = gateway
+                        .exec_command(Parameters(exec_params("demo", &["/bin/echo", "x"], false)))
+                        .await
+                        .map(|sent| sent.0);
+                    panic!("the gateway did not crash: {sent:?}");
+                });
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mcp::independent_tests::an_execution_is_recorded_before_the_runner_receives_it",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(DIRECTORY, dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.signal(),
+            Some(ABORTED),
+            "the copy did not crash as the Runner received the execution:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let received = std::fs::read_to_string(dir.path().join("received")).unwrap();
+        let (process_id, phase) = received.split_once(' ').unwrap();
+        assert_eq!(phase, "Some(Dispatching)");
+        let record = Store::open(&dir.path().join("operations.db"))
+            .unwrap()
+            .process_record(process_id)
+            .unwrap()
+            .expect("the record the crashed gateway left");
+        assert_eq!(record.phase, ProcessPhase::Dispatching);
+        assert_eq!(record.runner, runner_ref(fake_identity()));
+        assert_eq!(record.workspace_id, "demo");
+        assert_eq!(
+            (record.root, record.deadline_at_ms, record.outcome),
+            (None, None, None)
+        );
     }
 
     /// Each independent mode states only what its Runner guarantees, and the rest of the

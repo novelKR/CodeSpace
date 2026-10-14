@@ -96,6 +96,22 @@ pub fn default_exec_timeout_ms() -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerExecResult {
     pub process_id: ProcessId,
+    /// The root process the Runner created (P1R-C02). A PTY root is not named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<RunnerProcessRoot>,
+    /// When the Runner times the process out, in milliseconds since the Unix epoch
+    /// (P1R-C02). The Runner's own timer decides; this only reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at_ms: Option<u64>,
+}
+
+/// A process's root as the Runner created it (P1R-C02): its PID and, where the host reports
+/// it, the start identity that tells it apart from a later process with the same PID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunnerProcessRoot {
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

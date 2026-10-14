@@ -124,8 +124,8 @@ mod wire;
 pub use api::{
     default_exec_timeout_ms, runner_local_exec_env, RunnerApplyPatchRequest,
     RunnerApplyPatchResult, RunnerCwd, RunnerError, RunnerExecEnv, RunnerExecPolicy,
-    RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
-    RunnerResizeResult, RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
+    RunnerExecRequest, RunnerExecResult, RunnerProcessRoot, RunnerProcessStatus, RunnerReadProcess,
+    RunnerReadResult, RunnerResizeResult, RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
 };
 pub use codespace_domain::{DEFAULT_FIND_LIMIT, DEFAULT_READ_LIMIT};
 pub use descriptors::exclude_unrelated;

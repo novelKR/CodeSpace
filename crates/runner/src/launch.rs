@@ -53,7 +53,7 @@ use crate::admission::{
 };
 use crate::process::spawn_env;
 use crate::registration::error_code;
-use crate::{RunnerCwd, RunnerExecRequest};
+use crate::{RunnerCwd, RunnerExecRequest, RunnerExecResult, RunnerProcessRoot};
 
 /// How long a launch waits for the helper's transcript by default.
 pub const DEFAULT_READY_BOUND: Duration = Duration::from_secs(10);
@@ -245,6 +245,13 @@ pub struct ManagedLaunch {
     /// The scope's root as DevGuard bound it: the helper's PID, which the executable kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_root_pid: Option<u32>,
+    /// The helper's process as the Runner created it, which the executable replaces
+    /// (P1R-C02). A PTY root is not named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<RunnerProcessRoot>,
+    /// When the Runner times the process out, in milliseconds since the Unix epoch (P1R-C02).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at_ms: Option<u64>,
 }
 
 /// How a governed execution's launch ended for its request.
@@ -389,11 +396,11 @@ impl PreparedExecution {
             .runner
             .spawn_managed(&self.ws, request.clone(), slot, invocation, hooks)
             .await;
-        if spawned.is_err() {
+        let Ok(spawned) = spawned else {
             // No helper exists, and none will be created for this grant.
             let attempt = self.abandon(Abandon::SpawnFailed).await;
             return self.not_launched(PreparationOutcome::HelperNotCreated, attempt);
-        }
+        };
         phases.push(LaunchPhase::HelperCreated);
         let (sender, ended) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
@@ -420,7 +427,9 @@ impl PreparedExecution {
                         }
                     }
                 });
-                return self.launched(phases, LaunchDispatch::Unknown).await;
+                return self
+                    .launched(phases, LaunchDispatch::Unknown, &spawned)
+                    .await;
             }
         };
         match end {
@@ -432,7 +441,8 @@ impl PreparedExecution {
                     LaunchPhase::PayloadExecAttempted,
                     LaunchPhase::PayloadRunning,
                 ]);
-                self.launched(phases, LaunchDispatch::Confirmed).await
+                self.launched(phases, LaunchDispatch::Confirmed, &spawned)
+                    .await
             }
             TranscriptEnd::Uncertain => {
                 // Whether the executable started is not known. Once the process has ended this
@@ -442,7 +452,8 @@ impl PreparedExecution {
                 tokio::spawn(async move {
                     settle.after_exit().await;
                 });
-                self.launched(phases, LaunchDispatch::Unknown).await
+                self.launched(phases, LaunchDispatch::Unknown, &spawned)
+                    .await
             }
             TranscriptEnd::ExecFailed { errno } => {
                 // The helper claimed the grant before READY, so its scope settles it; the
@@ -489,11 +500,13 @@ impl PreparedExecution {
         LaunchReport::NotLaunched(self.report(outcome, attempt))
     }
 
-    /// The launched report, with what DevGuard's record shows of the run.
+    /// The launched report, with what DevGuard's record shows of the run and what the spawn
+    /// reported of its process.
     async fn launched(
         &mut self,
         phases: Vec<LaunchPhase>,
         dispatch: LaunchDispatch,
+        spawned: &RunnerExecResult,
     ) -> LaunchReport {
         let mut account = self.account;
         let mut scope_root_pid = None;
@@ -523,6 +536,8 @@ impl PreparedExecution {
             phases,
             account: Some(account),
             scope_root_pid,
+            root: spawned.root.clone(),
+            deadline_at_ms: spawned.deadline_at_ms,
         })
     }
 
@@ -865,6 +880,10 @@ report() {{ eval "printf '%s\n' \"\$1\" >&$report"; }}
             );
             assert_eq!(launch.process_id.0, process);
             assert_eq!(launch.scope_root_pid, Some(4242));
+            // The Runner names the helper's process, which the command replaced, and when its
+            // timeout ends (P1R-C02); the pinned Codex PTY does not name its child.
+            assert_eq!(launch.root.is_some(), !tty, "{launch:?}");
+            assert!(launch.deadline_at_ms.is_some(), "{launch:?}");
             assert_eq!(
                 launch.account.unwrap().applied,
                 Applied::Launched {
