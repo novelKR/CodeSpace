@@ -6,7 +6,7 @@
 
 This page is the protocol for qualifying CodeSpace's use of DevGuard (CS-RG): which combination is qualified, which modes are claimed, how each claim is tested and measured, what makes a run pass, and what evidence a run leaves. It is frozen together with its harness, [`scripts/qualify-devguard.py`](../scripts/qualify-devguard.py), before any qualification run. A change to it, or to the harness, after the first qualification run is a new protocol: it is reviewed like any other change, and the runs it affects are repeated. The [integration roadmap](devguard-integration.md) describes what each unit built; this page decides whether the result qualifies.
 
-**Status:** the protocol and the harness exist; no qualification run has been made, and nothing here is a qualification result. CS-RG stays in progress and not qualified until a run under this protocol passes and its evidence is reviewed.
+**Status:** frozen with its harness ([#97](https://github.com/novelKR/CodeSpace/pull/97)) before the first qualification run. The runs on the candidate `ca306ee` passed, and CS-RG is qualified for that combination; the [qualification report](cs-rg-qualification-report.md) has the results and the evidence. The [regression command](#regressions) was corrected after the runs, as the report's [amendments](cs-rg-qualification-report.md#report-amendments) record; nothing else changed.
 
 <a id="candidate"></a>
 
@@ -200,7 +200,7 @@ The harness checks DevGuard's record, never CodeSpace's own view. For each gover
 
 ## Regression and parity
 
-On the candidate, on the qualification host in the minimal environment, `python3 scripts/validate-upstream.py all macos-core macos-fork-race` runs every stage, with the DevGuard test binaries required in the stages that use them; Linux is shown by CI on the candidate head, whose `dependencies` stage checks the dependency graph with the `devguard` feature on and off. A regression in any stage fails the qualification.
+On the candidate, on the qualification host in the minimal environment, two invocations run every stage, with the DevGuard test binaries required in the stages that use them: `python3 scripts/validate-upstream.py all`, then `python3 scripts/validate-upstream.py macos-core macos-fork-race`. `all` runs every stage but the macOS-only ones and replaces any other stage named with it, so those need their own invocation. Linux is shown by CI on the candidate head, whose `dependencies` stage checks the dependency graph with the `devguard` feature on and off. A regression in any stage fails the qualification.
 
 <a id="evidence"></a>
 
