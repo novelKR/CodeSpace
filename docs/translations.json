@@ -757,8 +757,8 @@
         "하위-패치",
         "확인과-갱신"
       ],
-      "source_sha256": "5a850ffa3d315d739c5fc3e35ba9ada1a9709e651915632264ea12851ab03087",
-      "translation_sha256": "17ab2bb0858c4f8521d31a49e1648f43bddaaaa27240fba5bf501f7a2c4ecc82"
+      "source_sha256": "92cd4658c9f0f16260983a522cfa4dee3349810342f721183970937abf358006",
+      "translation_sha256": "dcd84052e7973f310c10fe4d26c6ba3e32780f050b0e635c8b8218c1c03d80e7"
     },
     {
       "id": "upstream-update",
@@ -855,8 +855,8 @@
         "형식",
         "회수-전-관찰-첫-패치"
       ],
-      "source_sha256": "b54b42d0c9eea5b911aea5bfab6829d33606cd739a74fe6efba16503c6fa44f3",
-      "translation_sha256": "5b1da3fb965b81c348625a0760c99fafc651f473bf1cc7fec371af8a98354c21"
+      "source_sha256": "4f8577009361cb1c48c68a2a09e8c63f5279e6840aa62c4a58f31492a618ed31",
+      "translation_sha256": "64e4da26e1e4bf8309c3626d0d590b21e7d0a77203519e9b3fcc3e3ce5cafe9c"
     },
     {
       "id": "documentation",
