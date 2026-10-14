@@ -64,8 +64,8 @@
 | `control --rehearsal` | 2026-10-13 16:50–16:53 | 판정 불가. 예행이 절차보다 짧다는 사유뿐이며, 설계대로임 |
 | 회귀 단계, `all` | 2026-10-13 17:00–17:53 | Linux가 필요한 `linux-isolation` 말고 모든 단계 통과 |
 | 회귀 단계, `macos-core`와 `macos-fork-race` | 2026-10-13 17:57–18:01 | 통과 |
-| `control --rehearsal` | ⟨CTRL-REH-WHEN⟩ | ⟨CTRL-REH-RESULT⟩ |
-| `control` | ⟨CTRL-WHEN⟩ | ⟨CTRL-RESULT⟩ |
+| `control --rehearsal` | 2026-10-13 23:20–23:24 | 판정 불가. 예행이 절차보다 짧다는 사유뿐이며, 설계대로임. 네 구간 모두 통과 |
+| `control` | 2026-10-13 23:24부터 2026-10-14 03:33까지 | qualified: 두 runner 모드, 각각 세 번 반복, 열두 구간 모두 통과 |
 | Linux CI | 2026-10-13 23:25–23:42 | 통과: 전체 프로필의 모든 작업([실행 38484155990](https://github.com/novelKR/CodeSpace/actions/runs/38484155990)) |
 
 <a id="report-matrix"></a>
@@ -118,7 +118,49 @@
 
 ## 제어 경로 가용성
 
-⟨CTRL-SECTION⟩
+`control`은 2026-10-13 23:24 UTC부터 2026-10-14 03:33 UTC까지 전체 절차를 실행했습니다. 바로 앞의 예행(23:20–23:24)은 예행이 절차보다 짧다는 사유 하나로만 판정 불가였습니다. runner 모드마다 10분 유휴 구간과 30분 이상의 부하 구간을 세 번 반복했고, 설치된 release를 상대로 DG-1의 cold 부하를 걸었습니다. 부하는 예정된 끝 뒤에 진행 중인 실행을 마치므로 부하 구간은 1,829–1,865초였습니다. 열두 구간과 여섯 반복이 모두 통과해 두 runner 모드 모두 qualification을 통과했고, 실행 전체도 통과했습니다. 서비스는 모든 반복 전후에 프로세스 ID 23023으로 그 release를 실행했습니다.
+
+목표는 `process_status` p99 500 ms 이하와 종료 확인 응답 p99 1초 이하입니다. 시간은 밀리초입니다. 구간 끝의 일정도 재므로 표본 수는 일정보다 하나, 두 대상의 status 표본은 둘까지 많을 수 있습니다.
+
+| runner 모드 | 반복 | 구간 | 초 | status p99 / 최대 | status 표본 / 일정 | 종료 확인 p99 | 종료 / 일정 | 판정 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `in-process` | 1 | 유휴 | 600 | 2.150 / 45.195 | 1,201 / 1,200 | 0.539 | 30 / 30 | 통과 |
+| `in-process` | 1 | 부하 | 1,857 | 0.463 / 17.616 | 3,714 / 3,712 | 0.633 | 93 / 92 | 통과 |
+| `in-process` | 2 | 유휴 | 600 | 1.130 / 1.371 | 1,202 / 1,200 | 0.614 | 30 / 30 | 통과 |
+| `in-process` | 2 | 부하 | 1,854 | 0.664 / 1.075 | 3,710 / 3,708 | 0.417 | 93 / 92 | 통과 |
+| `in-process` | 3 | 유휴 | 600 | 1.107 / 1.404 | 1,202 / 1,200 | 0.481 | 30 / 30 | 통과 |
+| `in-process` | 3 | 부하 | 1,829 | 1.871 / 3.067 | 3,660 / 3,658 | 0.723 | 91 / 91 | 통과 |
+| `uds` | 1 | 유휴 | 600 | 1.418 / 2.801 | 1,200 / 1,200 | 0.741 | 30 / 30 | 통과 |
+| `uds` | 1 | 부하 | 1,857 | 0.985 / 1.772 | 3,716 / 3,714 | 0.729 | 93 / 92 | 통과 |
+| `uds` | 2 | 유휴 | 600 | 1.572 / 4.298 | 1,202 / 1,200 | 0.694 | 30 / 30 | 통과 |
+| `uds` | 2 | 부하 | 1,865 | 1.076 / 1.765 | 3,732 / 3,730 | 0.804 | 93 / 93 | 통과 |
+| `uds` | 3 | 유휴 | 600 | 4.922 / 12.753 | 1,202 / 1,200 | 0.693 | 30 / 30 | 통과 |
+| `uds` | 3 | 부하 | 1,839 | 0.560 / 1.658 | 3,678 / 3,676 | 0.473 | 92 / 91 | 통과 |
+
+scope의 끝과 DevGuard의 해제는 종료 확인 응답과 따로 재고, I/O echo와 거부 지연은 정해진 목표가 없으므로 보고만 합니다. 하네스는 exited 상태까지의 시간을 요약하지 않으므로, 여기의 p99는 원시 표본에서 같은 nearest-rank 규칙으로 계산했습니다.
+
+| runner 모드 | 반복 | 구간 | exited p99 | 프로세스 그룹 소멸 p99 | 해제 p99 | I/O p99 | 거부 p99 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `in-process` | 1 | 유휴 | 63.5 | 63.6 | 181.0 | 3.361 | 62.233 |
+| `in-process` | 1 | 부하 | 82.2 | 82.3 | 188.8 | 1.509 | 47.722 |
+| `in-process` | 2 | 유휴 | 63.1 | 63.1 | 190.8 | 2.903 | 45.778 |
+| `in-process` | 2 | 부하 | 88.1 | 88.1 | 195.9 | 2.140 | 45.017 |
+| `in-process` | 3 | 유휴 | 63.1 | 63.1 | 169.3 | 2.382 | 49.874 |
+| `in-process` | 3 | 부하 | 86.4 | 86.4 | 187.6 | 1.466 | 48.828 |
+| `uds` | 1 | 유휴 | 64.1 | 64.1 | 197.4 | 25.798 | 44.069 |
+| `uds` | 1 | 부하 | 92.9 | 92.9 | 208.3 | 16.182 | 43.818 |
+| `uds` | 2 | 유휴 | 63.5 | 63.5 | 178.4 | 2.947 | 39.582 |
+| `uds` | 2 | 부하 | 85.4 | 85.4 | 200.5 | 1.855 | 32.597 |
+| `uds` | 3 | 유휴 | 86.1 | 86.2 | 179.7 | 2.779 | 49.090 |
+| `uds` | 3 | 부하 | 76.9 | 76.9 | 181.8 | 1.056 | 43.143 |
+
+모든 구간에서 놓친 일정이 없었고, 오류이거나 이미 실행 중이 아닌 대상에 대한 status 표본도 없었습니다. 확인된 종료는 모두 대상을 끝냈고 해제되었으며, 각 status 대상의 마지막 종료도 효과가 있었습니다. 돌아오지 않은 I/O 줄은 없었습니다. 거부는 모두 `RESOURCE_UNAVAILABLE`이었고, 거부되어야 할 요청이 실행된 적은 없습니다. MCP 연결이 끊긴 표본, 두 번 실행된 실행(gateway 로그의 실행 수가 DevGuard journal과 같음), 다시 허용된 불확실한 attempt, 자원을 계속 차지한 attempt는 부하 자신의 attempt까지 포함해 하나도 없었습니다.
+
+**부하.** DG-1의 소비자 여섯은 부하 구간 여섯 개에서 1,199번(구간마다 196–202번) 실행했고 모두 성공했습니다. 0이 아닌 종료, 시작 실패, 불확실한 실행은 없었고, 허용된 부하가 부하 구간의 99.99%를 덮었습니다. 모든 소비자가 모든 구간에서 실행했습니다. `cargo`는 22–26번, `cpu`와 `memory`는 각각 15번, `io`는 58–59번, `output`은 59번, `slow-input`은 27–28번입니다.
+
+**호스트와 사용량.** 모든 구간의 호스트 표본이 메모리 pressure 수준 1(정상)이었고, swap은 최대 1,987 MiB였습니다. 실행 소유자(`in-process` 모드에서는 gateway, `uds` 모드에서는 worker)는 모든 구간에서 `codespace` 소비자의 예약 150 mCPU, 512 MiB, 40 tasks 안에 있었습니다. 최대값은 RSS 19.3 MiB와 thread 16개였고, CPU 평균은 최대 2.5 mCPU였습니다. `uds` 모드에서 worker와 gateway를 합쳐도 최대 30.6 MiB와 thread 25개, CPU 평균 최대 2.1 mCPU였습니다. 표본기는 프로세스 수를 세지 않으며, 측정한 프로세스는 `in-process` 모드의 gateway, `uds` 모드의 worker와 gateway입니다. 이 비교는 보고이며 판정이 아닙니다.
+
+**예행과 그 뒤.** 예행의 네 구간(runner 모드마다 유휴 30초와 부하 99초)도 같은 0의 기록으로 통과했고, status p99는 최대 4.352 ms, 종료 확인 응답 p99는 최대 0.464 ms였습니다. 두 실행이 끝난 뒤 자원을 차지한 것도 lease도 없었고, DevGuard journal의 `codespace` 인스턴스는 모두 retire되었으며, 서비스는 프로세스 ID 23023으로 그 release를 계속 실행했습니다. 두 실행 동안 서비스는 재시작하지 않았습니다.
 
 <a id="report-accounting"></a>
 
@@ -129,11 +171,11 @@
 | 항목 | 근거 | 결과 |
 | --- | --- | --- |
 | 요청, 예약, 지원, 적용 값 | [기능 행렬](#report-matrix): 모든 관리 대상 실행에 대한 DevGuard journal 기록 | 두 runner 모드, pipe와 PTY 모두 일치 |
-| headroom과 control 예약 | 소비자 예약은 work capacity에서 빠짐. 소비자를 준비할 때 5,500에서 5,350 mCPU로, 12,616,466,432에서 12,079,595,520바이트로, 144에서 104 tasks로 줄었음. matrix `shortage`는 들어가지 않는 요청을 거부함. [제어 경로](#report-control)는 실행 소유자의 사용량을 예약과 비교함 | ⟨ACCT-FOOTPRINT⟩ |
-| pressure | [authority 장애](#report-authority): 오래된 호스트 표본 뒤에는 표본이 30초 동안 정상일 때까지 새 작업이 닫히고, 실행 중인 대상은 계속 제어됨. [제어 경로](#report-control): DG-1 부하에서의 호스트 pressure. 서비스 자체의 pressure 동작은 DG-1이 보임 | ⟨ACCT-PRESSURE⟩ |
+| headroom과 control 예약 | 소비자 예약은 work capacity에서 빠짐. 소비자를 준비할 때 5,500에서 5,350 mCPU로, 12,616,466,432에서 12,079,595,520바이트로, 144에서 104 tasks로 줄었음. matrix `shortage`는 들어가지 않는 요청을 거부함. [제어 경로](#report-control)는 실행 소유자의 사용량을 예약과 비교함 | 보고: 실행 소유자는 모든 제어 구간에서 예약 안에 있었음. 최대 19.3 MiB, thread 16개, CPU 평균 2.5 mCPU |
+| pressure | [authority 장애](#report-authority): 오래된 호스트 표본 뒤에는 표본이 30초 동안 정상일 때까지 새 작업이 닫히고, 실행 중인 대상은 계속 제어됨. [제어 경로](#report-control): DG-1 부하에서의 호스트 pressure. 서비스 자체의 pressure 동작은 DG-1이 보임 | 통과. 제어 부하에서 호스트 표본은 모두 정상 |
 | 자손이 남아 있으면 root 종료만으로 해제하지 않음 | faults `descendant`, pipe와 PTY | 통과 |
 | 알 수 없는 상태는 보수적으로 회계 | faults `escape`, `stalled-observer`, `authority-restart`: attempt가 Suspect로 자원을 차지한 채 남음 | 통과 |
-| 불확실한 launch 뒤 재실행 없음 | faults `authority-stalled`, `authority-restart`(launch 한 번), `worker-killed`, 제어 경로의 중복 실행 수 | 통과. ⟨ACCT-DUPLICATES⟩ |
+| 불확실한 launch 뒤 재실행 없음 | faults `authority-stalled`, `authority-restart`(launch 한 번), `worker-killed`, 제어 경로의 중복 실행 수 | 통과. 제어 경로에서도 없음 |
 | 시작하지 않았음이 확실한 경우의 정리 | matrix `no-helper`와 `unusable-helper`(cancelled), `shortage`(denied), `exec-failed`(scope가 끝나면 해제). faults `helper-ends`(`no_helper_created`로 해제), `authority-stalled`와 `worker-killed`(붙잡은 것 없음) | 통과 |
 
 <a id="report-regressions"></a>
@@ -192,6 +234,8 @@ Linux CI는 예약된 [실행 38484155990](https://github.com/novelKR/CodeSpace/
 | `csrg-u6-qual-regressions-macos-2026-10-13-ca306ee` | `macos-core`와 `macos-fork-race` | `5d160894fbf4b63fd822da63bf137bd8ab6a1d7a1aba005c256f5ba3ff59c2bd` |
 | `csrg-u6-control-rehearsal-2026-10-14-ca306ee` | 제어 예행 | `ac79024e237ee496b64f524696228e171a7161ccfde7652e02b023c67c25039f` |
 | `csrg-u6-control-2026-10-14-ca306ee` | 제어 | `7706aac71c2f793dbc273b5c78f888dcc2af50269c0039d132b21c236b47e9be` |
+
+두 제어 실행의 디렉터리 날짜 2026-10-14는 명령이 2026-10-13 23:20 UTC에 시작하기 전에 받은 날짜입니다.
 
 고정 전의 점검도 보존합니다.
 

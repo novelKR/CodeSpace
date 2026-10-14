@@ -64,8 +64,8 @@ Every run used the candidate's binaries in the minimal environment, with Rust 1.
 | `control --rehearsal` | 2026-10-13 16:50–16:53 | inconclusive only because a rehearsal is shorter than the protocol, as designed |
 | regression stages, `all` | 2026-10-13 17:00–17:53 | every stage passed except `linux-isolation`, which needs Linux |
 | regression stages, `macos-core` and `macos-fork-race` | 2026-10-13 17:57–18:01 | passed |
-| `control --rehearsal` | ⟨CTRL-REH-WHEN⟩ | ⟨CTRL-REH-RESULT⟩ |
-| `control` | ⟨CTRL-WHEN⟩ | ⟨CTRL-RESULT⟩ |
+| `control --rehearsal` | 2026-10-13 23:20–23:24 | inconclusive only because a rehearsal is shorter than the protocol, as designed; all four intervals passed |
+| `control` | 2026-10-13 23:24 to 2026-10-14 03:33 | qualified: both runner modes, three repetitions each, all twelve intervals passed |
 | Linux CI | 2026-10-13 23:25–23:42 | passed: every job of the full profile ([run 38484155990](https://github.com/novelKR/CodeSpace/actions/runs/38484155990)) |
 
 <a id="report-matrix"></a>
@@ -118,7 +118,49 @@ The host sample that went stale while `stalled` held the lock kept new work clos
 
 ## Control-path availability
 
-⟨CTRL-SECTION⟩
+`control` ran the full protocol from 23:24 UTC on 2026-10-13 to 03:33 UTC on 2026-10-14, right after a rehearsal (23:20–23:24) that was inconclusive only because a rehearsal is shorter than the protocol. In each runner mode it ran three repetitions of a 10-minute idle interval and a load interval of at least 30 minutes, under DG-1's cold load against the installed release. The load intervals lasted 1,829 to 1,865 seconds, because the load's runs finish after the planned end. All twelve intervals and all six repetitions passed, so both runner modes qualified, and so did the run. The service ran the release with process ID 23023 before and after every repetition.
+
+The targets are a `process_status` p99 of at most 500 ms and a termination acknowledgement p99 of at most 1 second. Times are in milliseconds. Because the slot at an interval's end is taken too, a count can be one above its schedule, or two for the status samples of the two targets.
+
+| Runner mode | Repetition | Interval | Seconds | Status p99 / max | Status samples / schedule | Acknowledgement p99 | Terminations / schedule | Verdict |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `in-process` | 1 | idle | 600 | 2.150 / 45.195 | 1,201 / 1,200 | 0.539 | 30 / 30 | pass |
+| `in-process` | 1 | load | 1,857 | 0.463 / 17.616 | 3,714 / 3,712 | 0.633 | 93 / 92 | pass |
+| `in-process` | 2 | idle | 600 | 1.130 / 1.371 | 1,202 / 1,200 | 0.614 | 30 / 30 | pass |
+| `in-process` | 2 | load | 1,854 | 0.664 / 1.075 | 3,710 / 3,708 | 0.417 | 93 / 92 | pass |
+| `in-process` | 3 | idle | 600 | 1.107 / 1.404 | 1,202 / 1,200 | 0.481 | 30 / 30 | pass |
+| `in-process` | 3 | load | 1,829 | 1.871 / 3.067 | 3,660 / 3,658 | 0.723 | 91 / 91 | pass |
+| `uds` | 1 | idle | 600 | 1.418 / 2.801 | 1,200 / 1,200 | 0.741 | 30 / 30 | pass |
+| `uds` | 1 | load | 1,857 | 0.985 / 1.772 | 3,716 / 3,714 | 0.729 | 93 / 92 | pass |
+| `uds` | 2 | idle | 600 | 1.572 / 4.298 | 1,202 / 1,200 | 0.694 | 30 / 30 | pass |
+| `uds` | 2 | load | 1,865 | 1.076 / 1.765 | 3,732 / 3,730 | 0.804 | 93 / 93 | pass |
+| `uds` | 3 | idle | 600 | 4.922 / 12.753 | 1,202 / 1,200 | 0.693 | 30 / 30 | pass |
+| `uds` | 3 | load | 1,839 | 0.560 / 1.658 | 3,678 / 3,676 | 0.473 | 92 / 91 | pass |
+
+The scope's end and DevGuard's release are timed separately from the acknowledgement, and the I/O echo and the refusal latency have no established target, so these are reported. The harness does not summarize the time to the exited status; its p99 here is computed from the raw samples by the same nearest-rank rule.
+
+| Runner mode | Repetition | Interval | Exited p99 | Process group gone p99 | Released p99 | I/O p99 | Refusal p99 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| `in-process` | 1 | idle | 63.5 | 63.6 | 181.0 | 3.361 | 62.233 |
+| `in-process` | 1 | load | 82.2 | 82.3 | 188.8 | 1.509 | 47.722 |
+| `in-process` | 2 | idle | 63.1 | 63.1 | 190.8 | 2.903 | 45.778 |
+| `in-process` | 2 | load | 88.1 | 88.1 | 195.9 | 2.140 | 45.017 |
+| `in-process` | 3 | idle | 63.1 | 63.1 | 169.3 | 2.382 | 49.874 |
+| `in-process` | 3 | load | 86.4 | 86.4 | 187.6 | 1.466 | 48.828 |
+| `uds` | 1 | idle | 64.1 | 64.1 | 197.4 | 25.798 | 44.069 |
+| `uds` | 1 | load | 92.9 | 92.9 | 208.3 | 16.182 | 43.818 |
+| `uds` | 2 | idle | 63.5 | 63.5 | 178.4 | 2.947 | 39.582 |
+| `uds` | 2 | load | 85.4 | 85.4 | 200.5 | 1.855 | 32.597 |
+| `uds` | 3 | idle | 86.1 | 86.2 | 179.7 | 2.779 | 49.090 |
+| `uds` | 3 | load | 76.9 | 76.9 | 181.8 | 1.056 | 43.143 |
+
+In every interval no slot was missed, and no status sample was an error or an answer about a target that no longer ran. Every acknowledged termination ended its target and was released, and each status target's final termination was effective. No I/O line was lost. Every refusal was `RESOURCE_UNAVAILABLE`, and no request that had to be refused ran. No sample lost the MCP connection, no execution was launched twice (the launches in the gateway's log match DevGuard's journal), no uncertain attempt was admitted again, and nothing stayed charged, the load's own attempts included.
+
+**Load.** DG-1's six consumers made 1,199 runs in the six load intervals, 196 to 202 in each, and every run succeeded: none exited with a nonzero status, failed to start or was uncertain, and admitted load covered 99.99% of the load intervals. Every consumer ran in every interval: `cargo` 22 to 26 times, `cpu` and `memory` 15 times each, `io` 58 or 59, `output` 59 and `slow-input` 27 or 28.
+
+**Host and footprint.** Every host sample of every interval was at memory pressure level 1 (normal), and swap peaked at 1,987 MiB. The execution owner, which is the gateway in `in-process` mode and the worker in `uds` mode, stayed within the `codespace` consumer's reservation of 150 mCPU, 512 MiB and 40 tasks in every interval: its peaks were 19.3 MiB of RSS and 16 threads, with a mean CPU of at most 2.5 mCPU. In `uds` mode the worker and the gateway together peaked at 30.6 MiB and 25 threads, with a mean CPU of at most 2.1 mCPU. The sampler does not count processes; the measured processes are the gateway in `in-process` mode, and the worker and the gateway in `uds` mode. This comparison is reported, not judged.
+
+**Rehearsal and afterwards.** The rehearsal's four intervals (30 seconds idle and 99 seconds of load per runner mode) passed with the same zero counts, a status p99 of at most 4.352 ms and an acknowledgement p99 of at most 0.464 ms. After both runs nothing was charged and no lease was held, every `codespace` instance in DevGuard's journal was retired, and the service still ran the release with process ID 23023; it did not restart during either run.
 
 <a id="report-accounting"></a>
 
@@ -129,11 +171,11 @@ The work order's accounting items, each checked against DevGuard's record rather
 | Item | Where it is shown | Result |
 | --- | --- | --- |
 | Requested, reserved, supported and applied values | [matrix](#report-matrix): DevGuard's journal record of every governed launch | matched in both runner modes, pipe and PTY |
-| Headroom and control reservations | the consumer's reservation is subtracted from the work capacity: 5,500 to 5,350 mCPU, 12,616,466,432 to 12,079,595,520 bytes and 144 to 104 tasks when it was provisioned; matrix `shortage` refuses a request that cannot fit; the [control path](#report-control) compares the execution owner's footprint with the reservation | ⟨ACCT-FOOTPRINT⟩ |
-| Pressure | [authority failure](#report-authority): after a stale host sample, new work stays closed until samples have been clear for 30 seconds, while running targets stay controllable; the [control path](#report-control): host pressure under DG-1's load; the service's own pressure behavior is DG-1's | ⟨ACCT-PRESSURE⟩ |
+| Headroom and control reservations | the consumer's reservation is subtracted from the work capacity: 5,500 to 5,350 mCPU, 12,616,466,432 to 12,079,595,520 bytes and 144 to 104 tasks when it was provisioned; matrix `shortage` refuses a request that cannot fit; the [control path](#report-control) compares the execution owner's footprint with the reservation | reported: the execution owner stayed within the reservation in every control interval, at most 19.3 MiB, 16 threads and a mean of 2.5 mCPU |
+| Pressure | [authority failure](#report-authority): after a stale host sample, new work stays closed until samples have been clear for 30 seconds, while running targets stay controllable; the [control path](#report-control): host pressure under DG-1's load; the service's own pressure behavior is DG-1's | passed; under the control load every host sample was normal |
 | No release on root exit alone while a descendant remains | faults `descendant`, pipe and PTY | passed |
 | Conservative accounting for an unknown state | faults `escape`, `stalled-observer` and `authority-restart`: the attempt stays charged as Suspect | passed |
-| No replay after an uncertain launch | faults `authority-stalled`, `authority-restart` (one launch) and `worker-killed`; the control path's duplicate-launch count | passed; ⟨ACCT-DUPLICATES⟩ |
+| No replay after an uncertain launch | faults `authority-stalled`, `authority-restart` (one launch) and `worker-killed`; the control path's duplicate-launch count | passed; none in the control path |
 | Cleanup after a definite no-start | matrix `no-helper` and `unusable-helper` (cancelled), `shortage` (denied), `exec-failed` (released when the scope ended); faults `helper-ends` (released as `no_helper_created`), `authority-stalled` and `worker-killed` (nothing held) | passed |
 
 <a id="report-regressions"></a>
@@ -192,6 +234,8 @@ The evidence directories are on the qualification host, under the DevGuard check
 | `csrg-u6-qual-regressions-macos-2026-10-13-ca306ee` | `macos-core` and `macos-fork-race` | `5d160894fbf4b63fd822da63bf137bd8ab6a1d7a1aba005c256f5ba3ff59c2bd` |
 | `csrg-u6-control-rehearsal-2026-10-14-ca306ee` | control rehearsal | `ac79024e237ee496b64f524696228e171a7161ccfde7652e02b023c67c25039f` |
 | `csrg-u6-control-2026-10-14-ca306ee` | control | `7706aac71c2f793dbc273b5c78f888dcc2af50269c0039d132b21c236b47e9be` |
+
+The two control runs' directories carry the date 2026-10-14, which the command was given before it started at 23:20 UTC on 2026-10-13.
 
 The checks before the freeze are kept too:
 
