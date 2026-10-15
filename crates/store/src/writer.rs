@@ -18,7 +18,7 @@ const RETRY: Duration = Duration::from_millis(100);
 /// ends, however it ends.
 #[derive(Debug)]
 pub struct WriterLock {
-    _file: File,
+    file: File,
     path: PathBuf,
 }
 
@@ -88,11 +88,20 @@ impl WriterLock {
             .and_then(|()| file.seek(SeekFrom::Start(0)))
             .and_then(|_| file.write_all(format!("{}\n", std::process::id()).as_bytes()))
             .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
-        Ok(Self { _file: file, path })
+        Ok(Self { file, path })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        // Let go at once: a child that another thread is forking holds a copy of this
+        // descriptor, and with it the lock, until it runs its program.
+        // SAFETY: flock unlocks the open file description behind a descriptor this lock owns.
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
@@ -192,6 +201,20 @@ mod tests {
             std::fs::read_to_string(second.path()).unwrap(),
             format!("{}\n", std::process::id())
         );
+    }
+
+    /// A writer lets go when it is dropped, though a copy of its descriptor lives on, as in a
+    /// child that another thread forked and that has not run its program yet.
+    #[test]
+    fn a_writer_lets_go_though_a_copy_of_its_descriptor_lives_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("ops.sqlite");
+        let first = WriterLock::acquire(&database, Duration::ZERO, not_waiting).unwrap();
+        let copy = first.file.try_clone().unwrap();
+        drop(first);
+        let second = WriterLock::acquire(&database, Duration::ZERO, not_waiting).unwrap();
+        drop(second);
+        drop(copy);
     }
 
     /// A gateway that is killed while it holds the lock lets go of it with its process: the
