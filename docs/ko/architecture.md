@@ -58,7 +58,7 @@ UDS worker와 기본 러너는 모두 같은 호스트에서 실행합니다. �
 
 ## 프로세스 수명
 
-MCP 요청이 끝나도 관리 중인 프로세스는 유지됩니다. 클라이언트는 `process_id`로 후속 호출을 수행합니다. 서버 재시작 후에는 핸들이 사라집니다. UDS 모드에서는 게이트웨이가 worker를 관리하므로 내부 연결 종료나 서버 종료 시 worker와 자식 프로세스가 종료되며 재접속은 지원하지 않습니다. 아직 지원하는 모드가 아닌 [독립 Runner](runner-isolation.md#independent-runner)는 이와 달리 게이트웨이보다 오래 살고, Runner와의 연결을 잃은 게이트웨이는 Runner를 다시 Claim한 뒤 앞선 controller들이 작업을 시작한 곳에서는 그들이 남긴 것을 대조하고 나서 새 작업을 시작합니다. Runner 자체를 잃으면 게이트웨이는 그 실행들에 대해 기록으로 답하고, 그 workspace는 운영자를 기다립니다([Runner 손실](runner-isolation.md#runner-loss)). [러너 격리](runner-isolation.md)에서 전송 경계와 격리 경계를 구분해 설명합니다.
+MCP 요청이 끝나도 관리 중인 프로세스는 유지됩니다. 클라이언트는 `process_id`로 후속 호출을 수행합니다. 서버 재시작 후에는 핸들이 사라집니다. UDS 모드에서는 게이트웨이가 worker를 관리하므로 내부 연결 종료나 서버 종료 시 worker와 자식 프로세스가 종료되며 재접속은 지원하지 않습니다. [qualification](recovery-qualification.md)을 통과한 곳에서만 지원하는 [독립 Runner](runner-isolation.md#independent-runner)는 이와 달리 게이트웨이보다 오래 살고, Runner와의 연결을 잃은 게이트웨이는 Runner를 다시 Claim한 뒤 앞선 controller들이 작업을 시작한 곳에서는 그들이 남긴 것을 대조하고 나서 새 작업을 시작합니다. Runner 자체를 잃으면 게이트웨이는 그 실행들에 대해 기록으로 답하고, 그 workspace는 운영자를 기다립니다([Runner 손실](runner-isolation.md#runner-loss)). [러너 격리](runner-isolation.md)에서 전송 경계와 격리 경계를 구분해 설명합니다.
 
 ## 계획된 실행 조정 구조
 

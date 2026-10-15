@@ -109,7 +109,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. MCP/HTTP client disconnect does not kill those processes. The default remains `in-process`. An [independent Runner](runner-isolation.md#independent-runner), whose processes outlive the gateway, whose gateway records them in the operations database, and which a gateway claims again after a lost connection and then reconciles with its records, is not a supported mode yet; when such a Runner itself is lost, an operator settles what it ran with `codespace-mcp records` ([Runner loss](#runner-loss)).
+The worker runs on the same host and is not a container. The gateway creates a private socket directory and owns the child. Worker connection loss or gateway shutdown ends that worker's processes; reconnect and process recovery are not supported. MCP/HTTP client disconnect does not kill those processes. The default remains `in-process`. An [independent Runner](runner-isolation.md#independent-runner), whose processes outlive the gateway, whose gateway records them in the operations database, and which a gateway claims again after a lost connection and then reconciles with its records, is supported only on the combinations that its [qualification](recovery-qualification.md) qualifies, and none is qualified yet ([adoption and rollback](#independent-runner-adoption)); when such a Runner itself is lost, an operator settles what it ran with `codespace-mcp records` ([Runner loss](#runner-loss)).
 
 <a id="logs"></a>
 <a id="recovery-after-disconnect-or-restart"></a>
@@ -133,11 +133,42 @@ Store logs and the database outside the managed workspace, with tokens and gatew
 
 After losing a patch response, query `operation_status` with exactly one of `operation_id` or `operation_key`. An unfinished record becomes `unknown` after restart; inspect files before deciding what to do. Processes use `process_id` and cannot be recovered through `operation_status`. A confirmation hold that was `queued` when the process died can be resumed and will reacquire. A hold that was `resuming` may recover a patch from that ledger, replay a stored terminal result, or return `APPROVAL_AMBIGUOUS`; exec is not respawned. A gateway with an independent Runner settles an exec hold left `resuming` when it [reconciles](runner-isolation.md#reconciliation): consumed with the process that the Runner created for it, or granted again when the Runner proves that it created none. See [retry and recovery rules](agent-integration.md).
 
+<a id="independent-runner-adoption"></a>
+
+## Independent Runner adoption and rollback
+
+The [independent Runner](runner-isolation.md#independent-runner) is supported only on the combinations that its [qualification](recovery-qualification.md) qualifies, and none is qualified yet. It is opt-in, and the default stays `in-process`. Adopt it only on a qualified combination, with the CodeSpace build, the DevGuard release and the policy that were qualified: anything else is a new candidate.
+
+1. **Prepare** a state directory outside every workspace, with an operations database that no CodeSpace version from before the process records will open ([schema version](#operations-database)), and a socket directory of mode 0700 for the Runner. With DevGuard, the Runner is the execution owner and registers as the `codespace` consumer's one instance, so stop any other gateway that registers as that consumer first.
+2. **Start the Runner** in its own session, as the qualification starts it, so that neither your terminal nor any gateway's end reaches it. On Linux `setsid` does this; the Python line below does it on macOS and Linux alike. With DevGuard, give it the consumer settings of the [status-only connection](devguard-integration.md#devguard-status-connection) and the release's `devguard-launch`; without DevGuard, leave out the `--devguard-*` settings, and `required` workspaces are refused.
+
+   ```bash
+   python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+     "$PWD/dist/codespace-codex-runtime" "$RUNNER_DIR/runner.sock" --lifecycle independent \
+     --devguard-socket "$DEVGUARD_SOCKET" --devguard-consumer codespace \
+     --devguard-generation "$DEVGUARD_GENERATION" \
+     --devguard-credential-file "$DEVGUARD_CREDENTIAL_FILE" \
+     --devguard-launch-helper "$DEVGUARD_LAUNCH" >>"$STATE_DIR/runner.log" 2>&1 </dev/null &
+   ```
+
+3. **Start a gateway** with the exit intent `detach`, the operations database and, with DevGuard, `--devguard register` with the same consumer settings. Only one gateway at a time serves a database; another waits up to 15 seconds and refuses to start.
+
+   ```bash
+   ./dist/codespace-mcp --runner uds --runner-socket "$RUNNER_DIR/runner.sock" \
+     --runner-lifecycle independent --runner-exit-intent detach \
+     --operations-db "$STATE_DIR/operations.sqlite" --devguard register ...
+   ```
+
+4. **Restart the gateway** by ending it with SIGTERM, SIGUSR1 or its input closed, and starting the next one with the same settings. The Runner's processes carry on, and the next gateway claims the Runner, reconciles what was left and serves; `RUNNER_RECONNECTING` and `RECOVERY_PENDING` tell clients to retry after a pause ([Agent Loop integration](agent-integration.md)).
+5. **Drain** the Runner when you stop using it: let its processes finish or terminate them, then start a gateway with `--runner-exit-intent stop` and close its input. The gateway claims the Runner and stops it, and the Runner ends what it still holds, removes its socket and exits 0. Sending SIGTERM to the Runner stops it the same way, but a gateway still connected then loses its Runner, so stop the gateway first. The Runner is drained when it has exited, `codespace-mcp records list` lists no record, and with DevGuard its instance is retired: the next owner of the consumer reports `resource_authority.registration.state` `registered`.
+
+**Rollback.** Stop starting gateways in the independent mode, drain the Runner as in step 5, and return to the combination qualified before: a gateway in `in-process` mode, or `uds` with `--runtime-bin`, with the same DevGuard release and policy ([qualification and adoption](devguard-integration.md#devguard-qualification)). Keep the operations database: do not restore an earlier copy, and do not open it with a CodeSpace version from before the process records. A Runner that cannot be drained because it was lost is settled as [Runner loss](#runner-loss) describes; until DevGuard retires its instance, no other owner can register as the consumer.
+
 <a id="runner-loss"></a>
 
 ## Runner loss
 
-This applies to a gateway with an [independent Runner](runner-isolation.md#independent-runner), which is not a supported mode yet. When that Runner is killed, crashes or stops, or the host restarts, what it was running can no longer be learned from it, and its processes may outlive it ([Runner loss](runner-isolation.md#runner-loss)). The gateway answers for them from their records, as `unknown` with a `lost_reason`, and each workspace they held stays refused, with `RECOVERY_PENDING` in the next gateway, until you confirm that nothing of them runs and release their records. CodeSpace ends none of these processes, starts nothing again, and asks DevGuard nothing about them.
+This applies to a gateway with an [independent Runner](runner-isolation.md#independent-runner), which is supported only where [qualified](recovery-qualification.md). When that Runner is killed, crashes or stops, or the host restarts, what it was running can no longer be learned from it, and its processes may outlive it ([Runner loss](runner-isolation.md#runner-loss)). The gateway answers for them from their records, as `unknown` with a `lost_reason`, and each workspace they held stays refused, with `RECOVERY_PENDING` in the next gateway, until you confirm that nothing of them runs and release their records. CodeSpace ends none of these processes, starts nothing again, and asks DevGuard nothing about them.
 
 1. **List the records** that may still hold a workspace. This only reads the database, so it also works while a gateway runs:
 

@@ -1,5 +1,6 @@
-"""The CSRG-U6 harness without a host: its analysis, evidence, journal reads, MCP client and
-verdict recomputation, on synthetic inputs (docs/cs-rg-qualification.md)."""
+"""The CSRG-U6 and P1R-C06 harness without a host: its analysis, evidence, journal reads, MCP and
+Runner clients and verdict recomputation, on synthetic inputs (docs/cs-rg-qualification.md,
+docs/recovery-qualification.md)."""
 import contextlib
 import importlib.util
 import io
@@ -7,11 +8,14 @@ import json
 import math
 import os
 from pathlib import Path
+import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -55,6 +59,58 @@ def refused(count, code='RESOURCE_UNAVAILABLE', latency=40.0):
 def admitted(count, latency=60.0):
     return [{'slot': n, 'outcome': 'admitted', 'latency_ms': latency, 'attempt_id': f'cs-attempt-a{n}'}
             for n in range(count)]
+
+
+def stream(label, first, last, per_read=3, cursor=0):
+    """Reads of a numbered output stream, `per_read` lines each, as the measurement records them."""
+    rows = []
+    for start in range(first, last + 1, per_read):
+        chunk = ''.join(f'{label} {n:08d}\n' for n in range(start, min(start + per_read, last + 1)))
+        rows.append({'slot': len(rows), 'outcome': 'read', 'from': cursor, 'to': cursor + len(chunk), 'chunk': chunk,
+                     'output_lost': False, 'retained_from': cursor, 'lost_reason': None})
+        cursor += len(chunk)
+    return rows
+
+
+def lost(row, retained_from, reason='ring_overflow'):
+    """A read that asked from before what the Runner still retains."""
+    return dict(row, output_lost=True, retained_from=retained_from, lost_reason=reason)
+
+
+def cycles(count):
+    """A recovery interval's gateway cycles: each claimed under its epoch, inherited its targets,
+    saw every fence request refused and a rival give up; all but the last restart, ending in turn
+    as GATEWAY_ENDS says; then the last gateway's end."""
+    rows = []
+    for number in range(1, count + 1):
+        row = {'cycle': number, 'gateway': 100 + number, 'expected_epoch': number, 'serving_ms': 30.0,
+               'restart': number < count,
+               'claim': {'granted': True, 'pid': 100 + number, 'epoch': number, 'previous_controller': number > 1},
+               'fence': {'claim': 'controller_active', 'requests': [
+                   {'op': op, 'epoch': epoch, 'ok': False, 'code': 'STALE_CONTROLLER'}
+                   for op in ('write_stdin', 'terminate', 'stop') for epoch in (number - 1, number, None)]},
+               'rival': {'pid': 200 + number, 'returncode': 1, 'killed': False, 'another_writer': True, 'claims': []}}
+        if number > 1:
+            row['inherited'] = {'status-pipe': 'running', 'beat-pty': 'running'}
+        if row['restart']:
+            how = host.GATEWAY_ENDS[number % len(host.GATEWAY_ENDS)]
+            row.update(how=how, ended={'how': how, 'returncode': analysis.GATEWAY_EXIT[how], 'stopped': None})
+        rows.append(row)
+    rows.append({'cycle': count, 'gateway': 100 + count, 'last': True, 'how': 'eof',
+                 'ended': {'how': 'eof', 'returncode': 0, 'stopped': None}})
+    return rows
+
+
+def timed_out(deadline_s, gone_s, in_gap=False, **changes):
+    deadline = int(deadline_s * 1000)
+    return dict({'tag': 'timeout', 'deadline_at_ms': deadline, 'deadline_after_ms': deadline, 'gone_unix': gone_s,
+                 'termination': 'timeout', 'in_gap': in_gap}, **changes)
+
+
+def resumed(tag, process_id, killed=False, **changes):
+    resume = {'outcome': 'started', 'process_id': process_id}
+    return dict({'tag': tag, 'resume': resume, 'again': dict(resume), 'ready_ms': 12.0, 'killed_during_resume': killed,
+                 'not_admitted': False}, **changes)
 
 
 class AnalysisTests(unittest.TestCase):
@@ -758,6 +814,362 @@ class HarnessTests(unittest.TestCase):
     def test_verify_refuses_an_unsealed_directory(self):
         (self.dir / 'open').mkdir()
         self.assertEqual(qualify.verify(self.dir / 'open')['verdict'], 'failed')
+
+
+class RecoveryTests(unittest.TestCase):
+    """P1R-C06: the recovery suites' analysis, the Runner's log and wire protocol, the serving gate,
+    the command line and `verify` of a recovery run."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.dir = Path(self.scratch.name)
+
+    def tearDown(self):
+        for path in self.dir.rglob('*'):
+            os.chmod(path, 0o700 if path.is_dir() else 0o600)
+        self.scratch.cleanup()
+
+    def test_claims_from_the_runner_log(self):
+        log = '\n'.join((
+            'codespace-codex-runtime: independent Runner 7 listening on /x/runner.sock',
+            'codespace-codex-runtime: process 11 claimed the Runner under epoch 1',
+            'codespace-codex-runtime: refused the Claim of process 12 (controller_active): another connection '
+            'controls this Runner and is still open',
+            'codespace-codex-runtime: the controlling gateway detached; its processes go on',
+            'codespace-codex-runtime: process 13 claimed the Runner under epoch 2; an earlier controller started '
+            'work, so it starts nothing where that controller did until it reconciled it'))
+        self.assertEqual(host.claim_lines(log), [
+            {'granted': True, 'pid': 11, 'epoch': 1, 'previous_controller': False},
+            {'granted': False, 'pid': 12, 'refusal': 'controller_active'},
+            {'granted': True, 'pid': 13, 'epoch': 2, 'previous_controller': True}])
+
+    def test_the_wire_client_frames_requests_and_passes_events_over(self):
+        path = self.dir / 'r.sock'
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(path))
+        server.listen(1)
+        seen = []
+
+        def exactly(connection, count):
+            data = b''
+            while len(data) < count:
+                chunk = connection.recv(count - len(data))
+                if not chunk:
+                    raise ConnectionError('closed')
+                data += chunk
+            return data
+
+        def send(connection, message):
+            body = json.dumps(message).encode()
+            connection.sendall(struct.pack('>I', len(body)) + body)
+
+        def serve():
+            connection, _ = server.accept()
+            with connection:
+                for answer in ({'ok': True, 'result': {'type': 'claimed', 'data': {'epoch': 4}}},
+                               {'ok': False, 'error': {'code': 'STALE_CONTROLLER', 'message': 'not the controller'}}):
+                    (length,) = struct.unpack('>I', exactly(connection, 4))
+                    request = json.loads(exactly(connection, length))
+                    seen.append(request)
+                    # An exit event, which the Runner sends its controller, comes before the answer.
+                    send(connection, {'protocol': host.WIRE_PROTOCOL, 'kind': 'event', 'event': {'type': 'exited'}})
+                    send(connection, dict(answer, protocol=host.WIRE_PROTOCOL, kind='response',
+                                          request_id=request['request_id']))
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        client = host.WireClient(path, timeout=10)
+        try:
+            claim = client.claim('store-1')
+            stale = client.request('terminate', {'process_id': 'proc-1'}, epoch=3)
+        finally:
+            client.close()
+            thread.join(timeout=10)
+            server.close()
+        self.assertEqual([request['op'] for request in seen], [{'op': 'claim', 'data': {'store_id': 'store-1'}},
+                                                              {'op': 'terminate', 'data': {'process_id': 'proc-1'}}])
+        self.assertEqual([request.get('epoch') for request in seen], [None, 3])
+        self.assertEqual({request['protocol'] for request in seen}, {host.WIRE_PROTOCOL})
+        self.assertEqual((claim['ok'], claim['type'], claim['data']), (True, 'claimed', {'epoch': 4}))
+        self.assertEqual((stale['ok'], stale['code']), (False, 'STALE_CONTROLLER'))
+
+    def test_output_continuity(self):
+        whole = stream('beat', 1, 10)
+        # A line split between two reads is still one line.
+        split = ([dict(whole[0], chunk=whole[0]['chunk'][:-5]),
+                  dict(whole[1], chunk=whole[0]['chunk'][-5:] + whole[1]['chunk'])] + whole[2:])
+        for rows in (whole, split):
+            metrics = analysis.continuity_metrics(rows, 'beat')
+            self.assertEqual((metrics['lines'], metrics['first'], metrics['last'], metrics['passed']),
+                             (10, 1, 10, True))
+        # A gap the Runner declared: the numbers only move on after it.
+        burst = stream('burst', 1, 6)
+        burst += [lost(row, row['from'] + 4096) for row in stream('burst', 40, 42, cursor=burst[-1]['to'])]
+        metrics = analysis.continuity_metrics(burst, 'burst')
+        self.assertEqual((metrics['declared_gaps'], metrics['declared_lost_lines'], metrics['gap_reasons'],
+                          metrics['undeclared_lost_lines'], metrics['passed']), (1, 33, ['ring_overflow'], 0, True))
+        # Lines skipped or seen again where no gap was declared fail.
+        skipped = analysis.continuity_metrics(stream('beat', 1, 6) + stream('beat', 9, 12, cursor=1000), 'beat')
+        self.assertEqual((skipped['undeclared_lost_lines'], skipped['passed']), (2, False))
+        again = analysis.continuity_metrics(stream('beat', 1, 6) + stream('beat', 4, 9, cursor=1000), 'beat')
+        self.assertEqual((again['repeated_lines'], again['passed']), (3, False))
+        empty = [{'slot': 0, 'outcome': 'read', 'from': 0, 'to': 0, 'chunk': '', 'output_lost': False,
+                  'retained_from': 0}]
+        self.assertIsNone(analysis.continuity_metrics(empty, 'burst')['passed'])
+
+    def test_timeouts(self):
+        metrics = analysis.timeout_metrics([timed_out(1000, 1000.05, in_gap=True), timed_out(2000, 2000.4)])
+        self.assertEqual((metrics['targets'], metrics['in_gap'], metrics['passed']), (2, 1, True))
+        for row, field in ((timed_out(1000, 1003.0), 'extended'),
+                           (timed_out(1000, 1000.05, deadline_after_ms=1_005_000), 'extended'),
+                           (timed_out(1000, 999.5), 'early'),
+                           (timed_out(1000, 1000.05, termination='exited'), 'misreported')):
+            metrics = analysis.timeout_metrics([row])
+            self.assertEqual((metrics[field], metrics['passed']), (1, False), field)
+        unobserved = analysis.timeout_metrics([timed_out(1000, None)])
+        self.assertEqual((unobserved['missing'], unobserved['passed']), (1, True))
+        self.assertIsNone(analysis.timeout_metrics([])['passed'])
+
+    def test_restarts(self):
+        rows = cycles(4)[:-1]
+        metrics = analysis.restart_metrics(rows)
+        self.assertEqual((metrics['cycles'], metrics['restarts'], metrics['fence_requests'], metrics['passed']),
+                         (4, 3, 36, True))
+        self.assertEqual(metrics['ends'], {'sigterm': 1, 'sigusr1': 1, 'sigkill': 1})
+        cases = {
+            'stale_mutations': lambda rows: rows[1]['fence']['requests'][0].update(ok=True, code=None),
+            'unfenced_refusals': lambda rows: rows[1]['fence']['requests'][4].update(code='NOT_FOUND'),
+            'fence_claims_not_refused': lambda rows: rows[2]['fence'].update(claim='claimed'),
+            'epoch_mismatches': lambda rows: rows[2]['claim'].update(epoch=2),
+            'targets_not_running': lambda rows: rows[3]['inherited'].update({'beat-pty': 'exited'}),
+            'unexpected_exits': lambda rows: rows[0]['ended'].update(returncode=1),
+            'rival_claims': lambda rows: rows[0]['rival'].update(claims=[{'granted': False, 'pid': 201}]),
+            'rivals_served': lambda rows: rows[0]['rival'].update(returncode=0, another_writer=True),
+            'rivals_not_refused_for_the_lock': lambda rows: rows[0]['rival'].update(another_writer=False)}
+        for field, change in cases.items():
+            changed = json.loads(json.dumps(rows))
+            change(changed)
+            metrics = analysis.restart_metrics(changed)
+            self.assertEqual((metrics[field], metrics['passed']), (1, False), field)
+        # A rival still waiting for the writer when its cycle ended was killed; that fails nothing.
+        waiting = json.loads(json.dumps(rows))
+        waiting[0]['rival'].update(killed=True, returncode=-9, another_writer=False)
+        self.assertEqual(analysis.restart_metrics(waiting)['rivals_killed_waiting'], 1)
+        self.assertTrue(analysis.restart_metrics(waiting)['passed'])
+        self.assertIsNone(analysis.restart_metrics([])['passed'])
+
+    def test_approvals_and_markers(self):
+        markers = {'confirm': ['approval-001', 'approval-002'], 'term': ['term-0']}
+        rows = [resumed('approval-001', 'proc-1'), resumed('approval-002', 'proc-2', killed=True)]
+        metrics = analysis.approval_metrics(rows, markers)
+        self.assertEqual((metrics['resumed'], metrics['killed_during_resume'], metrics['passed']), (2, 1, True))
+        twice = analysis.approval_metrics(rows, dict(markers, again=['approval-002']))
+        self.assertEqual((twice['duplicates'], twice['passed']), (1, False))
+        differs = analysis.approval_metrics([resumed('approval-001', 'proc-1', again={'process_id': 'proc-9'})],
+                                            markers)
+        self.assertEqual((differs['second_resume_differs'], differs['passed']), (1, False))
+        never = analysis.approval_metrics([resumed('approval-003', 'proc-3')], markers)
+        self.assertEqual((never['resumed_but_never_ran'], never['passed']), (1, False))
+        unresumed = analysis.approval_metrics([{'tag': 'approval-004', 'resume': {'outcome': 'error'}}], markers)
+        self.assertEqual((unresumed['unresumed'], unresumed['passed']), (1, False))
+        capacity = analysis.approval_metrics([{'tag': 'approval-004', 'not_admitted': True}], markers)
+        self.assertEqual((capacity['not_admitted'], capacity['unresumed'], capacity['passed']), (1, 0, True))
+        execs = [{'tag': 'term-0', 'outcome': 'started'}, {'tag': 'hog-1', 'outcome': 'refused'},
+                 {'tag': 'approval-001', 'outcome': 'refused', 'approval': True}]
+        self.assertTrue(analysis.marker_metrics(markers, execs)['passed'])
+        ran = analysis.marker_metrics(dict(markers, hog=['hog-1']), execs)
+        self.assertEqual((ran['refused_but_ran'], ran['passed']), (['hog-1'], False))
+        self.assertEqual(analysis.marker_metrics(dict(markers, again=['term-0']), execs)['ran_twice'], ['term-0'])
+
+    def test_drain_failures(self):
+        drain = {'governed': True, 'expected_epoch': 5, 'claim_epoch': 5, 'terminated': 0, 'runner_exit': 0,
+                 'socket_left': False, 'retired': True, 'charged': 0,
+                 'gateway': {'how': 'eof', 'returncode': 0, 'stopped': None}}
+        self.assertEqual(analysis.drain_failures(drain), [])
+        self.assertEqual(analysis.drain_failures(None), ['the Runner was not drained'])
+        for change, failure in (
+                ({'claim_epoch': 4}, 'the draining gateway claimed the Runner under epoch 4, not 5'),
+                ({'gateway': {'how': 'eof', 'returncode': -9, 'stopped': 'SIGKILL'}},
+                 'the draining gateway exited -9 when its input closed'),
+                ({'terminated': None}, 'the Runner did not log its Stop'),
+                ({'terminated': 2}, 'the Stop terminated 2 processes the harness had already ended'),
+                ({'runner_exit': None}, 'the Runner exited None after Stop'),
+                ({'socket_left': True}, "the Runner's socket was left after Stop"),
+                ({'retired': False}, "the Runner's DevGuard instance was not retired"),
+                ({'charged': 1}, 'work of the consumer stayed charged after the drain'),
+                ({'error': 'OSError: boom'}, 'the drain failed: OSError: boom')):
+            self.assertEqual(analysis.drain_failures(dict(drain, **change)), [failure])
+        self.assertEqual(analysis.drain_failures(dict(drain, governed=False, retired=None, charged=None)), [])
+
+    def test_the_serving_gate(self):
+        serving = qualify.Serving()
+        sample = qualify.gated(serving, lambda gateway, slot: {'outcome': 'answered', 'slot': slot})
+        self.assertEqual(sample(0), {'outcome': 'restarting'})
+        serving.serve(SimpleNamespace(pid=41))
+        self.assertEqual(sample(1), {'outcome': 'answered', 'slot': 1, 'gateway': 41})
+        entered, release = threading.Event(), threading.Event()
+
+        def slow(gateway, slot):
+            entered.set()
+            release.wait(10)
+            return {'outcome': 'answered'}
+        thread = threading.Thread(target=qualify.gated(serving, slow), args=(2,))
+        thread.start()
+        self.assertTrue(entered.wait(10))
+        # A restart closes the gate at once, and waits for what is in flight up to its limit.
+        self.assertEqual(serving.close(limit=0.05), 1)
+        self.assertEqual(sample(3), {'outcome': 'restarting'})
+        release.set()
+        thread.join(timeout=10)
+        served = serving.served_s
+        self.assertGreater(served, 0)
+        time.sleep(0.02)
+        self.assertEqual(serving.close(), 0)
+        self.assertEqual(serving.served_s, served)
+
+    def test_recovery_arguments(self):
+        common = ['--out', 'x', '--mcp-bin', 'm', '--runtime-bin', 'r']
+        self.assertEqual(qualify.arguments(['recovery-fence', *common, '--participation', 'off']).participation,
+                         ['off'])
+        self.assertEqual(qualify.arguments(['recovery-store', *common]).participation, list(qualify.PARTICIPATIONS))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            qualify.arguments(['recovery-fence', *common, '--participation', 'sometimes'])
+        with mock.patch.object(qualify.platform, 'system', return_value='Darwin'):
+            with contextlib.redirect_stderr(io.StringIO()) as printed, self.assertRaises(SystemExit):
+                qualify.arguments(['recovery-fence', *common])
+            self.assertIn('needs --fixture-bin, --fixture-helper', printed.getvalue())
+            fixture = ['--fixture-bin', 'f', '--fixture-helper', 'h']
+            self.assertEqual(qualify.arguments(['recovery-fence', *common, *fixture]).fixture_bin, Path('f'))
+            self.assertEqual(qualify.arguments(['recovery', *common, '--participation', 'off']).release, None)
+            with contextlib.redirect_stderr(io.StringIO()) as printed, self.assertRaises(SystemExit):
+                qualify.arguments(['recovery', *common, *fixture])
+            self.assertIn('needs --release, --work, --qualify-bin, --devguard-checkout', printed.getvalue())
+
+    # ------------------------------------------------------------ verify
+
+    def write_rows(self, directory, rows):
+        directory.mkdir(parents=True, exist_ok=True)
+        for name, values in rows.items():
+            (directory / f'{name}.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in values))
+
+    def recovery_interval(self, evidence, key, kind, served_s=60.0):
+        """An interval of four gateway cycles that saw nothing wrong, as a self-test records it."""
+        raw = evidence.file(f'{key}/{kind}/x').parent
+        terminations, _ = terminated(3)
+        burst = stream('burst', 1, 6)
+        burst += [lost(row, row['from'] + 4096) for row in stream('burst', 900, 902, cursor=burst[-1]['to'])]
+        rows = {'status_pipe': answered(60) + [{'slot': 60, 'outcome': 'restarting'}], 'status_pty': answered(60),
+                'terminations': terminations, 'releases': [], 'io': echoed(12), 'refusals': [],
+                'read_beat': stream('beat', 1, 30), 'read_burst': burst}
+        records = {'restarts': cycles(4),
+                   'timeouts': [timed_out(1000, 1000.04, in_gap=True), timed_out(1030, 1030.02)],
+                   'approvals': [resumed('approval-001', 'proc-a1'), resumed('approval-002', 'proc-a2', killed=True)],
+                   'execs': [{'tag': 'status-pipe', 'outcome': 'started'},
+                             {'tag': 'approval-001', 'outcome': 'refused', 'code': 'APPROVAL_REQUIRED',
+                              'approval': True}]}
+        found = {'status-pipe': ['status-pipe'], 'confirm': ['approval-001', 'approval-002']}
+        sampled = {'host': [{'pressure_level': '1', 'swap_used_mib': 10.0, 'load_average': [2.0, 1.0, 1.0]}],
+                   'footprint': [{'owner': {'rss_bytes': 1 << 20, 'cpu_percent': 1.0, 'threads': 9},
+                                  'gateway': {'rss_bytes': 1 << 21, 'cpu_percent': 2.0, 'threads': 8}}]}
+        self.write_rows(raw, dict(rows, **records, **sampled))
+        (raw / 'markers.json').write_text(json.dumps(found))
+        record = {'kind': kind, 'combination': 'independent-off', 'governed': False, 'invalid': [],
+                  'planned_restarts': 3, 'served_s': served_s, 'started_unix': 990.0, 'ended_unix': 1060.0,
+                  'seconds': 70.0, 'targets': [{'effective': True}, {'effective': True}],
+                  'drain': {'governed': False, 'expected_epoch': 5, 'claim_epoch': 5, 'runner_exit': 0,
+                            'socket_left': False, 'terminated': 0,
+                            'gateway': {'how': 'eof', 'returncode': 0, 'stopped': None}}}
+        record['raw'] = qualify.raw_hashes(raw)
+        metrics = qualify.recovery_interval_metrics(record, rows, sampled, records, found, [], None, None, None)
+        record['verdict'], record['reasons'] = analysis.recovery_interval_verdict(kind, [], metrics)
+        record['metrics'] = metrics
+        evidence.write_json(f'{key}/{kind}/interval.json', record)
+        return record
+
+    def recovery_run(self, name='recovery'):
+        evidence = host.Evidence(self.dir / name)
+        check = analysis.check
+        entries = [{'suite': 'recovery-fence', 'scenario': 'stale-epoch', 'mode': 'independent',
+                    'participation': 'off', 'io': None, 'checks': [check('a stale epoch is refused', True)]},
+                   {'suite': 'recovery-fence', 'scenario': 'stale-epoch', 'mode': 'independent',
+                    'participation': 'required', 'io': None, 'checks': [], 'not_run': qualify.NOT_NATIVE}]
+        for entry in entries:
+            entry['verdict'] = analysis.scenario_verdict(entry['checks'], entry.get('not_run'))
+            evidence.append('scenarios.jsonl', entry)
+        functional = analysis.suite_verdict([entry['verdict'] for entry in entries])
+        plan = dict(qualify.RECOVERY_REHEARSAL, combinations=['independent-off'], load=None, rehearsal=True)
+        evidence.write_json('run.json', {'plan': plan, 'protocol': qualify.RECOVERY_PROTOCOL, 'governed': False})
+        key = 'independent-off-1'
+        records = {kind: self.recovery_interval(evidence, key, kind) for kind in ('idle', 'load')}
+        report = {'combination': 'independent-off', 'repetition': 1, 'rehearsal': True, 'governed': False,
+                  'intervals': {kind: {'verdict': record['verdict'], 'reasons': record['reasons']}
+                                for kind, record in records.items()}}
+        report['verdict'], report['reasons'] = qualify.recovery_repetition_outcome(report, records['idle'],
+                                                                                   records['load'])
+        evidence.write_json(f'{key}/report.json', report)
+        combination = analysis.combination_verdict([report['verdict']], 1)
+        measurement = analysis.overall_verdict({'independent-off': {'verdict': combination}}, plan,
+                                               qualify.RECOVERY_PROTOCOL, True)
+        verdict = analysis.recovery_verdict(functional, measurement)
+        evidence.write_json('report.json', {
+            'suite': 'recovery', 'verdict': verdict, 'harness': qualify.harness(),
+            'result': {'verdict': verdict, 'functional': {'verdict': functional}, 'measurement': {
+                'verdict': measurement, 'combinations': {'independent-off': {'verdict': combination, 'repetitions': [{
+                    'repetition': 1, 'verdict': report['verdict'], 'reasons': report['reasons'],
+                    'report_sha256': host.sha256(evidence.path / key / 'report.json')}]}}}}})
+        evidence.seal()
+        return evidence.path, records
+
+    def test_recovery_interval_verdicts(self):
+        _, records = self.recovery_run()
+        self.assertEqual((records['idle']['verdict'], records['idle']['reasons']), ('pass', []))
+        self.assertEqual(records['load']['reasons'], ['no load ran: there is no DevGuard service to run it'])
+        metrics = records['idle']['metrics']
+
+        def judged(change):
+            changed = json.loads(json.dumps(metrics))
+            change(changed['recovery'])
+            return analysis.recovery_interval_verdict('idle', [], changed)
+        for change, expected in (
+                (lambda found: found['timeouts'].update(in_gap=0),
+                 ('inconclusive', ['timeouts: no deadline fell while no gateway ran'])),
+                (lambda found: found['approvals'].update(killed_during_resume=0),
+                 ('inconclusive', ['approvals: no gateway was killed with a resume in flight'])),
+                (lambda found: found['restarts'].update(restarts=2), ('inconclusive', ['restarts 2 of 3'])),
+                (lambda found: found['continuity']['burst_pipe'].update(passed=None),
+                 ('inconclusive', ['output continuity of burst_pipe: nothing was read'])),
+                (lambda found: found['restarts'].update(passed=False), ('fail', ['recovery restarts'])),
+                (lambda found: found['continuity']['beat_pty'].update(passed=False),
+                 ('fail', ['output continuity of beat_pty'])),
+                (lambda found: found['last_gateway'].update(returncode=-9),
+                 ('fail', ['the last gateway exited -9 when its input closed'])),
+                (lambda found: found['drain'].update(socket_left=True),
+                 ('fail', ["the Runner's socket was left after Stop"]))):
+            self.assertEqual(judged(change), expected)
+        self.assertEqual(analysis.recovery_interval_verdict('idle', ['the Runner did not register'], metrics),
+                         ('inconclusive', ['the Runner did not register']))
+        self.assertEqual(analysis.recovery_verdict('passed', 'qualified'), 'qualified')
+        self.assertEqual(analysis.recovery_verdict('passed', 'inconclusive'), 'inconclusive')
+        self.assertEqual(analysis.recovery_verdict('incomplete', 'qualified'), 'inconclusive')
+        self.assertEqual(analysis.recovery_verdict('passed', 'failed'), 'failed')
+
+    def test_verify_recovery(self):
+        path, _ = self.recovery_run()
+        result = qualify.verify(path)
+        self.assertEqual((result['verdict'], result['recomputed_verdict']), ('verified', 'inconclusive'), result)
+        self.assertEqual(qualify.scenario_label(qualify.read_rows(path, 'scenarios')[1]),
+                         'recovery-fence independent required - stale-epoch')
+        # A stale mutation the record leaves out is found again from the raw restarts.
+        restarts = path / 'independent-off-1/idle/restarts.jsonl'
+        rows = qualify.read_rows(restarts.parent, 'restarts')
+        rows[1]['fence']['requests'][0].update(ok=True, code=None)
+        os.chmod(restarts, 0o600)
+        restarts.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        result = qualify.verify(path)
+        self.assertEqual(result['verdict'], 'failed')
+        for prefix in ('changed independent-off-1/idle/restarts.jsonl', 'independent-off-1 idle metrics',
+                       'independent-off-1 idle verdict'):
+            self.assertTrue(any(problem.startswith(prefix) for problem in result['problems']),
+                            (prefix, result['problems']))
 
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@
 
 ## 독립 Runner
 
-> **아직 지원하는 모드가 아닙니다.** 독립 Runner와 그 실행의 기록, 한 게이트웨이에서 다음 게이트웨이로 제어권을 넘기는 Claim, 그리고 Claim마다 뒤따르는 대조는 게이트웨이 복구의 첫 단계입니다. 게이트웨이는 연결을 잃으면 Runner를 다시 Claim하고, 이전 controller가 작업을 시작한 곳에서는 그 controller가 남긴 것을 대조한 뒤에야 새 작업을 시작합니다. Runner 자체를 잃으면 게이트웨이는 그 실행들에 대해 기록으로 답하고, 운영자가 풀 때까지 그 workspace를 점유한 채로 둡니다([Runner 손실](#runner-loss)). 이 모드는 qualification을 마친 뒤에야 지원합니다.
+> **qualification을 통과한 곳에서만 지원합니다.** 독립 Runner와 그 실행의 기록, 한 게이트웨이에서 다음 게이트웨이로 제어권을 넘기는 Claim, 그리고 Claim마다 뒤따르는 대조가 게이트웨이 복구를 이룹니다. 게이트웨이는 연결을 잃으면 Runner를 다시 Claim하고, 이전 controller가 작업을 시작한 곳에서는 그 controller가 남긴 것을 대조한 뒤에야 새 작업을 시작합니다. Runner 자체를 잃으면 게이트웨이는 그 실행들에 대해 기록으로 답하고, 운영자가 풀 때까지 그 workspace를 점유한 채로 둡니다([Runner 손실](#runner-loss)). 이 모드는 [qualification](recovery-qualification.md)이 통과시킨 조합에서만 지원하며, 아직 통과한 조합은 없습니다. 도입하고 되돌리는 방법은 [운영](operations.md#independent-runner-adoption)에 있습니다.
 
 독립 Runner는 자신에게 연결하는 게이트웨이보다 오래 삽니다. 게이트웨이가 종료되거나 재시작되거나 강제로 종료되어도 프로세스와 그 출력, timeout은 계속됩니다. 운영자나 하네스가 독립 Runner를 시작하고, 게이트웨이는 연결만 합니다.
 

@@ -78,8 +78,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "77bada859adefafb165febb3273f179c6135fcb5b6f757396dd639eb22c3ca0f",
-      "translation_sha256": "319176abbe5b1e8029493d5e3a637e712287a40c518068c6cd0e8b5e38f7b40b"
+      "source_sha256": "030dcad13f96bb7f9d9ae48e93cf9381b3774e61322218770fb353277ad3c1c6",
+      "translation_sha256": "e924382d4b0571900d5ef8b1c562b4445031d2d785ca25eeae3224b1a03569a5"
     },
     {
       "id": "cs-rg-qualification",
@@ -187,6 +187,72 @@
       "translation_sha256": "c344d8142f13a2acc3e9c3e3e511423b3da0b8da399418679302696ab3c62a59"
     },
     {
+      "id": "recovery-qualification",
+      "section": "project",
+      "order": 4,
+      "route": "/guide/recovery-qualification",
+      "source": "docs/recovery-qualification.md",
+      "translation": "docs/ko/recovery-qualification.md",
+      "anchors": [
+        "claim-and-fence",
+        "claim과-fence",
+        "completion-evidence",
+        "evidence",
+        "functional-suites",
+        "gaps",
+        "gateway-recovery-qualification-protocol",
+        "gateway-restart-measurement",
+        "gateway-복구-qualification-절차",
+        "gateway-재시작-측정",
+        "intervals-cycles-and-samples",
+        "lifecycle",
+        "observation-and-runner-loss",
+        "process-records",
+        "qualification-실행",
+        "reconciliation",
+        "recovery-candidate",
+        "recovery-completion",
+        "recovery-evidence",
+        "recovery-fence",
+        "recovery-functional",
+        "recovery-gaps",
+        "recovery-intervals",
+        "recovery-lifecycle",
+        "recovery-measurement",
+        "recovery-measurement-verdicts",
+        "recovery-observation",
+        "recovery-qualification",
+        "recovery-reconcile",
+        "recovery-regressions",
+        "recovery-run",
+        "recovery-running",
+        "recovery-store",
+        "recovery-supported-modes",
+        "regressions",
+        "running-the-harness",
+        "supported-modes",
+        "the-candidate",
+        "the-qualification-run",
+        "verdicts",
+        "공백",
+        "관찰과-runner-손실",
+        "구간-주기-표본",
+        "기능-스위트",
+        "대조",
+        "생명주기",
+        "실행-기록",
+        "완료-증거",
+        "증거",
+        "지원-모드",
+        "판정",
+        "하네스-실행",
+        "회귀",
+        "후보-조합"
+      ],
+      "source_sha256": "e49e67542a40b866f58e973546541fd3abf5790416db9726fab9e884c586f43f",
+      "translation_sha256": "01ccea2d97e827ea9d210909ff903b68c5e2bd5d73704a130293e3180ec7632f"
+    },
+    {
       "id": "overview",
       "section": "start",
       "order": 0,
@@ -257,8 +323,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "a3a4705eb2a425b423aa936b0c3f9b448fbb217f58ec4bbbb8ca7031333ff8d2",
-      "translation_sha256": "6cb63bc559a6b7e9f6fc9c1fa425113c67a08970faef1f84eb98094ef41e6b10"
+      "source_sha256": "dc29caa33ca71dad3eb6b2319c84ea12fa567596e601ab2c781306d8490b4c6c",
+      "translation_sha256": "3b38428e8b09c3983ae58100d5a8e4f1d7d2b8110091a56965493cfc88d18944"
     },
     {
       "id": "operations",
@@ -268,6 +334,8 @@
       "source": "docs/operations.md",
       "translation": "docs/ko/operations.md",
       "anchors": [
+        "independent-runner-adoption",
+        "independent-runner-adoption-and-rollback",
         "install",
         "installation-and-operations",
         "linux-isolation-fixture",
@@ -298,6 +366,7 @@
         "워크스페이스-레지스트리",
         "이-문서가-검증하지-않는-것",
         "게이트웨이-실행",
+        "독립-runner-도입과-되돌리기",
         "로그",
         "로그와-제한-복구",
         "문제-해결",
@@ -312,8 +381,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "5950758a72f81664dce25afd7c281c9201fab11fa4ae4d78461bdaeb00ce978b",
-      "translation_sha256": "09ca3ed836f6b34f0528e9f750882af013389b47a50047cae4bd512a64250355"
+      "source_sha256": "da04d1227b65a31be67e5b841d42934ed410a9ab775033e1eed7d4c87264ddb5",
+      "translation_sha256": "dbd583fe19271b9db950726cbc1363d789c186405988539b3cdd1aa48b8d7871"
     },
     {
       "id": "chatgpt-connector",
@@ -402,8 +471,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "686f0cd9906db317058fa6128080362e74da25bbdd8863095ac849a566d99bb8",
-      "translation_sha256": "02d127df0e182eab1c9c504194143ad9f282162ffed7ca3a8cf53cc3d3d75d6b"
+      "source_sha256": "2dfac81dda34cc09cc6b1b572bc2bd74a2222566efd16c2f31c169fe43095cb1",
+      "translation_sha256": "41953807f5d3dfcc275ad0afef6a7819731cba2a79734791d81af3341451c2a1"
     },
     {
       "id": "execution-substrate",
@@ -578,8 +647,8 @@
         "프로세스-정직성",
         "프로필-mvp"
       ],
-      "source_sha256": "c9ca06af27ed21c9cce3be7528c9d5aa5cdbe03db171dc02ae24880ffc755859",
-      "translation_sha256": "80cd04a917bbbaf09f0c9f3191fa16b6ef79c1222cf65428a5d0801c5435e70f"
+      "source_sha256": "109db0ce732d4bcf67812424b65ca36d6dfb569f0cd3292ebb9b3539c6652738",
+      "translation_sha256": "2d5dbd91c260e88108497823307b7e457f5f57a3c175fafb9adfa3b8ab3b863a"
     },
     {
       "id": "runner-isolation",
@@ -616,8 +685,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "ada35d6e3907abe03287e595acf28acfda9ba546ede51d5d65ce4115db67268a",
-      "translation_sha256": "3336edb2d573475407bb95ff5b8220b3195836e42debb39f1feff0ae61c5a429"
+      "source_sha256": "9f8118e96dc863babaae5e629fa924ab4ce7f6942eb968d96dd766f24f8851c7",
+      "translation_sha256": "a99a0c9ee574e71a8eb8035c7541f3e1019cc2226e58a39a0080e1cc05113768"
     },
     {
       "id": "error-codes",
