@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use codespace_domain::{
     ApprovalId, ErrorBody, ErrorCode, ExecCommandParams, LostReason, ProcessId, ProcessState,
@@ -28,8 +29,37 @@ use codespace_store::{
 };
 use tokio::sync::{mpsc, watch};
 
+/// How long the records first wait before they ask the Runner again about an exit while the
+/// gateway claims it again, and the longest they wait (P1R-C04).
+const RECLAIMING_RETRY_START: Duration = Duration::from_millis(10);
+const RECLAIMING_RETRY_MAX: Duration = Duration::from_millis(500);
+
 /// The exits that a gateway's release hook hands to its process records.
 pub struct Exits(mpsc::UnboundedReceiver<ProcessId>);
+
+/// The Runner's status of `process_id`, which it reported exited (P1R-C04). The report can reach
+/// the gateway while it claims the Runner again, as when the Runner sends it right after the
+/// Claim's answer, and the request is then refused before it is sent: it is asked again once
+/// the gateway has claimed the Runner, which keeps the ended process until its end is recorded.
+async fn status_after_exit(
+    runner: &RuntimeBackend,
+    process_id: &ProcessId,
+) -> Result<RunnerProcessStatus, RunnerError> {
+    let mut retry = RECLAIMING_RETRY_START;
+    loop {
+        match runner.process_status(process_id).await {
+            Err(err)
+                if err
+                    .as_execution()
+                    .is_some_and(|body| body.code == ErrorCode::RunnerReconnecting) =>
+            {
+                tokio::time::sleep(retry).await;
+                retry = (retry * 2).min(RECLAIMING_RETRY_MAX);
+            }
+            status => return status,
+        }
+    }
+}
 
 /// The workspace leases of a gateway connected to an independent Runner (P1R-C04): each exit
 /// releases its process's lease, and a reconciliation holds a workspace again for a process
@@ -134,7 +164,7 @@ impl ProcessRecords {
         let Exits(mut exited) = exits;
         tokio::spawn(async move {
             while let Some(process_id) = exited.recv().await {
-                let recorded = match runner.process_status(&process_id).await {
+                let recorded = match status_after_exit(&runner, &process_id).await {
                     Ok(status) if status.state == ProcessState::Exited => following.ended(&status),
                     Ok(_) => false,
                     // The Runner reported the exit; how it ended is not known.
