@@ -2413,7 +2413,6 @@ mod tests {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn an_independent_runner_answers_registration_before_the_next_claim() {
             use super::independent::{Host, STORE};
-            use std::time::Instant;
             let dir = private_directory();
             let credential = dir.path().join("consumer.secret");
             std::fs::OpenOptions::new()
@@ -2467,36 +2466,34 @@ mod tests {
             assert_eq!(first.claim(STORE).await.unwrap().epoch, 1);
             let registering = first.send(RunnerOp::Registration, Some(1)).await;
             let detaching = first.send(RunnerOp::Detach, None).await;
-            // Both are answered before the connection ends; the next connection claims the
-            // Runner as soon as the detach is answered.
+            // The detach is answered at once, the registration once its session ends.
             let mut answered = Vec::new();
-            let mut claiming = None;
-            while let Some(reply) = first.next_response().await {
-                let id = reply.request_id.unwrap();
-                if id == detaching {
-                    let mut next = host.connect_raw().await;
-                    claiming = Some(tokio::spawn(async move {
-                        let hello = next.call(RunnerOp::Hello, None).await;
-                        let claim = next.claim(STORE).await;
-                        (hello, claim, Instant::now())
-                    }));
-                }
-                answered.push((id, Instant::now()));
+            while !answered.contains(&detaching) {
+                let reply = first.next_response().await.expect("the detach is answered");
+                answered.push(reply.request_id.unwrap());
             }
-            let registered_at = answered
-                .iter()
-                .find(|(id, _)| *id == registering)
-                .expect("the registration is answered")
-                .1;
-            let (hello, claim, claimed_at) =
-                claiming.expect("the detach is answered").await.unwrap();
+            // The next connection claims the Runner as soon as the detach is answered, and is
+            // granted the Claim only once the registration was answered: by then that answer
+            // waits on the first connection. This is the order of the Runner's answers, not the
+            // order in which two tasks here would read them.
+            let mut next = host.connect_raw().await;
             assert_eq!(
-                stated(hello),
+                stated(next.call(RunnerOp::Hello, None).await),
                 (RunnerLifecycle::Independent, true, true, false)
             );
-            let claim = claim.unwrap();
+            let claim = next.claim(STORE).await.unwrap();
             assert_eq!((claim.epoch, claim.previous_controller), (2, false));
-            assert!(registered_at <= claimed_at);
+            if !answered.contains(&registering) {
+                assert!(
+                    first.unread() > 0,
+                    "the Claim was granted before the registration was answered"
+                );
+            }
+            // Both are answered before the connection ends.
+            while let Some(reply) = first.next_response().await {
+                answered.push(reply.request_id.unwrap());
+            }
+            assert!(answered.contains(&registering), "{answered:?}");
         }
     }
 
@@ -2724,6 +2721,8 @@ mod tests {
             pub(in crate::wire::tests) stop: StopHandle,
             pub(in crate::wire::tests) runner: InProcessRunner,
             claims: Arc<std::sync::Mutex<Vec<ClaimNote>>>,
+            /// The number of the last exit the Runner numbered.
+            numbered: Arc<std::sync::Mutex<u64>>,
         }
 
         impl Host {
@@ -2738,6 +2737,7 @@ mod tests {
                 let socket = dir.path().join("runner.sock");
                 let listener = Arc::new(tokio::net::UnixListener::bind(&socket).unwrap());
                 let (runner, events) = host_worker();
+                let numbered = events.numbered.clone();
                 let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
                 let noted = claims.clone();
                 let independent = configure(
@@ -2765,6 +2765,7 @@ mod tests {
                     stop,
                     runner,
                     claims,
+                    numbered,
                 }
             }
 
@@ -2800,6 +2801,22 @@ mod tests {
             /// What the Runner noted of each Claim so far.
             fn claims(&self) -> Vec<ClaimNote> {
                 self.claims.lock().unwrap().clone()
+            }
+
+            /// Wait until the Runner numbered `count` exits. It numbers a process's exit once
+            /// the process ended, its output included, which can be well after its root
+            /// exited: a child that another test spawns while the pipe is open holds a copy
+            /// until its exec, and on macOS the first exec of a new executable is slow.
+            async fn exits_numbered(&self, count: u64) {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                loop {
+                    let numbered = *self.numbered.lock().unwrap();
+                    if numbered >= count {
+                        return;
+                    }
+                    assert!(Instant::now() < deadline, "{numbered} exits numbered");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
             }
         }
 
@@ -2841,6 +2858,20 @@ mod tests {
                 .await
                 .unwrap();
                 id
+            }
+
+            /// How many bytes the Runner wrote to this connection that are not read yet.
+            #[cfg(feature = "devguard")]
+            pub(in crate::wire::tests) fn unread(&self) -> usize {
+                use std::os::fd::AsRawFd;
+                let mut count: libc::c_int = 0;
+                // SAFETY: FIONREAD stores the number of bytes ready to be read from the socket
+                // in `count`, an `int` this function owns.
+                let result = unsafe {
+                    libc::ioctl(self.read.as_ref().as_raw_fd(), libc::FIONREAD, &mut count)
+                };
+                assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+                usize::try_from(count).unwrap()
             }
 
             /// The next response, past any event, or none once the connection ended.
@@ -4049,6 +4080,7 @@ mod tests {
             // A process that ends while the client reconnects.
             std::fs::write(root.path().join("go"), "").unwrap();
             exited(&host.runner, &gated).await;
+            host.exits_numbered(1).await;
             let mut claims = gateway.claims();
             relay.hold(false);
             match next_link_event(&mut events).await {
@@ -4379,6 +4411,7 @@ mod tests {
                 exited(&host.runner, &quick).await.termination,
                 Some(ProcessTermination::Exited)
             );
+            host.exits_numbered(1).await;
             let (on_exit, mut exited_ids) = exits();
             let second = host.connect_reporting_exits(on_exit).await;
             let claim = second.claimed().unwrap();

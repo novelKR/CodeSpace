@@ -3269,7 +3269,10 @@ mod tests {
         runner.kill_host_workspace("demo").unwrap();
     }
 
-    /// A quick process `process_id` that ended, run by `runner`.
+    /// A quick process `process_id` that ended, run by `runner`: its root exited and its output
+    /// ended, which is when the runner counts it as ended. The output can end well after the
+    /// exit: a child that another test spawns while the pipe or terminal is open holds a copy
+    /// until its exec, and on macOS the first exec of a new executable is slow.
     async fn ended_process(
         runner: &InProcessRunner,
         ws: &Workspace,
@@ -3283,7 +3286,15 @@ mod tests {
         );
         req.tty = tty;
         runner.spawn_host(ws, req).await.unwrap();
-        wait_exited(runner, process_id).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = runner.process_status(process_id).await.unwrap();
+            if status.state == ProcessState::Exited && status.eof {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{status:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     fn released(runner: &InProcessRunner, process_id: &ProcessId) -> bool {
