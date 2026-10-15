@@ -803,8 +803,8 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "ddad4af90f67de89b70c93ff143b72386bc0227e66dadeba3cf73491dab1e853",
-      "translation_sha256": "070d7b0a63d6835df285bd8f8905c4a9c4e4ec0144b25d1e0ec527d9f5ee2985"
+      "source_sha256": "f0846a7de343b43410f0df86873ea3773b863baabc2379c27eb2f69d9bcd7409",
+      "translation_sha256": "9a99fb130cbd1099f3b58134ba0907f9edcd11f917bd1e3445209509bfc5098b"
     },
     {
       "id": "upstream-patches",
