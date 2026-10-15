@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import io
 import json
@@ -13,6 +14,38 @@ import upstream_dependencies as deps
 spec = importlib.util.spec_from_file_location('validation', Path(__file__).resolve().parents[1] / 'validate-upstream.py')
 validation = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validation)
+
+
+# A stage's log as cargo writes it when a test fails, with a secret in the failure's messages.
+FAILED_LOG = """+ cargo test --locked -p codespace-runner --lib -- wire
+     Running unittests src/lib.rs (target/upstream-validation/debug/deps/codespace_runner-01d87e8c1b2c1a82)
+
+running 3 tests
+test wire::tests::passes ... ok
+test wire::tests::slow has been running for over 60 seconds
+test wire::tests::fails ... FAILED
+test wire::tests::slow ... ok
+
+failures:
+
+---- wire::tests::fails stdout ----
+
+thread 'worker' (585) panicked at crates/runner/src/wire.rs:21:68:
+child said: SECRET_TOKEN=abc
+thread 'wire::tests::fails' (583) panicked at crates/runner/src/wire.rs:13:9:
+assertion `left == right` failed: SECRET_TOKEN=abc
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    wire::tests::fails
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.28s
+
+error: test failed, to rerun pass `-p codespace-runner --lib`
+"""
 
 
 def fixture(names, edges, sources=None):
@@ -210,6 +243,57 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(validation.run(['pin'], Path(tmp)), 1)
             report = json.loads((Path(tmp) / 'report.json').read_text())
             self.assertEqual(report['stages'][0]['status'], 'failed')
+
+    def test_a_failed_stage_names_its_failed_tests_and_none_of_their_output(self):
+        def fail(commands, env, log):
+            log.write(FAILED_LOG)
+            raise RuntimeError('command exited 101')
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(validation, 'fingerprint', return_value={'head': 'a', 'codex_sha': 'pin'}), \
+             patch.object(validation, 'apply_codex_patches', return_value=None), \
+             patch.object(validation, 'capture', return_value='host: x86_64-unknown-linux-gnu'), \
+             patch.object(validation, 'execute', side_effect=fail), \
+             contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(validation.run(['unit-pty'], Path(tmp)), 1)
+        self.assertIn('\n'.join([
+            'unit-pty failed; from unit-pty.log:',
+            '  test wire::tests::slow has been running for over 60 seconds',
+            '  test wire::tests::fails ... FAILED',
+            "  thread 'worker' (585) panicked at crates/runner/src/wire.rs:21:68:",
+            "  thread 'wire::tests::fails' (583) panicked at crates/runner/src/wire.rs:13:9:",
+            '  test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.28s',
+            '  error: test failed, to rerun pass `-p codespace-runner --lib`\n']), printed.getvalue())
+        self.assertNotIn('SECRET', printed.getvalue())
+
+    def test_failure_lines_are_names_counts_and_locations_only(self):
+        named = ['test src/lib.rs - one (line 1) ... FAILED',
+                 'error: doctest failed, to rerun pass `--doc`',
+                 "process didn't exit successfully: `/t/debug/deps/crash-3f65` (signal: 6, SIGABRT: process abort signal)",
+                 'error: could not compile `codespace-runner` (lib test) due to 1 previous error',
+                 'ERROR: test_broken (unittest.loader._FailedTest.test_broken)',
+                 "FAIL: test_sub (test_upstream.RunnerTests.test_sub) (stage='pin')",
+                 'FAILED (failures=2, errors=1)']
+        output = ['SECRET_TOKEN=abc', 'AssertionError: 1 != 2 : SECRET_TOKEN=abc',
+                  "thread 'main' panicked at 'SECRET_TOKEN=abc', src/lib.rs:1:1",
+                  "thread 'main' (1) panicked at src/lib.rs:1:1: SECRET_TOKEN=abc",
+                  'test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s',
+                  'test wire::tests::passes ... ok', '    wire::tests::fails']
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'stage.log'
+            log.write_text('\n'.join(output + named + named) + '\n')
+            self.assertEqual(validation.failure_lines(log), named)
+
+    def test_an_unreadable_log_or_many_failures_keep_the_summary_short(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as printed:
+            log = Path(tmp) / 'unit-pty.log'
+            validation.print_failures('unit-pty', log)
+            log.write_text(''.join(f'test t{n} ... FAILED\n' for n in range(validation.FAILURES_SHOWN + 10)))
+            validation.print_failures('unit-pty', log)
+        lines = printed.getvalue().splitlines()
+        self.assertTrue(lines[0].startswith('unit-pty failed; its log could not be read: '))
+        self.assertEqual(lines[1], 'unit-pty failed; from unit-pty.log:')
+        self.assertEqual(len(lines), 2 + validation.FAILURES_SHOWN + 1)
+        self.assertEqual(lines[-1], '  and 10 more lines in unit-pty.log')
 
 
 if __name__ == '__main__':

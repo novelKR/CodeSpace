@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -175,6 +176,46 @@ def execute(commands, env, log):
             raise RuntimeError(f'command exited {status}: {command}')
 
 
+# The lines of a failed stage's log that name what failed: the failed tests and where they
+# panicked, a test binary's counts and the target that cargo or unittest failed. They are also
+# printed, so a CI job log names them without the uploaded report. A test's own output is never
+# repeated: its messages can carry a child's environment.
+FAILURE_LINE = re.compile('|'.join([
+    r'test \S.* \.\.\. FAILED',
+    r'test \S.* has been running for over \d+ seconds',
+    r"thread '[^']*'(?: \(\d+\))? panicked at [^\s']+:\d+:\d+:",
+    r'test result: FAILED\. \d+ passed; \d+ failed; \d+ ignored; \d+ measured; \d+ filtered out; finished in [\d.]+s',
+    r'error: (?:doc)?test failed, to rerun pass `[^`]*`',
+    r'error: could not compile `[\w-]+`[^`]*',
+    r"process didn't exit successfully: `[^`]*` \([^()]*\)",
+    r'(?:FAIL|ERROR): \w+ \([\w.]+\)(?: \([^()]*\))?',
+    r'FAILED \([\w ]+=\d+(?:, [\w ]+=\d+)*\)']))
+# Enough for one test binary's failures; the log keeps the rest.
+FAILURES_SHOWN = 40
+
+
+def failure_lines(path):
+    """The lines of a stage's log that FAILURE_LINE matches, each once, in order."""
+    with path.open(encoding='utf-8', errors='replace') as log:
+        lines = (line.strip() for line in log)
+        return list(dict.fromkeys(line for line in lines if FAILURE_LINE.fullmatch(line)))
+
+
+def print_failures(stage, path):
+    """Print what a failed stage's log names as failed. A log that cannot be read changes nothing
+    but this summary."""
+    try:
+        lines = failure_lines(path)
+    except OSError as error:
+        print(f'{stage} failed; its log could not be read: {error}', flush=True)
+        return
+    print(f'{stage} failed; ' + (f'from {path.name}:' if lines else f'{path.name} names no failed test'), flush=True)
+    for line in lines[:FAILURES_SHOWN]:
+        print('  ' + line, flush=True)
+    if len(lines) > FAILURES_SHOWN:
+        print(f'  and {len(lines) - FAILURES_SHOWN} more lines in {path.name}', flush=True)
+
+
 def run(selected, output):
     output.mkdir(parents=True, exist_ok=True)
     report = {'schema': 1, 'platform': platform.platform(), 'stages': [], 'status': 'failed'}
@@ -227,6 +268,7 @@ def run(selected, output):
             except (OSError, RuntimeError) as error:
                 entry['error'] = str(error)
                 failed = True
+                print_failures(stage, output / (stage + '.log'))
             entry['seconds'] = round(time.monotonic() - started, 2)
             fork_race = output / 'fork-race' / 'summary.json'
             if stage == 'macos-fork-race' and fork_race.is_file():
