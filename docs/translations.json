@@ -312,8 +312,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "b9e516baca30cf936c2cb98cec8992649f4be9eca36e0c381b03f63502f05d2d",
-      "translation_sha256": "9121e8c5474640e694bcb509a0a679827a23b4ee76c973885c36cd331c688293"
+      "source_sha256": "5950758a72f81664dce25afd7c281c9201fab11fa4ae4d78461bdaeb00ce978b",
+      "translation_sha256": "09ca3ed836f6b34f0528e9f750882af013389b47a50047cae4bd512a64250355"
     },
     {
       "id": "chatgpt-connector",
