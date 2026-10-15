@@ -283,6 +283,16 @@ class RunnerTests(unittest.TestCase):
             log.write_text('\n'.join(output + named + named) + '\n')
             self.assertEqual(validation.failure_lines(log), named)
 
+    def test_cargo_lines_match_without_their_colors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'stage.log'
+            log.write_text('\x1b[1m\x1b[91merror\x1b[0m: test failed, to rerun pass `-p codespace-server --lib`\n'
+                           '\x1b[1m\x1b[91merror\x1b[0m: could not compile `codespace-server` (lib test) due to 1 previous error\n'
+                           '\x1b[1m\x1b[32m     Running\x1b[0m unittests src/lib.rs\n')
+            self.assertEqual(validation.failure_lines(log), [
+                'error: test failed, to rerun pass `-p codespace-server --lib`',
+                'error: could not compile `codespace-server` (lib test) due to 1 previous error'])
+
     def test_an_unreadable_log_or_many_failures_keep_the_summary_short(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as printed:
             log = Path(tmp) / 'unit-pty.log'

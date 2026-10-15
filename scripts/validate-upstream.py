@@ -194,12 +194,15 @@ FAILURE_LINE = re.compile('|'.join([
     r'FAILED \([\w ]+=\d+(?:, [\w ]+=\d+)*\)']))
 # Enough for one test binary's failures; the log keeps the rest.
 FAILURES_SHOWN = 40
+# The terminal colors of cargo's own lines, which CI asks for with CARGO_TERM_COLOR.
+COLOR = re.compile(r'\x1b\[[0-9;]*m')
 
 
 def failure_lines(path):
-    """The lines of a stage's log that FAILURE_LINE matches, each once, in order."""
+    """The lines of a stage's log that FAILURE_LINE matches without their colors, each once, in
+    order."""
     with path.open(encoding='utf-8', errors='replace') as log:
-        lines = (line.strip() for line in log)
+        lines = (COLOR.sub('', line).strip() for line in log)
         return list(dict.fromkeys(line for line in lines if FAILURE_LINE.fullmatch(line)))
 
 
