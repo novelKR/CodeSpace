@@ -55,6 +55,8 @@ pub struct CodeSpace {
     pub(crate) lifecycle: crate::config::GatewayLifecycle,
     /// The records of the executions sent to an independent Runner (P1R-C02).
     pub(crate) records: Option<Arc<crate::records::ProcessRecords>>,
+    /// The reconciliation with an independent Runner after each Claim (P1R-C04).
+    pub(crate) recovery: Option<Arc<crate::recovery::Recovery>>,
 }
 
 fn err_json(err: ErrorBody) -> String {
@@ -158,8 +160,8 @@ subtree and drops handles. Restart does not recover process_id. If you lose \
 the spawn response before receiving process_id, do not search for the lost \
 handle and do not start a duplicate command.";
 
-/// The lifetime paragraph for an independent Runner (P1R-C01, P1R-C03), after what the
-/// gateway's shutdown does. It states only what the Runner guarantees: a pipe process has no
+/// The lifetime paragraph for an independent Runner (P1R-C01, P1R-C03, P1R-C04), after what
+/// the gateway's shutdown does. It states only what the Runner guarantees: a pipe process has no
 /// process group of its own, so terminating one signals that process alone; and one gateway at a
 /// time controls the Runner, but nothing keeps another process of the same user from claiming it
 /// while none does.
@@ -176,17 +178,22 @@ restarted. STALE_CONTROLLER means that the Runner refused a request sent \
 under an earlier claim; nothing was started or changed. After a reconnect \
 or a restart, the gateway can read the output and status of, write to, \
 resize and terminate the processes started before, with the same \
-process_id, but if work was started on the Runner under an earlier claim, \
-this gateway's own included, it refuses new exec_command, apply_patch and \
-operation_resume with RECOVERY_PENDING until the Runner is stopped and a \
-new one is started. A request refused with one of these codes consumes no \
+process_id. In a workspace where work was started under an earlier claim, \
+this gateway's own included, it first reconciles what that work left with \
+its records and the Runner, and refuses new exec_command, apply_patch and \
+operation_resume there with RECOVERY_PENDING meanwhile; a workspace that \
+cannot be reconciled keeps returning RECOVERY_PENDING until an operator \
+resolves it. A request refused with one of these codes consumes no \
 approval, and a patch refused with one keeps no result for its \
-operation_key. While no gateway controls the Runner, any process of the \
-same user that can reach its socket, such as a command run without a \
-sandbox, can take control of it. Terminating a pipe process signals that \
-process only, not its process group, so processes it started may outlive \
-it. If you lose the spawn response before receiving process_id, do not \
-search for the lost handle and do not start a duplicate command.";
+operation_key. A process found running when the gateway reconciles holds \
+its workspace again, so new work there returns WORKSPACE_BUSY until the \
+process exits or is terminated. While no gateway controls the Runner, any \
+process of the same user that can reach its socket, such as a command run \
+without a sandbox, can take control of it. Terminating a pipe process \
+signals that process only, not its process group, so processes it started \
+may outlive it. If you lose the spawn response before receiving \
+process_id, do not search for the lost handle and do not start a duplicate \
+command.";
 
 const DETACH_SHUTDOWN: &str = "\
 When this gateway shuts down it detaches: the Runner keeps the processes, \
@@ -256,6 +263,7 @@ impl CodeSpace {
             registration: None,
             lifecycle: crate::config::GatewayLifecycle::Managed,
             records: None,
+            recovery: None,
         }
     }
 
@@ -273,13 +281,33 @@ impl CodeSpace {
         self
     }
 
-    /// New work is refused before any approval, lease or claim when the runner is an
-    /// independent Runner that this gateway cannot send it to (P1R-C01, P1R-C03): an earlier
-    /// controller started work on it, which is not recovered yet, or the connection to it is
-    /// lost or being made again.
-    fn refuse_new_work(&self) -> Result<(), ErrorBody> {
-        match self.runner.new_work_refusal() {
-            Some(refusal) => Err(refusal),
+    /// The handler of a gateway that reconciles what earlier claims of its independent Runner
+    /// left before it starts new work in a workspace (P1R-C04).
+    pub fn with_recovery(mut self, recovery: Arc<crate::recovery::Recovery>) -> Self {
+        self.recovery = Some(recovery);
+        self
+    }
+
+    /// New work in `workspace_id` is refused before any approval, lease or claim when the
+    /// runner is an independent Runner that this gateway cannot send it to (P1R-C01, P1R-C03,
+    /// P1R-C04): the connection to it is lost or being made again, or the gateway has not
+    /// reconciled that workspace since its Claim.
+    fn refuse_new_work(&self, workspace_id: &str) -> Result<(), ErrorBody> {
+        self.dispatch_epoch(workspace_id).map(|_| ())
+    }
+
+    /// The controller epoch under which new work in `workspace_id` is sent, or why none is
+    /// (P1R-C03, P1R-C04): see [`Self::refuse_new_work`].
+    fn dispatch_epoch(&self, workspace_id: &str) -> Result<Option<u64>, ErrorBody> {
+        let epoch = self.runner.dispatch_epoch()?;
+        self.admit(workspace_id, epoch)?;
+        Ok(epoch)
+    }
+
+    /// Whether this gateway reconciled `workspace_id` since the Claim of `epoch` (P1R-C04).
+    fn admit(&self, workspace_id: &str, epoch: Option<u64>) -> Result<(), ErrorBody> {
+        match &self.recovery {
+            Some(recovery) => recovery.admit(workspace_id, epoch),
             None => Ok(()),
         }
     }
@@ -394,7 +422,8 @@ impl CodeSpace {
             .map_err(err_json)?;
         allow(ws, Action::Write, &ClientClaims::default()).map_err(err_json)?;
         ws.require_file_write().map_err(err_json)?;
-        self.refuse_new_work().map_err(err_json)?;
+        self.refuse_new_work(&params.workspace_id.0)
+            .map_err(err_json)?;
         if let Err(err) = self.maybe_hold_patch(ws, &params) {
             return Err(err_json(err));
         }
@@ -435,7 +464,8 @@ impl CodeSpace {
         if params.command.is_empty() || params.command[0].is_empty() {
             return Err(err_json(invalid_argv()));
         }
-        self.refuse_new_work().map_err(err_json)?;
+        self.refuse_new_work(&params.workspace_id.0)
+            .map_err(err_json)?;
         // A workspace this gateway cannot govern is refused before any approval or lease.
         self.participation(ws).await.map_err(err_json)?;
         if let Err(err) = self.maybe_hold_exec(ws, &params) {
@@ -513,7 +543,9 @@ impl CodeSpace {
             .map_err(runner_err_json)?;
         if let Some(records) = &self.records {
             match result.state {
-                ProcessState::Exited => records.ended(&result),
+                ProcessState::Exited => {
+                    records.ended(&result);
+                }
                 ProcessState::Running => {
                     records.observed_output(&result.process_id, result.output_total)
                 }
@@ -697,8 +729,8 @@ impl CodeSpace {
         ws.require_file_write()?;
         let _lease = self.store.acquire_write(&params.workspace_id.0).await?;
         // Checked again once the lease is held, before the approval being resumed is marked
-        // (P1R-C03): a refusal here leaves it queued.
-        let epoch = self.runner.dispatch_epoch()?;
+        // (P1R-C03, P1R-C04): a refusal here leaves it queued.
+        let epoch = self.dispatch_epoch(&params.workspace_id.0)?;
         if let Some(id) = resume {
             self.store.mark_resuming(id)?;
         }
@@ -879,8 +911,17 @@ impl CodeSpace {
         &self,
         params: OperationResumeParams,
     ) -> Result<OperationResumeResult, ErrorBody> {
-        // Before the claim, so the approval stays as it is (P1R-C01).
-        self.refuse_new_work()?;
+        // Before the claim, so the approval stays as it is (P1R-C01, P1R-C04): one that would
+        // start work waits while its workspace is not reconciled.
+        let epoch = self.runner.dispatch_epoch()?;
+        if let Some(approval) = self.store.approval(&params.approval_id)? {
+            if matches!(
+                approval.state,
+                ApprovalState::Granted | ApprovalState::Queued | ApprovalState::Resuming
+            ) {
+                self.admit(&approval.workspace_id, epoch)?;
+            }
+        }
         match self.store.claim_resume(&params.approval_id)? {
             ResumeClaim::ReplaySuccess(result) => Ok(result),
             ResumeClaim::ReplayError(err) => Err(err),
@@ -955,6 +996,23 @@ impl CodeSpace {
                 self.commit_resume(&record.approval_id, outcome)
             }
             ApprovalTargetTool::ExecCommand => {
+                // A record of the execution that proves it started consumes the approval with
+                // its process (P1R-C04); without one, whether it started is not known.
+                let started = self
+                    .store
+                    .records_of_approval(&record.approval_id)?
+                    .into_iter()
+                    .find(crate::recovery::proves_started);
+                if let Some(started) = started {
+                    let mut result = crate::recovery::consumed_by(
+                        &record.approval_id,
+                        &ProcessId(started.process_id),
+                    );
+                    if let Some(exec) = result.exec_command.as_mut() {
+                        exec.coordination = self.hint(&record.workspace_id, None);
+                    }
+                    return self.commit_resume(&record.approval_id, Ok(result));
+                }
                 let err = ErrorBody::new(
                     ErrorCode::ApprovalAmbiguous,
                     "exec resume is ambiguous after interruption; the process was not restarted",
@@ -1043,8 +1101,9 @@ impl CodeSpace {
             .acquire_shell_busy(&params.workspace_id.0, &process_id.0)
             .await?;
         // Checked again once the workspace is reserved, before the approval being resumed is
-        // marked (P1R-C03): a refusal here leaves it queued and releases the reservation.
-        let epoch = self.runner.dispatch_epoch()?;
+        // marked (P1R-C03, P1R-C04): a refusal here leaves it queued and releases the
+        // reservation.
+        let epoch = self.dispatch_epoch(&params.workspace_id.0)?;
         let runner = self.runner.at_epoch(epoch);
         // A governed execution's DevGuard attempt, minted before its record names it.
         let attempt_id = participation.attempt_id();
@@ -4461,7 +4520,8 @@ mod independent_tests {
     use super::tests::{exec_params, participation_registry};
     use super::*;
     use crate::config::{GatewayLifecycle, RunnerExitIntent};
-    use crate::records::ProcessRecords;
+    use crate::records::{Leases, ProcessRecords};
+    use crate::recovery::Recovery;
     use codespace_domain::{
         ApprovalDecision, OperationKey, ProcessDisconnectAction, ProcessState, ProcessStatusParams,
         ProcessTermination, TerminateProcessParams, WorkspaceId,
@@ -4471,7 +4531,8 @@ mod independent_tests {
         StopHandle, UdsRunner,
     };
     use codespace_store::{
-        ProcessOutcome, ProcessPhase, ProcessRecord, RecordedParticipation, RunnerRef,
+        NewProcessRecord, ProcessOutcome, ProcessPhase, ProcessRecord, RecordedParticipation,
+        RunnerRef,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
@@ -4523,26 +4584,71 @@ mod independent_tests {
     }
 
     /// A gateway connected to an independent Runner through `stream`, which it claims for
-    /// `database` (P1R-C03), recording its executions there.
+    /// `database` (P1R-C03), recording its executions there, once it reconciled what earlier
+    /// claims left (P1R-C04).
     async fn recording_gateway(
         root: &std::path::Path,
         database: &std::path::Path,
         stream: UnixStream,
     ) -> CodeSpace {
         let store = Arc::new(Store::open(database).unwrap());
-        let (release, exits) = ProcessRecords::release_hook(store.clone());
+        let leases = Leases::new(store.clone());
+        let (release, exits) = ProcessRecords::release_hook(leases.clone());
         let runner = UdsRunner::from_stream(stream, release);
         runner.handshake().await.unwrap();
-        runner.claim(&store.store_id().unwrap()).await.unwrap();
+        let claim = runner.claim(&store.store_id().unwrap()).await.unwrap();
+        let gateway = reconciling_gateway(root, store, runner, leases, exits, &claim);
+        reconciled(&gateway, 1).await;
+        gateway
+    }
+
+    /// A gateway connected to the independent Runner `runner`, which it claimed with `claim`,
+    /// that records its executions and reconciles as `codespace-mcp` does (P1R-C02, P1R-C04).
+    fn reconciling_gateway(
+        root: &std::path::Path,
+        store: Arc<Store>,
+        runner: UdsRunner,
+        leases: Arc<Leases>,
+        exits: crate::records::Exits,
+        claim: &codespace_runner::RunnerClaim,
+    ) -> CodeSpace {
         let identity = runner
             .hello()
             .identity
             .expect("an independent Runner's identity");
-        let runner = RuntimeBackend::Uds(runner);
-        let records = ProcessRecords::start(store.clone(), &identity, runner.clone(), exits);
-        CodeSpace::with_store_and_runner(participation_registry(root, "off"), store, runner)
+        let backend = RuntimeBackend::Uds(runner.clone());
+        let records = ProcessRecords::start(store.clone(), &identity, backend.clone(), exits);
+        let recovery = Recovery::start(store.clone(), runner, records.clone(), leases, claim);
+        CodeSpace::with_store_and_runner(participation_registry(root, "off"), store, backend)
             .with_lifecycle(DETACHING)
             .with_records(records)
+            .with_recovery(recovery)
+    }
+
+    /// Wait until the gateway has reconciled `passes` times (P1R-C04).
+    async fn reconciled(gateway: &CodeSpace, passes: u64) {
+        let mut done = gateway
+            .recovery
+            .as_ref()
+            .expect("a gateway that reconciles")
+            .passes();
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            done.wait_for(|done| *done >= passes),
+        )
+        .await
+        .expect("the reconciliation does not end")
+        .expect("the reconciliation");
+    }
+
+    /// Wait until new work in `workspace_id` is not refused while the gateway reconciles
+    /// (P1R-C04).
+    async fn admitted(gateway: &CodeSpace, workspace_id: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while let Err(err) = gateway.refuse_new_work(workspace_id) {
+            assert!(Instant::now() < deadline, "{err:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     impl Drop for Runner {
@@ -4599,6 +4705,18 @@ mod independent_tests {
             match store.process_record(&process_id.0).unwrap() {
                 Some(record) if done(&record) => return record,
                 record => assert!(Instant::now() < deadline, "{record:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// What `path` says once it says anything: a sandboxed command can take a while to start.
+    async fn written(path: &std::path::Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match std::fs::read_to_string(path) {
+                Ok(text) if !text.is_empty() => return text,
+                read => assert!(Instant::now() < deadline, "{}: {read:?}", path.display()),
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -4666,12 +4784,31 @@ mod independent_tests {
     /// epoch 1, and any other request as `answer` says, until it returns none: the Runner is
     /// then lost without answering.
     async fn fake_runner_answering(
+        stream: UnixStream,
+        identity: RunnerIdentity,
+        answer: impl FnMut(RunnerOp) -> Option<Result<RunnerOpResult, ErrorBody>>,
+    ) {
+        let claim = codespace_runner::RunnerClaim {
+            epoch: 1,
+            previous_controller: false,
+            barrier: Vec::new(),
+            processes: Vec::new(),
+            events_through: 0,
+        };
+        fake_runner_claimed(stream, identity, claim, answer).await
+    }
+
+    /// A Runner that answers `Hello` as the independent Runner `identity`, a `Claim` with
+    /// `claim`, and any other request as `answer` says, until it returns none: the Runner is
+    /// then lost without answering.
+    async fn fake_runner_claimed(
         mut stream: UnixStream,
         identity: RunnerIdentity,
+        claim: codespace_runner::RunnerClaim,
         mut answer: impl FnMut(RunnerOp) -> Option<Result<RunnerOpResult, ErrorBody>>,
     ) {
         use codespace_runner::{
-            read_frame, write_frame, RunnerClaim, RunnerLifecycle, WireEnvelope, WIRE_PROTOCOL,
+            read_frame, write_frame, RunnerLifecycle, WireEnvelope, WIRE_PROTOCOL,
         };
         while let Ok(Some(frame)) = read_frame(&mut stream).await {
             let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
@@ -4691,12 +4828,7 @@ mod independent_tests {
                     write_frame(&mut stream, &reply).await.unwrap();
                 }
                 Some(RunnerOp::Claim { .. }) => {
-                    let claimed = RunnerOpResult::Claimed(RunnerClaim {
-                        epoch: 1,
-                        previous_controller: false,
-                        processes: Vec::new(),
-                        events_through: 0,
-                    });
+                    let claimed = RunnerOpResult::Claimed(claim.clone());
                     let reply = WireEnvelope::response(request.request_id.unwrap(), Ok(claimed));
                     write_frame(&mut stream, &reply).await.unwrap();
                 }
@@ -4791,7 +4923,8 @@ mod independent_tests {
         socket: &std::path::Path,
     ) -> (CodeSpace, mpsc::UnboundedReceiver<LinkEvent>) {
         let store = Arc::new(Store::open(database).unwrap());
-        let (release, exits) = ProcessRecords::release_hook(store.clone());
+        let leases = Leases::new(store.clone());
+        let (release, exits) = ProcessRecords::release_hook(leases.clone());
         let (noted, events) = mpsc::unbounded_channel();
         let (runner, claim) = UdsRunner::claim_independent(
             socket,
@@ -4804,13 +4937,8 @@ mod independent_tests {
         .await
         .unwrap();
         assert_eq!((claim.epoch, claim.previous_controller), (1, false));
-        let identity = runner.hello().identity.unwrap();
-        let runner = RuntimeBackend::Uds(runner);
-        let records = ProcessRecords::start(store.clone(), &identity, runner.clone(), exits);
-        let gateway =
-            CodeSpace::with_store_and_runner(participation_registry(root, "off"), store, runner)
-                .with_lifecycle(DETACHING)
-                .with_records(records);
+        let gateway = reconciling_gateway(root, store, runner, leases, exits, &claim);
+        reconciled(&gateway, 1).await;
         (gateway, events)
     }
 
@@ -4847,11 +4975,13 @@ mod independent_tests {
         }
     }
 
-    /// After a detach the next gateway reads and controls the processes it inherits, but new
-    /// executions, patches and approval resumes are refused before anything is claimed, so a
-    /// granted approval stays granted.
+    /// After a detach the next gateway reconciles what the gateway before it left (P1R-C04):
+    /// the process it inherits running holds its workspace again, with the same process_id, so
+    /// new work there is WORKSPACE_BUSY as under the gateway that started it, until the
+    /// process is terminated. The gateway reads and controls that process, and records how it
+    /// ended under the record the gateway before it wrote.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_independent_gateway_after_a_detach_starts_nothing_and_keeps_the_approval() {
+    async fn an_independent_gateway_after_a_detach_holds_the_process_it_inherits() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
         std::fs::create_dir(&root).unwrap();
@@ -4859,25 +4989,6 @@ mod independent_tests {
         let runner = Runner::start();
         let first = runner.gateway(&root, &database).await;
         assert_eq!(first.runner.new_work_refusal(), None);
-        let touch = format!("{}/resumed", root.display());
-        let held = refused(
-            first
-                .exec_command(Parameters(exec_params(
-                    "gov-confirm",
-                    &["/usr/bin/touch", &touch],
-                    false,
-                )))
-                .await,
-        );
-        assert_eq!(held.code, ErrorCode::ApprovalRequired, "{held:?}");
-        let approval_id = ApprovalId(held.approval_id.unwrap());
-        first
-            .approval_resolve(Parameters(ApprovalResolveParams {
-                approval_id: approval_id.clone(),
-                decision: ApprovalDecision::Grant,
-            }))
-            .await
-            .unwrap();
         let started = first
             .exec_command(Parameters(exec_params(
                 "demo",
@@ -4890,10 +5001,7 @@ mod independent_tests {
         detach(&first).await;
 
         let next = runner.gateway(&root, &database).await;
-        assert_eq!(
-            next.runner.new_work_refusal().map(|refusal| refusal.code),
-            Some(ErrorCode::RecoveryPending)
-        );
+        assert_eq!(next.runner.new_work_refusal(), None);
         let info = next
             .workspace_info(Parameters(WorkspaceInfoParams {
                 workspace_id: Some("demo".into()),
@@ -4953,41 +5061,47 @@ mod independent_tests {
             )))
             .await,
         );
-        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert_eq!(refusal.code, ErrorCode::WorkspaceBusy, "{refusal:?}");
         let refusal = refused(
-            next.apply_patch(Parameters(ApplyPatchParams {
-                workspace_id: WorkspaceId("demo".into()),
-                patch: "*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch\n".into(),
-                expected_versions: BTreeMap::new(),
-                operation_key: None,
-                check_only: false,
-                work_id: None,
-            }))
-            .await,
+            next.apply_patch(Parameters(patch("demo", "added.txt", None)))
+                .await,
         );
-        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
-        let refusal = refused(
-            next.operation_resume(Parameters(OperationResumeParams {
-                approval_id: approval_id.clone(),
-            }))
-            .await,
-        );
-        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert_eq!(refusal.code, ErrorCode::WorkspaceBusy, "{refusal:?}");
+        assert_eq!(recorded_executions(&database), 1);
+        let record = Store::open(&database)
+            .unwrap()
+            .process_record(&started.process_id.0)
+            .unwrap()
+            .expect("the record the first gateway wrote");
         assert_eq!(
-            next.store.inspect_approval(&approval_id).unwrap().0,
-            ApprovalState::Granted
+            (record.phase, record.controller_epoch),
+            (ProcessPhase::Running, Some(1))
         );
+
         next.terminate_process(Parameters(TerminateProcessParams {
             process_id: started.process_id.clone(),
         }))
         .await
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while status(&next).await != ProcessState::Exited {
-            assert!(Instant::now() < deadline);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(!root.join("resumed").exists());
+        let record = record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(
+            record.outcome,
+            Some(ProcessOutcome::Ended(ProcessTermination::Terminated)),
+            "{record:?}"
+        );
+        released(&next, "demo").await;
+        let after = next
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/echo", "after"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(after.dispatch_status, ExecDispatchStatus::Confirmed);
+        let record = record_once(&database, &after.process_id, terminal).await;
+        assert_eq!(record.controller_epoch, Some(2));
         assert!(!root.join("added.txt").exists());
     }
 
@@ -5087,9 +5201,10 @@ mod independent_tests {
         assert!(before <= record.created_at_ms && record.created_at_ms <= record.updated_at_ms);
     }
 
-    /// An execution that ends while no gateway is connected is recorded by the next gateway, to
-    /// which the Runner gives the exit it kept (P1R-C02): that gateway finds the execution by
-    /// the record the gateway before it wrote.
+    /// An execution that ends while no gateway is connected is recorded by the next gateway as
+    /// it reconciles, from the ended process the Runner kept for it (P1R-C02, P1R-C04): that
+    /// gateway finds the execution by the record the gateway before it wrote, and new work
+    /// starts in its workspace.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_end_while_no_gateway_is_connected_is_recorded_by_the_next_gateway() {
         let dir = tempfile::tempdir().unwrap();
@@ -5128,7 +5243,7 @@ mod independent_tests {
             .expect("the record the first gateway wrote");
         assert_eq!(left.phase, ProcessPhase::Running, "{left:?}");
 
-        let _next = runner.gateway(&root, &database).await;
+        let next = runner.gateway(&root, &database).await;
         let record = record_once(&database, &started.process_id, terminal).await;
         assert_eq!(
             record.outcome,
@@ -5136,13 +5251,23 @@ mod independent_tests {
         );
         assert_eq!(record.exit_code, Some(7));
         assert_eq!((&record.runner, &record.root), (&left.runner, &left.root));
+        let after = next
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/echo", "after"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(after.dispatch_status, ExecDispatchStatus::Confirmed);
     }
 
-    /// An end that reached a gateway that went away before recording it is recorded once the
-    /// next gateway asks the Runner about the execution (P1R-C02): a record never says more
-    /// than the Runner reported, and follows what the Runner reports.
+    /// An end that reached a gateway that went away before recording it is recorded by the
+    /// next gateway as it reconciles, from what the Runner reports of the execution (P1R-C02,
+    /// P1R-C04): a record never says more than the Runner reported.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_end_a_gateway_missed_is_recorded_when_the_next_gateway_asks_the_runner() {
+    async fn an_end_a_gateway_missed_is_recorded_when_the_next_gateway_reconciles() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
         std::fs::create_dir(&root).unwrap();
@@ -5154,14 +5279,15 @@ mod independent_tests {
             let (client, server) = UnixStream::pair().unwrap();
             runner.streams.send(server).unwrap();
             let store = Arc::new(Store::open(&database).unwrap());
-            let (release, lost) = ProcessRecords::release_hook(store.clone());
+            let leases = Leases::new(store.clone());
+            let (release, lost) = ProcessRecords::release_hook(leases.clone());
             drop(lost);
             let uds = UdsRunner::from_stream(client, release);
             uds.handshake().await.unwrap();
             uds.claim(&store.store_id().unwrap()).await.unwrap();
             let identity = uds.hello().identity.unwrap();
             let backend = RuntimeBackend::Uds(uds);
-            let (_, none) = ProcessRecords::release_hook(store.clone());
+            let (_, none) = ProcessRecords::release_hook(leases);
             let records = ProcessRecords::start(store.clone(), &identity, backend.clone(), none);
             CodeSpace::with_store_and_runner(participation_registry(&root, "off"), store, backend)
                 .with_lifecycle(DETACHING)
@@ -5177,8 +5303,6 @@ mod independent_tests {
             .unwrap()
             .0;
         released(&first, "demo").await;
-        detach(&first).await;
-        let next = runner.gateway(&root, &database).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         let missed = Store::open(&database)
             .unwrap()
@@ -5186,6 +5310,21 @@ mod independent_tests {
             .unwrap()
             .unwrap();
         assert_eq!(missed.phase, ProcessPhase::Running, "{missed:?}");
+        detach(&first).await;
+        let next = runner.gateway(&root, &database).await;
+        let reconciled = Store::open(&database)
+            .unwrap()
+            .process_record(&started.process_id.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (reconciled.outcome, reconciled.exit_code),
+            (
+                Some(ProcessOutcome::Ended(ProcessTermination::Exited)),
+                Some(9)
+            ),
+            "{reconciled:?}"
+        );
         let status = next
             .process_status(Parameters(ProcessStatusParams {
                 process_id: started.process_id.clone(),
@@ -5575,11 +5714,14 @@ mod independent_tests {
     }
 
     /// A gateway that started work and claimed its Runner again after its connection was lost
-    /// is a controller after one that started work, its own earlier connection, so it starts
-    /// nothing more until recovery is built (P1R-C01, P1R-C03). It reads and ends the process it
-    /// started, under the new epoch, and records how that process ended.
+    /// is a controller after one that started work, its own earlier connection, so it
+    /// reconciles before it starts new work where that connection did (P1R-C01, P1R-C03,
+    /// P1R-C04). A workspace no controller started work in takes new work at once. An exit
+    /// while the connection was lost, which the gateway never heard, is recorded and releases
+    /// its workspace; a process still running holds its workspace until its exit, heard under
+    /// the new epoch, releases it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_gateway_that_started_work_claims_its_runner_again_and_starts_nothing() {
+    async fn a_gateway_that_started_work_claims_its_runner_again_and_reconciles_it() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
         std::fs::create_dir(&root).unwrap();
@@ -5587,31 +5729,41 @@ mod independent_tests {
         let runner = Runner::start();
         let relay = Relay::start(&runner);
         let (gateway, mut events) = claiming_gateway(&root, &database, &relay.socket).await;
-        let started = gateway
+        let ended = gateway
             .exec_command(Parameters(exec_params(
                 "demo",
-                &["/bin/sh", "-c", "echo before; exec sleep 30"],
+                &[
+                    "/bin/sh",
+                    "-c",
+                    "echo before; while [ ! -e go ]; do sleep 0.02; done; touch gone; exit 4",
+                ],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        let running = gateway
+            .exec_command(Parameters(exec_params(
+                "gov",
+                &[
+                    "/bin/sh",
+                    "-c",
+                    "while [ ! -e stop ]; do sleep 0.02; done; exit 5",
+                ],
                 false,
             )))
             .await
             .unwrap()
             .0;
 
+        relay.hold(true);
         relay.cut();
         assert_eq!(next_link_event(&mut events).await, LinkEvent::Lost);
-        match next_link_event(&mut events).await {
-            LinkEvent::Reclaimed(claim) => {
-                assert_eq!((claim.epoch, claim.previous_controller), (2, true));
-                assert!(
-                    claim
-                        .processes
-                        .iter()
-                        .any(|entry| entry.status.process_id == started.process_id
-                            && entry.status.state == ProcessState::Running),
-                    "{claim:?}"
-                );
-            }
-            other => panic!("unexpected {other:?}"),
+        std::fs::write(root.join("go"), "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !root.join("gone").exists() {
+            assert!(Instant::now() < deadline, "the process does not end");
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let refusal = refused(
             gateway
@@ -5622,37 +5774,76 @@ mod independent_tests {
                 )))
                 .await,
         );
-        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let read = gateway
-                .read_process(Parameters(ReadProcessParams {
-                    process_id: started.process_id.clone(),
-                    cursor: 0,
-                }))
-                .await
-                .unwrap()
-                .0;
-            if read.chunk.contains("before") {
-                break;
+        assert_eq!(refusal.code, ErrorCode::RunnerReconnecting, "{refusal:?}");
+        relay.hold(false);
+        match next_link_event(&mut events).await {
+            LinkEvent::Reclaimed(claim) => {
+                assert_eq!((claim.epoch, claim.previous_controller), (2, true));
+                assert_eq!(claim.barrier, ["demo", "gov"]);
+                assert!(
+                    claim
+                        .processes
+                        .iter()
+                        .any(|entry| entry.status.process_id == running.process_id
+                            && entry.status.state == ProcessState::Running),
+                    "{claim:?}"
+                );
             }
-            assert!(Instant::now() < deadline, "{read:?}");
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            other => panic!("unexpected {other:?}"),
         }
-        gateway
-            .terminate_process(Parameters(TerminateProcessParams {
-                process_id: started.process_id.clone(),
-            }))
-            .await
-            .unwrap();
-        let record = record_once(&database, &started.process_id, terminal).await;
-        assert_eq!(record.controller_epoch, Some(1));
+        // Nothing waits in a workspace where no controller started work.
+        let held = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(held.code, ErrorCode::ApprovalRequired, "{held:?}");
+
+        admitted(&gateway, "demo").await;
+        let record = record_once(&database, &ended.process_id, terminal).await;
         assert_eq!(
-            record.outcome,
-            Some(ProcessOutcome::Ended(ProcessTermination::Terminated)),
+            (record.outcome, record.exit_code, record.controller_epoch),
+            (
+                Some(ProcessOutcome::Ended(ProcessTermination::Exited)),
+                Some(4),
+                Some(1)
+            ),
             "{record:?}"
         );
-        released(&gateway, "demo").await;
+        let read = output_of(&gateway, &ended.process_id).await;
+        assert!(read.chunk.contains("before"), "{read:?}");
+        let after = gateway
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/echo", "after"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(after.dispatch_status, ExecDispatchStatus::Confirmed);
+        assert_eq!(
+            record_once(&database, &after.process_id, terminal)
+                .await
+                .controller_epoch,
+            Some(2)
+        );
+
+        admitted(&gateway, "gov").await;
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params("gov", &["/bin/echo", "new"], false)))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::WorkspaceBusy, "{refusal:?}");
+        std::fs::write(root.join("stop"), "").unwrap();
+        let record = record_once(&database, &running.process_id, terminal).await;
+        assert_eq!(record.exit_code, Some(5), "{record:?}");
+        released(&gateway, "gov").await;
     }
 
     /// An execution, a patch or an approval resume that the Runner refuses as sent under an
@@ -5771,6 +5962,586 @@ mod independent_tests {
         assert!(!root.join("resumed").exists());
     }
 
+    /// An approval to run `command` in `workspace_id`, granted.
+    async fn granted(gateway: &CodeSpace, workspace_id: &str, command: &[&str]) -> ApprovalId {
+        let created = gateway
+            .approval_create(Parameters(ApprovalCreateParams {
+                tool: ApprovalTargetTool::ExecCommand,
+                arguments: serde_json::to_value(exec_params(workspace_id, command, false)).unwrap(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        gateway
+            .approval_resolve(Parameters(ApprovalResolveParams {
+                approval_id: created.approval_id.clone(),
+                decision: ApprovalDecision::Grant,
+            }))
+            .await
+            .unwrap();
+        created.approval_id
+    }
+
+    async fn resume(
+        gateway: &CodeSpace,
+        approval_id: &ApprovalId,
+    ) -> Result<OperationResumeResult, String> {
+        gateway
+            .operation_resume(Parameters(OperationResumeParams {
+                approval_id: approval_id.clone(),
+            }))
+            .await
+            .map(|resumed| resumed.0)
+    }
+
+    /// A record of an execution sent to `runner` under `epoch`, which it started, as a gateway
+    /// before this one left it.
+    fn left_running(
+        database: &std::path::Path,
+        runner: &RunnerRef,
+        process_id: &str,
+        epoch: Option<u64>,
+        workspace_id: &str,
+    ) {
+        let store = Store::open(database).unwrap();
+        store
+            .record_dispatch(&NewProcessRecord {
+                process_id,
+                runner,
+                controller_epoch: epoch,
+                workspace_id,
+                approval_id: None,
+                attempt_id: None,
+                participation: RecordedParticipation::Off,
+                tty: false,
+                argv: &["/bin/sleep".to_string(), "30".to_string()],
+            })
+            .unwrap();
+        store
+            .record_running(runner, process_id, None, None)
+            .unwrap();
+    }
+
+    /// An exec approval whose resume could not record its result stays resuming, and resuming
+    /// it again consumes it with the process that the execution's record names (P1R-C04): the
+    /// command runs once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_resume_left_resuming_is_consumed_with_the_process_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let gateway = runner.gateway(&root, &database).await;
+        let approval_id = granted(
+            &gateway,
+            "gov-confirm",
+            &["/bin/sh", "-c", "echo run >> runs"],
+        )
+        .await;
+        gateway.store.fail_next_finish();
+        let refusal = refused(resume(&gateway, &approval_id).await);
+        assert_eq!(refusal.code, ErrorCode::ApprovalAmbiguous, "{refusal:?}");
+        assert_eq!(
+            gateway.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Resuming
+        );
+        let records = gateway.store.records_of_approval(&approval_id).unwrap();
+        assert_eq!(records.len(), 1, "{records:?}");
+        let process_id = ProcessId(records[0].process_id.clone());
+        for _ in 0..2 {
+            let resumed = resume(&gateway, &approval_id).await.unwrap();
+            assert_eq!(resumed.state, ApprovalState::Consumed);
+            let started = resumed.exec_command.expect("the execution");
+            assert_eq!(
+                (started.process_id, started.dispatch_status),
+                (process_id.clone(), ExecDispatchStatus::Confirmed)
+            );
+        }
+        record_once(&database, &process_id, terminal).await;
+        assert_eq!(std::fs::read_to_string(root.join("runs")).unwrap(), "run\n");
+        assert_eq!(recorded_executions(&database), 1);
+    }
+
+    /// An approval a gateway left resuming, whose execution the Runner started, is consumed
+    /// with that process by the next gateway as it reconciles (P1R-C04): resuming it answers
+    /// that process, and the command never runs twice.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_gateway_consumes_an_interrupted_resume_with_its_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let first = runner.gateway(&root, &database).await;
+        let approval_id = granted(
+            &first,
+            "gov-confirm",
+            &["/bin/sh", "-c", "echo run >> runs; exec sleep 30"],
+        )
+        .await;
+        first.store.fail_next_finish();
+        let refusal = refused(resume(&first, &approval_id).await);
+        assert_eq!(refusal.code, ErrorCode::ApprovalAmbiguous, "{refusal:?}");
+        let process_id = ProcessId(
+            first.store.records_of_approval(&approval_id).unwrap()[0]
+                .process_id
+                .clone(),
+        );
+        detach(&first).await;
+
+        let next = runner.gateway(&root, &database).await;
+        assert_eq!(
+            next.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Consumed
+        );
+        for _ in 0..2 {
+            let resumed = resume(&next, &approval_id).await.unwrap();
+            assert_eq!(
+                resumed.exec_command.expect("the execution").process_id,
+                process_id
+            );
+        }
+        // The command ran before it is terminated, however long its sandbox took to start it.
+        assert_eq!(written(&root.join("runs")).await, "run\n");
+        next.terminate_process(Parameters(TerminateProcessParams {
+            process_id: process_id.clone(),
+        }))
+        .await
+        .unwrap();
+        record_once(&database, &process_id, terminal).await;
+        assert_eq!(std::fs::read_to_string(root.join("runs")).unwrap(), "run\n");
+        assert_eq!(recorded_executions(&database), 1);
+    }
+
+    /// An approval a gateway left resuming, whose execution never reached the Runner, is given
+    /// back by the next gateway as it reconciles (P1R-C04): the Runner proves that it never
+    /// received the execution, so its record says that it never started, and the approval is
+    /// resumed again, once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_gateway_gives_back_an_approval_whose_execution_never_reached_the_runner(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let first = runner.gateway(&root, &database).await;
+        let command = ["/bin/sh", "-c", "echo run >> runs"];
+        let approval_id = granted(&first, "gov-confirm", &command).await;
+        // The gateway records the execution and marks the approval resuming, and ends before it
+        // sends the execution, as one that crashes there does.
+        assert!(matches!(
+            first.store.claim_resume(&approval_id).unwrap(),
+            ResumeClaim::Execute(..)
+        ));
+        let lost = ProcessId("proc-never-sent".into());
+        first
+            .records
+            .as_ref()
+            .unwrap()
+            .dispatching(
+                &lost,
+                &exec_params("gov-confirm", &command, false),
+                Some(1),
+                RecordedParticipation::Off,
+                None,
+                Some(&approval_id),
+            )
+            .unwrap();
+        assert_eq!(
+            first.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Resuming
+        );
+        detach(&first).await;
+
+        let next = runner.gateway(&root, &database).await;
+        assert_eq!(
+            next.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Granted
+        );
+        let record = next.store.process_record(&lost.0).unwrap().unwrap();
+        assert_eq!(
+            record.outcome,
+            Some(ProcessOutcome::NotStarted),
+            "{record:?}"
+        );
+        let started = resume(&next, &approval_id)
+            .await
+            .unwrap()
+            .exec_command
+            .expect("the execution");
+        assert_ne!(started.process_id, lost);
+        record_once(&database, &started.process_id, terminal).await;
+        let replayed = resume(&next, &approval_id).await.unwrap();
+        assert_eq!(
+            replayed.exec_command.expect("the execution").process_id,
+            started.process_id
+        );
+        assert_eq!(std::fs::read_to_string(root.join("runs")).unwrap(), "run\n");
+    }
+
+    /// A workspace where another Runner was sent an execution whose record does not say it
+    /// ended stays blocked (P1R-C04): only that Runner could prove what became of it. New work
+    /// there is refused with RECOVERY_PENDING, an approval resume before its approval is
+    /// claimed, so a granted approval stays granted; the record stays as it was, and the other
+    /// workspaces work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_gateway_blocks_a_workspace_another_runner_left_work_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let elsewhere = runner_ref(fake_identity());
+        left_running(
+            &database,
+            &elsewhere,
+            "proc-elsewhere",
+            Some(7),
+            "gov-confirm",
+        );
+        let runner = Runner::start();
+        let gateway = runner.gateway(&root, &database).await;
+        let approval_id = granted(
+            &gateway,
+            "gov-confirm",
+            &["/bin/sh", "-c", "echo run >> runs"],
+        )
+        .await;
+        for _ in 0..2 {
+            let refusal = refused(resume(&gateway, &approval_id).await);
+            assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+            assert!(
+                refusal.message.contains("proc-elsewhere")
+                    && refusal.message.contains("another Runner")
+                    && refusal.message.contains("operator"),
+                "{refusal:?}"
+            );
+            assert_eq!(
+                gateway.store.inspect_approval(&approval_id).unwrap().0,
+                ApprovalState::Granted
+            );
+        }
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        let refusal = refused(
+            gateway
+                .apply_patch(Parameters(patch(
+                    "gov-confirm",
+                    "added.txt",
+                    Some("patch-1"),
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert_eq!(
+            gateway
+                .store
+                .status_lookup(None, Some(&OperationKey("patch-1".into())))
+                .unwrap_err()
+                .code,
+            ErrorCode::OperationNotFound
+        );
+
+        let started = gateway
+            .exec_command(Parameters(exec_params("demo", &["/bin/echo", "ok"], false)))
+            .await
+            .unwrap()
+            .0;
+        record_once(&database, &started.process_id, terminal).await;
+        // Reconciled again after that exit, the workspace stays blocked.
+        reconciled(&gateway, 2).await;
+        let refusal = refused(resume(&gateway, &approval_id).await);
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        let record = gateway
+            .store
+            .process_record("proc-elsewhere")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (record.phase, record.runner),
+            (ProcessPhase::Running, elsewhere)
+        );
+        assert!(!root.join("runs").exists());
+        assert!(!root.join("added.txt").exists());
+    }
+
+    /// A workspace whose record and Runner disagree stays blocked, and so does one where the
+    /// Runner runs a process that no record accounts for, until that process ends (P1R-C04):
+    /// the refusal names the process, which can be queried and terminated meanwhile.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_gateway_blocks_a_workspace_whose_records_and_runner_disagree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        // A record that says this Runner started an execution it never received.
+        let this = runner_ref(RunnerIdentity::this_process());
+        left_running(&database, &this, "proc-phantom", None, "gov");
+        // A process that a controller started without recording it.
+        let unrecorded = ProcessId("proc-unrecorded".into());
+        {
+            let (client, server) = UnixStream::pair().unwrap();
+            runner.streams.send(server).unwrap();
+            let raw = UdsRunner::from_stream(client, Arc::new(|_: &str| {}));
+            raw.handshake().await.unwrap();
+            let store_id = Store::open(&database).unwrap().store_id().unwrap();
+            raw.claim(&store_id).await.unwrap();
+            let registry = participation_registry(&root, "off");
+            let ws = registry.get("demo").unwrap();
+            codespace_runner::Runner::exec(
+                &raw,
+                ws,
+                RunnerExecRequest::for_host(
+                    vec!["/bin/sleep".into(), "30".into()],
+                    unrecorded.clone(),
+                    ws.profile,
+                ),
+            )
+            .await
+            .unwrap();
+            raw.detach().await.unwrap();
+        }
+
+        let gateway = runner.gateway(&root, &database).await;
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params("gov", &["/bin/echo", "new"], false)))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert!(
+            refusal.message.contains("proc-phantom") && refusal.message.contains("never received"),
+            "{refusal:?}"
+        );
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert!(refusal.message.contains(&unrecorded.0), "{refusal:?}");
+        let held = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "gov-confirm",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(held.code, ErrorCode::ApprovalRequired, "{held:?}");
+        let status = gateway
+            .process_status(Parameters(ProcessStatusParams {
+                process_id: unrecorded.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(status.state, ProcessState::Running);
+
+        gateway
+            .terminate_process(Parameters(TerminateProcessParams {
+                process_id: unrecorded.clone(),
+            }))
+            .await
+            .unwrap();
+        admitted(&gateway, "demo").await;
+        let started = gateway
+            .exec_command(Parameters(exec_params("demo", &["/bin/echo", "ok"], false)))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(started.dispatch_status, ExecDispatchStatus::Confirmed);
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params("gov", &["/bin/echo", "new"], false)))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        let record = gateway
+            .store
+            .process_record("proc-phantom")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.phase, ProcessPhase::Running);
+    }
+
+    /// A governed execution's workspace is reconciled only once the resource authority states
+    /// its attempt (P1R-C04): while the authority cannot be asked, new work there is refused
+    /// with RECOVERY_PENDING and the gateway asks again, and the process it inherits can be
+    /// queried meanwhile. Once the authority states that a launch helper claimed the attempt,
+    /// the running process holds its workspace again.
+    #[cfg(feature = "devguard")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_gateway_waits_for_the_resource_authority_before_it_reconciles() {
+        use codespace_runner::admission::{AttemptLookup, AttemptState, LookedUp};
+        use codespace_runner::{
+            Recalled, RecalledProcess, RunnerClaim, RunnerInventoryEntry, RunnerProcessStatus,
+        };
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let governed = ProcessId("proc-governed".into());
+        {
+            let store = Store::open(&database).unwrap();
+            let runner = runner_ref(fake_identity());
+            store
+                .record_dispatch(&NewProcessRecord {
+                    process_id: &governed.0,
+                    runner: &runner,
+                    controller_epoch: Some(1),
+                    workspace_id: "demo",
+                    approval_id: None,
+                    attempt_id: Some("attempt-1"),
+                    participation: RecordedParticipation::Required,
+                    tty: false,
+                    argv: &["/bin/sleep".to_string(), "30".to_string()],
+                })
+                .unwrap();
+            store
+                .record_running(&runner, &governed.0, None, None)
+                .unwrap();
+        }
+        let running = RunnerProcessStatus {
+            process_id: governed.clone(),
+            state: ProcessState::Running,
+            exit_code: None,
+            termination: None,
+            signal: None,
+            output_total: 0,
+            output_retained_from: 0,
+            eof: false,
+        };
+        let claim = RunnerClaim {
+            epoch: 2,
+            previous_controller: true,
+            barrier: vec!["demo".into()],
+            processes: vec![RunnerInventoryEntry {
+                workspace_id: "demo".into(),
+                status: running.clone(),
+            }],
+            events_through: 0,
+        };
+        let available = Arc::new(AtomicBool::new(false));
+        let lookups = Arc::new(AtomicU32::new(0));
+        let told = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(fake_runner_claimed(server, fake_identity(), claim, {
+            let (available, lookups, told) = (available.clone(), lookups.clone(), told.clone());
+            move |op| {
+                Some(Ok(match op {
+                    RunnerOp::Recall { process_ids } => RunnerOpResult::Recalled(
+                        process_ids
+                            .into_iter()
+                            .map(|process_id| RecalledProcess {
+                                process_id,
+                                recalled: Recalled::Held {
+                                    workspace_id: "demo".into(),
+                                    status: running.clone(),
+                                },
+                            })
+                            .collect(),
+                    ),
+                    RunnerOp::Lookup { attempts } => {
+                        lookups.fetch_add(1, Ordering::SeqCst);
+                        let found = if available.load(Ordering::SeqCst) {
+                            LookedUp::Found(AttemptState::Launched)
+                        } else {
+                            LookedUp::Failed
+                        };
+                        RunnerOpResult::LookedUp(
+                            attempts
+                                .into_iter()
+                                .map(|attempt| AttemptLookup {
+                                    attempt_id: attempt.attempt_id,
+                                    process_id: attempt.process_id,
+                                    found,
+                                })
+                                .collect(),
+                        )
+                    }
+                    RunnerOp::Reconciled { workspace_ids } => {
+                        told.lock().unwrap().extend(workspace_ids);
+                        RunnerOpResult::Reconciled
+                    }
+                    RunnerOp::Acknowledge { .. } => RunnerOpResult::Acknowledged,
+                    RunnerOp::ProcessStatus { .. } => {
+                        RunnerOpResult::ProcessStatus(running.clone())
+                    }
+                    RunnerOp::WorkspaceOf { .. } => {
+                        RunnerOpResult::WorkspaceOf(Some("demo".into()))
+                    }
+                    other => panic!("a request the fake Runner does not answer: {other:?}"),
+                }))
+            }
+        }));
+        let gateway = recording_gateway(&root, &database, client).await;
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert!(refusal.message.contains("attempt-1"), "{refusal:?}");
+        let status = gateway
+            .process_status(Parameters(ProcessStatusParams {
+                process_id: governed.clone(),
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(status.state, ProcessState::Running);
+        reconciled(&gateway, 2).await;
+        assert!(told.lock().unwrap().is_empty());
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+
+        available.store(true, Ordering::SeqCst);
+        admitted(&gateway, "demo").await;
+        assert!(lookups.load(Ordering::SeqCst) >= 3);
+        assert_eq!(*told.lock().unwrap(), ["demo"]);
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::WorkspaceBusy, "{refusal:?}");
+        let record = gateway.store.process_record(&governed.0).unwrap().unwrap();
+        assert_eq!(record.phase, ProcessPhase::Running);
+    }
+
     /// Each independent mode states only what its Runner guarantees, and the rest of the
     /// instructions stay as they are.
     #[test]
@@ -5792,6 +6563,9 @@ mod independent_tests {
                 "RUNNER_DISCONNECTED",
                 "STALE_CONTROLLER",
                 "RECOVERY_PENDING",
+                "reconciles what that work left",
+                "WORKSPACE_BUSY",
+                "until an operator resolves it",
                 "consumes no approval",
                 "any process of the same user",
                 "same process_id",

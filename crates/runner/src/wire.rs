@@ -9,8 +9,10 @@
 //! processes, their output, their timeouts and their exit events outlive each connection. A
 //! connection controls the Runner only after its `Claim` (P1R-C03), and every request that
 //! changes a process or the workspace carries the epoch of that Claim, which the Runner checks.
+//! A controller after one that started work in a workspace starts nothing there until it
+//! reconciled that workspace (P1R-C04).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::time::Duration;
@@ -26,12 +28,13 @@ use tokio::task::JoinSet;
 
 use crate::lifecycle::{RunnerIdentity, RunnerLifecycle};
 use crate::{
-    InProcessRunner, Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult, RunnerError,
-    RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
-    RunnerResizeResult, RunnerWriteStdin, ShellRelease,
+    InProcessRunner, Recalled, Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult,
+    RunnerError, RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess,
+    RunnerReadResult, RunnerResizeResult, RunnerWriteStdin, ShellRelease,
+    DEFAULT_MAX_UNACKNOWLEDGED,
 };
 
-pub const WIRE_PROTOCOL: u32 = 10;
+pub const WIRE_PROTOCOL: u32 = 11;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLAY: usize = 32;
 /// How long a stopping independent Runner waits for its terminated processes to be reaped and
@@ -215,6 +218,24 @@ pub enum RunnerOp {
     /// progress end, terminates every process, waits for them, answers `Stopped` and exits.
     /// Only its controller stops it (P1R-C03). A managed worker refuses it.
     Stop,
+    /// What an independent Runner knows of each of these processes (P1R-C04), answered
+    /// `Recalled`: whether a request to start it reached the Runner, whether the Runner created
+    /// it, and its status while the Runner holds it. Only its controller asks. A managed
+    /// worker refuses it.
+    Recall {
+        process_ids: Vec<ProcessId>,
+    },
+    /// The controller reconciled these workspaces after its Claim (P1R-C04): the Runner starts
+    /// work there for it again, answering `Reconciled`. A managed worker refuses it.
+    Reconciled {
+        workspace_ids: Vec<String>,
+    },
+    /// The controller recorded how these processes ended (P1R-C04), answered `Acknowledged`:
+    /// the Runner evicts them as any other ended process from now on, instead of keeping them
+    /// for a controller. A managed worker refuses it.
+    Acknowledge {
+        process_ids: Vec<ProcessId>,
+    },
     /// The execution owner's DevGuard registration (CSRG-U2). Sent only to a worker whose
     /// `Hello` states `registration`; a worker without it would close the connection.
     #[cfg(feature = "devguard")]
@@ -238,6 +259,13 @@ pub enum RunnerOp {
         workspace: Workspace,
         request: RunnerExecRequest,
         attempt_id: String,
+    },
+    /// Look up, with DevGuard, the attempts this independent Runner admitted for these
+    /// processes (P1R-C04), answered `LookedUp`. Only its controller asks. A managed worker
+    /// refuses it.
+    #[cfg(feature = "devguard")]
+    Lookup {
+        attempts: Vec<crate::admission::AttemptRef>,
     },
 }
 
@@ -292,16 +320,27 @@ pub enum RunnerOpResult {
     Detached,
     /// An independent Runner's answer to `Stop`, sent once its processes ended or
     /// [`STOP_DRAIN_BOUND`] passed (P1R-C01): how many processes were still running when it
-    /// terminated them.
+    /// terminated them, and every process it held then, with its last status (P1R-C04).
     Stopped {
         terminated: u32,
+        #[serde(default)]
+        processes: Vec<RunnerInventoryEntry>,
     },
+    /// An independent Runner's answer to `Recall` (P1R-C04), in the order asked.
+    Recalled(Vec<RecalledProcess>),
+    /// An independent Runner's answer to `Reconciled` (P1R-C04).
+    Reconciled,
+    /// An independent Runner's answer to `Acknowledge` (P1R-C04).
+    Acknowledged,
     #[cfg(feature = "devguard")]
     Registration(codespace_domain::ResourceAuthorityInfo),
     #[cfg(feature = "devguard")]
     Prepared(crate::admission::ManagedPreparation),
     #[cfg(feature = "devguard")]
     Launched(crate::launch::LaunchReport),
+    /// An independent Runner's answer to `Lookup` (P1R-C04), in the order asked.
+    #[cfg(feature = "devguard")]
+    LookedUp(Vec<crate::admission::AttemptLookup>),
 }
 
 /// What a connection that claimed an independent Runner controls (P1R-C03).
@@ -310,9 +349,12 @@ pub struct RunnerClaim {
     /// The controller epoch of this Claim, one more than the one before. Every request of this
     /// connection that changes a process or the workspace carries it.
     pub epoch: u64,
-    /// An earlier controller started work, so this connection may observe and control the
-    /// processes it inherits but starts nothing (P1R-C01).
+    /// An earlier controller started work: in each workspace of `barrier` (P1R-C01).
     pub previous_controller: bool,
+    /// The workspaces in which an earlier controller started work (P1R-C04). This connection
+    /// starts nothing in one until it states that it reconciled it.
+    #[serde(default)]
+    pub barrier: Vec<String>,
     /// Every process the Runner holds when the Claim is answered, those that ended included.
     pub processes: Vec<RunnerInventoryEntry>,
     /// The number of the last exit event before the inventory was taken: an event numbered up
@@ -326,6 +368,13 @@ pub struct RunnerClaim {
 pub struct RunnerInventoryEntry {
     pub workspace_id: String,
     pub status: RunnerProcessStatus,
+}
+
+/// What an independent Runner knows of one process (P1R-C04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecalledProcess {
+    pub process_id: ProcessId,
+    pub recalled: Recalled,
 }
 
 /// Why an independent Runner refused a `Claim` (P1R-C03).
@@ -368,15 +417,16 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// The refusal of new work on a connection to an independent Runner that an earlier controller
-/// started work on (P1R-C01): recovering what that controller left is not available yet.
-pub fn recovery_pending() -> ErrorBody {
+/// The refusal of new work in a workspace where an earlier controller of an independent Runner
+/// started work, which this controller has not reconciled yet (P1R-C01, P1R-C04).
+pub fn recovery_pending(workspace_id: &str) -> ErrorBody {
     ErrorBody::new(
         ErrorCode::RecoveryPending,
-        "an earlier gateway controlled this independent Runner, and recovering what it left is \
-         not available yet: its processes can be queried, read, written to, resized and \
-         terminated, but nothing new is started. Stop the Runner and start a new one to start \
-         work again",
+        format!(
+            "an earlier gateway started work in workspace `{workspace_id}` on this independent \
+             Runner, and this gateway has not reconciled it yet: its processes can be queried, \
+             read, written to, resized and terminated, but nothing new is started there"
+        ),
     )
 }
 
@@ -392,6 +442,8 @@ fn stale_controller(message: impl Into<String>) -> ErrorBody {
 struct Registrar {
     registration: Option<Arc<crate::OwnerRegistration>>,
     launcher: Option<crate::launch::Launcher>,
+    /// The admissions an independent Runner asked for, to look them up again (P1R-C04).
+    admissions: Option<crate::admission::Admissions>,
 }
 #[cfg(not(feature = "devguard"))]
 type Registrar = ();
@@ -493,6 +545,7 @@ where
         Registrar {
             registration,
             launcher,
+            admissions: None,
         },
     )
     .await
@@ -545,7 +598,7 @@ where
         };
         #[cfg(feature = "devguard")]
         let op = match op {
-            Some(op) if answered_beside(&op) => {
+            Some(op) if answered_beside(&op) && !independent_only(&op) => {
                 // Beside the other requests, and never cached: asking again opens a new
                 // session, and a preparation or a launch is never replayed. A launch is its own
                 // task, so it settles even if the gateway stops waiting.
@@ -561,20 +614,33 @@ where
             op => op,
         };
         let response = match op {
-            Some(RunnerOp::Claim { .. } | RunnerOp::Detach | RunnerOp::Stop) => {
-                WireEnvelope::response(
-                    request_id,
-                    Err(ErrorBody::new(
-                        ErrorCode::InvalidCommand,
-                        "this worker belongs to the gateway that started it; only an \
-                         independent Runner is claimed, detaches or stops on request",
-                    )),
-                )
-            }
+            Some(op) if independent_only(&op) => WireEnvelope::response(
+                request_id,
+                Err(ErrorBody::new(
+                    ErrorCode::InvalidCommand,
+                    "this worker belongs to the gateway that started it; only an independent \
+                     Runner is claimed, detaches, stops on request or is reconciled",
+                )),
+            ),
             op => answer(&mut cache, &runner, request_id, op, &hello).await,
         };
         let mut writer = write.lock().await;
         write_frame(&mut *writer, &response).await?;
+    }
+}
+
+/// A request that only an independent Runner answers (P1R-C01, P1R-C03, P1R-C04).
+fn independent_only(op: &RunnerOp) -> bool {
+    match op {
+        RunnerOp::Claim { .. }
+        | RunnerOp::Detach
+        | RunnerOp::Stop
+        | RunnerOp::Recall { .. }
+        | RunnerOp::Reconciled { .. }
+        | RunnerOp::Acknowledge { .. } => true,
+        #[cfg(feature = "devguard")]
+        RunnerOp::Lookup { .. } => true,
+        _ => false,
     }
 }
 
@@ -667,7 +733,10 @@ async fn answer(
 fn answered_beside(op: &RunnerOp) -> bool {
     matches!(
         op,
-        RunnerOp::Registration | RunnerOp::Prepare { .. } | RunnerOp::Launch { .. }
+        RunnerOp::Registration
+            | RunnerOp::Prepare { .. }
+            | RunnerOp::Launch { .. }
+            | RunnerOp::Lookup { .. }
     )
 }
 
@@ -692,6 +761,7 @@ async fn answer_beside(
         } => match registrar.registration {
             Some(registration) => Ok(RunnerOpResult::Prepared(
                 crate::admission::Preparer::new(registration.owner(), runner)
+                    .with_admissions(registrar.admissions)
                     .prepare_and_dispose(workspace, request, attempt_id)
                     .await,
             )),
@@ -708,6 +778,7 @@ async fn answer_beside(
             (Some(registration), Some(launcher)) => Ok(RunnerOpResult::Launched(
                 crate::admission::Preparer::new(registration.owner(), runner)
                     .with_launcher(Some(launcher))
+                    .with_admissions(registrar.admissions)
                     .prepare_and_launch(workspace, request, attempt_id)
                     .await,
             )),
@@ -716,19 +787,49 @@ async fn answer_beside(
                 "this worker was started without DevGuard settings or a launch helper",
             )),
         },
+        // An attempt this Runner cannot ask about is reported as a failed lookup.
+        RunnerOp::Lookup { attempts } => Ok(RunnerOpResult::LookedUp(
+            crate::admission::look_up(
+                registrar.registration.map(
+                    |registration| -> Arc<dyn crate::admission::AttemptAuthority> {
+                        registration.owner()
+                    },
+                ),
+                &registrar.admissions.unwrap_or_default(),
+                attempts,
+            )
+            .await,
+        )),
         other => unreachable!("{other:?} is answered in turn"),
     }
 }
 
-/// A request that starts work an earlier connection's successor could not know about: a
-/// process, a change to the workspace or an admission (P1R-C01). The first one accepted from a
-/// controller keeps every later controller from starting work.
-fn starts_work(op: &RunnerOp) -> bool {
+/// The workspace of a request that starts work an earlier connection's successor could not
+/// know about: a process, a change to the workspace or an admission (P1R-C01). The first one
+/// accepted from a controller keeps every later controller from starting work in that
+/// workspace until it reconciled it (P1R-C04).
+fn starts_work(op: &RunnerOp) -> Option<&str> {
     match op {
-        RunnerOp::Exec { .. } | RunnerOp::ApplyPatch { .. } => true,
+        RunnerOp::Exec { workspace, .. } | RunnerOp::ApplyPatch { workspace, .. } => {
+            Some(&workspace.id.0)
+        }
         #[cfg(feature = "devguard")]
-        RunnerOp::Prepare { .. } | RunnerOp::Launch { .. } => true,
-        _ => false,
+        RunnerOp::Prepare { workspace, .. } | RunnerOp::Launch { workspace, .. } => {
+            Some(&workspace.id.0)
+        }
+        _ => None,
+    }
+}
+
+/// The process that a request asks the Runner to start (P1R-C04).
+fn started_process(op: &RunnerOp) -> Option<&ProcessId> {
+    match op {
+        RunnerOp::Exec { request, .. } => Some(&request.process_id),
+        #[cfg(feature = "devguard")]
+        RunnerOp::Prepare { request, .. } | RunnerOp::Launch { request, .. } => {
+            Some(&request.process_id)
+        }
+        _ => None,
     }
 }
 
@@ -742,7 +843,9 @@ fn fenced(op: &RunnerOp) -> bool {
         | RunnerOp::Resize { .. }
         | RunnerOp::Terminate { .. }
         | RunnerOp::TerminateWorkspace { .. }
-        | RunnerOp::Stop => true,
+        | RunnerOp::Stop
+        | RunnerOp::Reconciled { .. }
+        | RunnerOp::Acknowledge { .. } => true,
         #[cfg(feature = "devguard")]
         RunnerOp::Prepare { .. } | RunnerOp::Launch { .. } => true,
         _ => false,
@@ -862,8 +965,10 @@ pub type ClaimObserver = Arc<dyn Fn(ClaimNote) + Send + Sync>;
 /// process or the workspace must carry the epoch of its Claim. A Claim is refused while
 /// another connection controls the Runner and is open; once that connection ends, the Claim
 /// waits up to [`CLAIM_WAIT_BOUND`] for its requests. A controller after one that started work
-/// may observe and control the processes it inherits but starts nothing (P1R-C01); recovering
-/// what an earlier controller left is later work (P1R-C04).
+/// in a workspace may observe and control the processes it inherits, but starts nothing in
+/// that workspace until it states that it reconciled it (P1R-C04). The Runner keeps what its
+/// controllers need for that: whether it created a process for each `process_id` it was asked
+/// to start, and each ended process until a controller acknowledges it.
 pub struct IndependentRunner {
     runner: InProcessRunner,
     events: RunnerEvents,
@@ -877,6 +982,7 @@ pub struct IndependentRunner {
 
 impl IndependentRunner {
     pub fn new(runner: InProcessRunner, events: RunnerEvents) -> Self {
+        runner.keep_until_acknowledged(DEFAULT_MAX_UNACKNOWLEDGED);
         let stop = StopHandle {
             requested: Arc::new(watch::Sender::new(false)),
             terminated: Arc::new(AtomicU32::new(0)),
@@ -909,6 +1015,7 @@ impl IndependentRunner {
         self.registrar = Registrar {
             registration,
             launcher,
+            admissions: Some(crate::admission::Admissions::default()),
         };
         self
     }
@@ -998,9 +1105,15 @@ impl IndependentRunner {
             }
         }
         let terminated = shared.end_processes().await;
+        let processes = shared.inventory();
         for (request_id, write) in answers {
-            let response =
-                WireEnvelope::response(request_id, Ok(RunnerOpResult::Stopped { terminated }));
+            let response = WireEnvelope::response(
+                request_id,
+                Ok(RunnerOpResult::Stopped {
+                    terminated,
+                    processes: processes.clone(),
+                }),
+            );
             let mut writer = write.lock().await;
             let _ = write_frame(&mut *writer, &response).await;
             let _ = writer.shutdown().await;
@@ -1020,8 +1133,8 @@ struct Control {
     claiming: Option<u64>,
     /// The operations database of the first accepted Claim.
     store_id: Option<String>,
-    /// A controller started work (P1R-C01).
-    started_work: bool,
+    /// The workspaces in which a controller started work (P1R-C01, P1R-C04).
+    started_in: BTreeSet<String>,
 }
 
 struct Controller {
@@ -1030,8 +1143,9 @@ struct Controller {
     /// The connection reads no further request: its stream ended, or it detached; its
     /// requests may still be running.
     ended: Arc<AtomicBool>,
-    /// An earlier controller started work: this one starts nothing (P1R-C01).
-    barrier: bool,
+    /// The workspaces in which an earlier controller started work, and which this one has not
+    /// reconciled yet: it starts nothing there (P1R-C04).
+    barrier: BTreeSet<String>,
 }
 
 /// What an independent Runner's connections share.
@@ -1240,18 +1354,18 @@ impl Shared {
                     control.claiming = None;
                     control.epoch += 1;
                     let epoch = control.epoch;
-                    let previous_controller = control.started_work;
+                    let barrier = control.started_in.clone();
                     control.controller = Some(Controller {
                         connection,
                         epoch,
                         ended: ended.clone(),
-                        barrier: previous_controller,
+                        barrier: barrier.clone(),
                     });
                     if control.store_id.is_none() {
                         control.store_id = Some(store_id.to_string());
                     }
                     drop(control);
-                    return Ok(self.claimed(epoch, previous_controller));
+                    return Ok(self.claimed(epoch, barrier));
                 }
                 let refusal = if self.stop.is_requested() {
                     Some((ClaimRefusal::Stopping, "the Runner is stopping".to_string()))
@@ -1287,35 +1401,40 @@ impl Shared {
 
     /// The answer to an accepted Claim: the events numbered so far, then every process, so an
     /// exit numbered up to `events_through` is in the inventory.
-    fn claimed(&self, epoch: u64, previous_controller: bool) -> RunnerClaim {
+    fn claimed(&self, epoch: u64, barrier: BTreeSet<String>) -> RunnerClaim {
         let events_through = *self.numbered.lock().unwrap_or_else(PoisonError::into_inner);
-        let processes = self
-            .runner
+        RunnerClaim {
+            epoch,
+            previous_controller: !barrier.is_empty(),
+            barrier: barrier.into_iter().collect(),
+            processes: self.inventory(),
+            events_through,
+        }
+    }
+
+    /// Every process the Runner holds, those that ended included.
+    fn inventory(&self) -> Vec<RunnerInventoryEntry> {
+        self.runner
             .inventory()
             .into_iter()
             .map(|(workspace_id, status)| RunnerInventoryEntry {
                 workspace_id,
                 status,
             })
-            .collect();
-        RunnerClaim {
-            epoch,
-            previous_controller,
-            processes,
-            events_through,
-        }
+            .collect()
     }
 
     /// Admit connection `connection`'s request `op`, sent under `epoch`: only the controller's,
     /// with the current epoch when it changes a process or the workspace (P1R-C03), and nothing
-    /// that starts work from a controller after one that did (P1R-C01).
+    /// that starts work in a workspace where an earlier controller did, until this one
+    /// reconciled it (P1R-C04).
     fn admit(&self, connection: u64, epoch: Option<u64>, op: &RunnerOp) -> Result<(), ErrorBody> {
         let mut control = self.control();
-        let Some((current, barrier)) = control
+        let Some(current) = control
             .controller
             .as_ref()
             .filter(|controller| controller.connection == connection)
-            .map(|controller| (controller.epoch, controller.barrier))
+            .map(|controller| controller.epoch)
         else {
             return Err(stale_controller(
                 "this connection does not control the independent Runner: another connection \
@@ -1329,13 +1448,43 @@ impl Shared {
                 epoch.map_or_else(|| "none".to_string(), |epoch| epoch.to_string()),
             )));
         }
-        if starts_work(op) {
-            if barrier {
-                return Err(recovery_pending());
+        if let Some(workspace_id) = starts_work(op) {
+            if control
+                .controller
+                .as_ref()
+                .is_some_and(|controller| controller.barrier.contains(workspace_id))
+            {
+                return Err(recovery_pending(workspace_id));
             }
-            control.started_work = true;
+            control.started_in.insert(workspace_id.to_string());
         }
         Ok(())
+    }
+
+    /// The controller `connection` reconciled these workspaces (P1R-C04): it starts work there
+    /// from now on. Admitted as a fenced request first.
+    fn reconciled(&self, connection: u64, workspace_ids: &[String]) {
+        let mut control = self.control();
+        if let Some(controller) = control
+            .controller
+            .as_mut()
+            .filter(|controller| controller.connection == connection)
+        {
+            for workspace_id in workspace_ids {
+                controller.barrier.remove(workspace_id);
+            }
+        }
+    }
+
+    /// What the Runner knows of each of `process_ids` (P1R-C04).
+    fn recall(&self, process_ids: &[ProcessId]) -> Vec<RecalledProcess> {
+        process_ids
+            .iter()
+            .map(|process_id| RecalledProcess {
+                process_id: process_id.clone(),
+                recalled: self.runner.recall(process_id),
+            })
+            .collect()
     }
 
     /// Connection `connection` lets go of the Runner, if it controls it. Whether it did.
@@ -1455,11 +1604,26 @@ async fn connection(shared: Arc<Shared>, stream: UnixStream, id: u64) -> Ended {
             op @ (Some(RunnerOp::Hello | RunnerOp::Replay { .. }) | None) => {
                 answer(&mut cache, &shared.runner, request_id, op, &hello).await
             }
-            Some(op) => match shared.admit(id, epoch, &op) {
-                Err(refusal) => WireEnvelope::response(request_id, Err(refusal)),
-                Ok(()) => {
-                    #[cfg(feature = "devguard")]
-                    let op = match op {
+            Some(op) => {
+                // A request to start a process that created none is remembered as refused, once
+                // it is answered (P1R-C04).
+                let started = started_process(&op).cloned();
+                let response = match shared.admit(id, epoch, &op) {
+                    Err(refusal) => WireEnvelope::response(request_id, Err(refusal)),
+                    Ok(()) => match op {
+                        RunnerOp::Recall { process_ids } => WireEnvelope::response(
+                            request_id,
+                            Ok(RunnerOpResult::Recalled(shared.recall(&process_ids))),
+                        ),
+                        RunnerOp::Reconciled { workspace_ids } => {
+                            shared.reconciled(id, &workspace_ids);
+                            WireEnvelope::response(request_id, Ok(RunnerOpResult::Reconciled))
+                        }
+                        RunnerOp::Acknowledge { process_ids } => {
+                            shared.runner.acknowledge(&process_ids);
+                            WireEnvelope::response(request_id, Ok(RunnerOpResult::Acknowledged))
+                        }
+                        #[cfg(feature = "devguard")]
                         op if answered_beside(&op) => {
                             let (write, registrar, runner) = (
                                 write.clone(),
@@ -1467,18 +1631,26 @@ async fn connection(shared: Arc<Shared>, stream: UnixStream, id: u64) -> Ended {
                                 shared.runner.clone(),
                             );
                             beside.spawn(async move {
-                                let result = answer_beside(op, registrar, runner).await;
+                                let result = answer_beside(op, registrar, runner.clone()).await;
+                                if let Some(process_id) = started {
+                                    runner.note_received(&process_id.0);
+                                }
                                 let response = WireEnvelope::response(request_id, result);
                                 let mut writer = write.lock().await;
                                 let _ = write_frame(&mut *writer, &response).await;
                             });
                             continue;
                         }
-                        op => op,
-                    };
-                    answer(&mut cache, &shared.runner, request_id, Some(op), &hello).await
+                        op => {
+                            answer(&mut cache, &shared.runner, request_id, Some(op), &hello).await
+                        }
+                    },
+                };
+                if let Some(process_id) = started {
+                    shared.runner.note_received(&process_id.0);
                 }
-            },
+                response
+            }
         };
         let mut writer = write.lock().await;
         if write_frame(&mut *writer, &response).await.is_err() {
@@ -1617,8 +1789,13 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
             .map(RunnerOpResult::TerminateWorkspace),
         RunnerOp::Hello => unreachable!("hello is answered before dispatch"),
         RunnerOp::Replay { .. } => unreachable!("replay is handled before dispatch"),
-        RunnerOp::Claim { .. } | RunnerOp::Detach | RunnerOp::Stop => {
-            unreachable!("claim, detach and stop are handled before dispatch")
+        RunnerOp::Claim { .. }
+        | RunnerOp::Detach
+        | RunnerOp::Stop
+        | RunnerOp::Recall { .. }
+        | RunnerOp::Reconciled { .. }
+        | RunnerOp::Acknowledge { .. } => {
+            unreachable!("an independent Runner's requests are handled before dispatch")
         }
         #[cfg(feature = "devguard")]
         RunnerOp::Registration => unreachable!("registration is handled before dispatch"),
@@ -1626,6 +1803,8 @@ async fn dispatch(runner: &InProcessRunner, op: RunnerOp) -> Result<RunnerOpResu
         RunnerOp::Prepare { .. } => unreachable!("preparation is handled before dispatch"),
         #[cfg(feature = "devguard")]
         RunnerOp::Launch { .. } => unreachable!("launch is handled before dispatch"),
+        #[cfg(feature = "devguard")]
+        RunnerOp::Lookup { .. } => unreachable!("lookup is handled before dispatch"),
     };
     result.map_err(RunnerError::into_error_body)
 }
@@ -1641,8 +1820,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_protocol_is_v10() {
-        assert_eq!(WIRE_PROTOCOL, 10);
+    fn wire_protocol_is_v11() {
+        assert_eq!(WIRE_PROTOCOL, 11);
     }
 
     #[tokio::test]
@@ -2346,10 +2525,11 @@ mod tests {
         }
     }
 
-    /// A managed worker refuses `Claim`, `Detach` and `Stop` and keeps serving; its `Hello`
-    /// states its lifecycle and identity (P1R-C01, P1R-C03).
+    /// A managed worker refuses `Claim`, `Detach`, `Stop`, `Recall`, `Reconciled`,
+    /// `Acknowledge` and with DevGuard `Lookup`, and keeps serving; its `Hello` states its
+    /// lifecycle and identity (P1R-C01, P1R-C03, P1R-C04).
     #[tokio::test]
-    async fn a_managed_worker_refuses_claim_detach_and_stop() {
+    async fn a_managed_worker_refuses_what_only_an_independent_runner_answers() {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let (worker, events) = host_worker();
         tokio::spawn(async move {
@@ -2358,7 +2538,7 @@ mod tests {
                 .expect("serve");
         });
         let (mut read, mut write) = client.into_split();
-        for (id, op) in [
+        let mut requests = vec![
             (
                 "rrpc-claim",
                 RunnerOp::Claim {
@@ -2367,8 +2547,37 @@ mod tests {
             ),
             ("rrpc-detach", RunnerOp::Detach),
             ("rrpc-stop", RunnerOp::Stop),
-            ("rrpc-hello", RunnerOp::Hello),
-        ] {
+            (
+                "rrpc-recall",
+                RunnerOp::Recall {
+                    process_ids: vec![ProcessId("proc-1".into())],
+                },
+            ),
+            (
+                "rrpc-reconciled",
+                RunnerOp::Reconciled {
+                    workspace_ids: vec!["demo".into()],
+                },
+            ),
+            (
+                "rrpc-acknowledge",
+                RunnerOp::Acknowledge {
+                    process_ids: vec![ProcessId("proc-1".into())],
+                },
+            ),
+        ];
+        #[cfg(feature = "devguard")]
+        requests.push((
+            "rrpc-lookup",
+            RunnerOp::Lookup {
+                attempts: vec![crate::admission::AttemptRef {
+                    attempt_id: "cs-1".into(),
+                    process_id: ProcessId("proc-1".into()),
+                }],
+            },
+        ));
+        requests.push(("rrpc-hello", RunnerOp::Hello));
+        for (id, op) in requests {
             write_frame(&mut write, &WireEnvelope::request(id.into(), op))
                 .await
                 .unwrap();
@@ -2427,6 +2636,7 @@ mod tests {
         let claimed = RunnerOpResult::Claimed(RunnerClaim {
             epoch: 2,
             previous_controller: true,
+            barrier: vec!["demo".into()],
             processes: vec![RunnerInventoryEntry {
                 workspace_id: "demo".into(),
                 status: RunnerProcessStatus {
@@ -2446,9 +2656,17 @@ mod tests {
         assert_eq!(json["type"], "claimed");
         assert_eq!(json["data"]["epoch"], 2);
         assert_eq!(json["data"]["events_through"], 5);
+        assert_eq!(json["data"]["barrier"], serde_json::json!(["demo"]));
         assert_eq!(json["data"]["processes"][0]["workspace_id"], "demo");
-        match serde_json::from_value(json).unwrap() {
+        match serde_json::from_value(json.clone()).unwrap() {
             RunnerOpResult::Claimed(claim) => assert_eq!(claim.processes.len(), 1),
+            other => panic!("unexpected {other:?}"),
+        }
+        // A Claim's answer without a barrier states none (P1R-C04).
+        let mut without = json;
+        without["data"].as_object_mut().unwrap().remove("barrier");
+        match serde_json::from_value(without).unwrap() {
+            RunnerOpResult::Claimed(claim) => assert!(claim.barrier.is_empty()),
             other => panic!("unexpected {other:?}"),
         }
         let refused = RunnerOpResult::ClaimRefused {
@@ -2798,8 +3016,12 @@ mod tests {
         }
 
         fn workspace(root: &Path) -> Workspace {
+            workspace_named(root, "demo")
+        }
+
+        fn workspace_named(root: &Path, id: &str) -> Workspace {
             Workspace::new(
-                WorkspaceId("demo".into()),
+                WorkspaceId(id.into()),
                 root.to_path_buf(),
                 Profile::WorkspaceWrite,
             )
@@ -2923,17 +3145,15 @@ mod tests {
             }
         }
 
-        fn recovery(gateway: &UdsRunner) -> Option<ErrorCode> {
-            gateway.new_work_refusal().map(|refusal| refusal.code)
-        }
-
         /// After a detach the next gateway claims the Runner under the next epoch, is told
-        /// every process it inherits, reads the output and status of the same process_id,
-        /// writes to it and resizes it, and the process times out at its original deadline.
-        /// That gateway starts nothing new, also once the inherited processes ended. The
-        /// handover's latency is measured.
+        /// every process it inherits and each workspace where work was started, reads the
+        /// output and status of the same process_id, writes to it and resizes it, and the
+        /// process times out at its original deadline. That gateway starts nothing new in that
+        /// workspace, also once the inherited processes ended, until it states that it
+        /// reconciled it (P1R-C04); in a workspace where no work was started it starts work at
+        /// once. The handover's latency is measured.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        async fn the_next_gateway_inherits_the_processes_but_starts_nothing() {
+        async fn the_next_gateway_inherits_the_processes_and_starts_work_once_it_reconciled() {
             let mut host = Host::start();
             let root = tempfile::tempdir().unwrap();
             let ws = workspace(root.path());
@@ -2949,6 +3169,7 @@ mod tests {
                 RunnerClaim {
                     epoch: 1,
                     previous_controller: false,
+                    barrier: Vec::new(),
                     processes: Vec::new(),
                     events_through: 0,
                 }
@@ -3012,6 +3233,7 @@ mod tests {
                 ),
                 (2, true, 0)
             );
+            assert_eq!(inherited.barrier, ["demo"]);
             let held: Vec<_> = inherited
                 .processes
                 .iter()
@@ -3030,7 +3252,8 @@ mod tests {
                     ("demo", "proc-tty", ProcessState::Running)
                 ]
             );
-            assert_eq!(recovery(&second), Some(ErrorCode::RecoveryPending));
+            // The client sends new work; the Runner refuses it in the workspace (P1R-C04).
+            assert_eq!(second.dispatch_epoch().unwrap(), Some(2));
             output_with(&second, &pipe, "ready").await;
             second
                 .write_stdin(RunnerWriteStdin {
@@ -3059,7 +3282,7 @@ mod tests {
                 elapsed >= Duration::from_millis(3_000) && elapsed < Duration::from_secs(10),
                 "{elapsed:?}"
             );
-            // Nothing new starts, and the workspace is not changed.
+            // Nothing new starts in the workspace, and it is not changed.
             let marker = root.path().join("started");
             let touch = command(
                 &["/usr/bin/touch", &marker.display().to_string()],
@@ -3080,28 +3303,40 @@ mod tests {
                 code(second.apply_patch(&ws, patch.clone()).await.unwrap_err()),
                 ErrorCode::RecoveryPending
             );
+            // Work starts at once in a workspace where none was started.
+            let elsewhere = tempfile::tempdir().unwrap();
+            second
+                .exec(
+                    &workspace_named(elsewhere.path(), "elsewhere"),
+                    command(&["/bin/sh", "-c", "exit 0"], "proc-elsewhere", 5_000, false),
+                )
+                .await
+                .unwrap();
             // An inherited process still ends on request.
             second.terminate(&tty).await.unwrap();
             assert_eq!(
                 exited(&second, &tty).await.termination,
                 Some(ProcessTermination::Terminated)
             );
-            // Both exits reached this controller.
+            // The three exits reached this controller.
             let mut ended = vec![
+                next_exit(&mut exited_ids).await.unwrap(),
                 next_exit(&mut exited_ids).await.unwrap(),
                 next_exit(&mut exited_ids).await.unwrap(),
             ];
             ended.sort();
-            assert_eq!(ended, ["proc-pipe", "proc-tty"]);
-            // The barrier stays once the inherited processes ended.
+            assert_eq!(ended, ["proc-elsewhere", "proc-pipe", "proc-tty"]);
+            // The barrier stays once the inherited processes ended, for every later controller,
+            // and covers the workspace this one worked in.
             second.detach().await.unwrap();
             assert_eq!(host.served().await, Served::Detached);
             let third = host.connect().await;
             let claim = third.claimed().unwrap();
             assert_eq!(
                 (claim.epoch, claim.previous_controller, claim.events_through),
-                (3, true, 2)
+                (3, true, 3)
             );
+            assert_eq!(claim.barrier, ["demo", "elsewhere"]);
             assert!(
                 claim
                     .processes
@@ -3109,18 +3344,40 @@ mod tests {
                     .all(|entry| entry.status.state == ProcessState::Exited),
                 "{claim:?}"
             );
-            assert_eq!(recovery(&third), Some(ErrorCode::RecoveryPending));
             assert_eq!(
-                code(third.exec(&ws, touch).await.unwrap_err()),
+                code(third.exec(&ws, touch.clone()).await.unwrap_err()),
                 ErrorCode::RecoveryPending
             );
             assert_eq!(
-                code(third.apply_patch(&ws, patch).await.unwrap_err()),
+                code(third.apply_patch(&ws, patch.clone()).await.unwrap_err()),
                 ErrorCode::RecoveryPending
             );
             assert!(!marker.exists());
             assert!(!root.path().join("added.txt").exists());
-            assert_eq!(third.stop_runner().await.unwrap(), 0);
+            // Stating that it reconciled the workspace lifts the barrier there, for this
+            // controller, and only under its own epoch.
+            assert_eq!(
+                code(
+                    third
+                        .at_epoch(2)
+                        .reconciled(&["demo".into()])
+                        .await
+                        .unwrap_err()
+                ),
+                ErrorCode::StaleController
+            );
+            third.reconciled(&["demo".into()]).await.unwrap();
+            match third.apply_patch(&ws, patch).await {
+                Ok(_) => assert!(root.path().join("added.txt").exists()),
+                // Where the patch helper is not built, it refuses the patch, not the barrier.
+                Err(err) => assert_ne!(code(err), ErrorCode::RecoveryPending),
+            }
+            third.exec(&ws, touch).await.unwrap();
+            exited(&third, &ProcessId("proc-new".into())).await;
+            assert!(marker.exists());
+            let stopped = third.stop_runner().await.unwrap();
+            assert_eq!(stopped.terminated, 0);
+            assert_eq!(stopped.processes.len(), 4, "{stopped:?}");
             assert_eq!(host.served().await, Served::Stopped { terminated: 0 });
             let claimed: Vec<_> = host
                 .claims()
@@ -3143,8 +3400,8 @@ mod tests {
             assert_eq!(claimed, [(1, false), (2, true), (3, true)]);
         }
 
-        /// Only a controller that starts work bars the next one from starting work: one that
-        /// only read leaves the next gateway free to.
+        /// Only a controller that starts work in a workspace bars the next one from starting
+        /// work there: one that only read leaves the next gateway free to.
         #[tokio::test]
         async fn a_controller_that_starts_nothing_leaves_no_barrier() {
             let mut host = Host::start();
@@ -3155,8 +3412,9 @@ mod tests {
             reader.detach().await.unwrap();
             assert_eq!(host.served().await, Served::Detached);
             let worker = host.connect().await;
-            assert!(!worker.claimed().unwrap().previous_controller);
-            assert_eq!(recovery(&worker), None);
+            let claim = worker.claimed().unwrap();
+            assert!(!claim.previous_controller);
+            assert!(claim.barrier.is_empty());
             worker
                 .exec(
                     &ws,
@@ -3166,7 +3424,142 @@ mod tests {
                 .unwrap();
             worker.close().await;
             assert_eq!(host.served().await, Served::Lost);
-            assert!(host.connect().await.claimed().unwrap().previous_controller);
+            let claim = host.connect().await.claimed().unwrap();
+            assert!(claim.previous_controller);
+            assert_eq!(claim.barrier, ["demo"]);
+        }
+
+        /// A Runner tells its controller, for each process asked about, whether a request to
+        /// start it arrived and whether it created it, with its status while it holds it; a
+        /// request that its barrier refused is one it received and created nothing for
+        /// (P1R-C04). Only its controller asks, and only under its own epoch does it
+        /// acknowledge an end.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn an_independent_runner_recalls_whether_it_created_each_process() {
+            let mut host = Host::start();
+            let root = tempfile::tempdir().unwrap();
+            let ws = workspace(root.path());
+            let first = host.connect().await;
+            let running = ProcessId("proc-running".into());
+            let failed = ProcessId("proc-failed".into());
+            let never = ProcessId("proc-never".into());
+            first
+                .exec(
+                    &ws,
+                    command(&["/bin/sleep", "30"], &running.0, 60_000, false),
+                )
+                .await
+                .unwrap();
+            // Refused before any process is created, with or without the Linux sandbox.
+            let no_program = command(&[""], &failed.0, 5_000, false);
+            assert_eq!(
+                code(first.exec(&ws, no_program).await.unwrap_err()),
+                ErrorCode::InvalidCommand
+            );
+            first.detach().await.unwrap();
+            assert_eq!(host.served().await, Served::Detached);
+
+            let second = host.connect().await;
+            let barred = ProcessId("proc-barred".into());
+            let quick = command(&["/bin/sh", "-c", "exit 0"], &barred.0, 5_000, false);
+            assert_eq!(
+                code(second.exec(&ws, quick).await.unwrap_err()),
+                ErrorCode::RecoveryPending
+            );
+            let asked = [running.clone(), failed, never, barred];
+            let recalled = second.recall(&asked).await.unwrap();
+            assert_eq!(
+                recalled
+                    .iter()
+                    .map(|recalled| recalled.process_id.clone())
+                    .collect::<Vec<_>>(),
+                asked
+            );
+            match &recalled[0].recalled {
+                Recalled::Held {
+                    workspace_id,
+                    status,
+                } => assert_eq!(
+                    (workspace_id.as_str(), status.state),
+                    ("demo", ProcessState::Running)
+                ),
+                other => panic!("unexpected {other:?}"),
+            }
+            assert_eq!(
+                recalled[1..]
+                    .iter()
+                    .map(|recalled| recalled.recalled.clone())
+                    .collect::<Vec<_>>(),
+                [Recalled::Refused, Recalled::NotReceived, Recalled::Refused]
+            );
+            // A connection that does not control the Runner is not told.
+            let mut raw = host.connect_raw().await;
+            let refused = raw
+                .call(
+                    RunnerOp::Recall {
+                        process_ids: vec![running.clone()],
+                    },
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code, ErrorCode::StaleController);
+            second.terminate(&running).await.unwrap();
+            exited(&second, &running).await;
+            match &second.recall(std::slice::from_ref(&running)).await.unwrap()[0].recalled {
+                Recalled::Held { status, .. } => assert_eq!(status.state, ProcessState::Exited),
+                other => panic!("unexpected {other:?}"),
+            }
+            assert_eq!(
+                code(
+                    second
+                        .at_epoch(1)
+                        .acknowledge(std::slice::from_ref(&running))
+                        .await
+                        .unwrap_err()
+                ),
+                ErrorCode::StaleController
+            );
+            second
+                .acknowledge(std::slice::from_ref(&running))
+                .await
+                .unwrap();
+        }
+
+        /// The controller has the Runner look up a governed execution's attempt with the
+        /// Runner's own DevGuard session: an attempt the Runner never admitted is not asked
+        /// about, and a connection that does not control the Runner is not told (P1R-C04).
+        #[cfg(feature = "devguard")]
+        #[tokio::test]
+        async fn an_independent_runner_looks_up_attempts_for_its_controller_only() {
+            use crate::admission::{AttemptLookup, AttemptRef, LookedUp};
+            let host = Host::start();
+            let mut controller = host.connect_raw().await;
+            let epoch = controller.claim(STORE).await.unwrap().epoch;
+            let attempts = vec![AttemptRef {
+                attempt_id: "cs-1".into(),
+                process_id: ProcessId("proc-1".into()),
+            }];
+            let lookup = RunnerOp::Lookup {
+                attempts: attempts.clone(),
+            };
+            match controller.call(lookup, Some(epoch)).await {
+                Ok(RunnerOpResult::LookedUp(found)) => assert_eq!(
+                    found,
+                    [AttemptLookup {
+                        attempt_id: "cs-1".into(),
+                        process_id: ProcessId("proc-1".into()),
+                        found: LookedUp::NotAdmitted,
+                    }]
+                ),
+                other => panic!("unexpected {other:?}"),
+            }
+            let mut other = host.connect_raw().await;
+            let refused = other
+                .call(RunnerOp::Lookup { attempts }, None)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code, ErrorCode::StaleController);
         }
 
         /// A Claim's answer lists every process the Runner holds, ended ones included, and the
@@ -3656,22 +4049,32 @@ mod tests {
             // A process that ends while the client reconnects.
             std::fs::write(root.path().join("go"), "").unwrap();
             exited(&host.runner, &gated).await;
+            let mut claims = gateway.claims();
             relay.hold(false);
             match next_link_event(&mut events).await {
                 LinkEvent::Reclaimed(claim) => {
                     assert_eq!((claim.epoch, claim.previous_controller), (2, true));
+                    assert_eq!(claim.barrier, ["demo"]);
+                    // The new Claim's inventory accounts for the exit: its event, which the
+                    // Runner sends again, is not delivered (P1R-C04).
+                    assert_eq!(claim.events_through, 1);
+                    let gated_status = claim
+                        .processes
+                        .iter()
+                        .find(|entry| entry.status.process_id == gated)
+                        .map(|entry| entry.status.state);
+                    assert_eq!(gated_status, Some(ProcessState::Exited), "{claim:?}");
                     assert_eq!(claim.processes.len(), 2, "{claim:?}");
                 }
                 other => panic!("unexpected {other:?}"),
             }
             assert_eq!(gateway.claimed().map(|claim| claim.epoch), Some(2));
+            // Whoever reconciles after a Claim is told of each one.
+            claims.changed().await.unwrap();
+            assert_eq!(claims.borrow().as_ref().map(|claim| claim.epoch), Some(2));
             assert_eq!(
                 gateway.process_status(&long).await.unwrap().state,
                 ProcessState::Running
-            );
-            assert_eq!(
-                next_exit(&mut exited_ids).await.as_deref(),
-                Some("proc-gated")
             );
             // A request prepared under the lost Claim is refused, and nothing new starts.
             assert_eq!(
@@ -3684,7 +4087,6 @@ mod tests {
                 ),
                 ErrorCode::StaleController
             );
-            assert_eq!(recovery(&gateway), Some(ErrorCode::RecoveryPending));
             assert_eq!(
                 code(gateway.exec(&ws, touch).await.unwrap_err()),
                 ErrorCode::RecoveryPending
@@ -3876,11 +4278,39 @@ mod tests {
                 .unwrap();
             output_with(&gateway, &tty, "tty-ready").await;
             let started = Instant::now();
-            assert_eq!(gateway.stop_runner().await.unwrap(), 2);
+            let stopped = gateway.stop_runner().await.unwrap();
             assert!(
                 started.elapsed() < STOP_DRAIN_BOUND,
                 "{:?}",
                 started.elapsed()
+            );
+            assert_eq!(stopped.terminated, 2);
+            // The answer states how each process ended (P1R-C04).
+            let ended: Vec<_> = stopped
+                .processes
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.status.process_id.0.as_str(),
+                        entry.status.state,
+                        entry.status.termination,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                ended,
+                [
+                    (
+                        "proc-pipe",
+                        ProcessState::Exited,
+                        Some(ProcessTermination::Terminated)
+                    ),
+                    (
+                        "proc-tty",
+                        ProcessState::Exited,
+                        Some(ProcessTermination::Terminated)
+                    )
+                ]
             );
             assert_eq!(host.served().await, Served::Stopped { terminated: 2 });
             assert_eq!(host.runner.occupied_slots(), 0);
@@ -3925,9 +4355,10 @@ mod tests {
         }
 
         /// A connection that ends without a word is a loss: the processes keep running, and an
-        /// exit while no gateway controls the Runner reaches the next controller.
+        /// exit while no gateway controls the Runner reaches the next controller in its Claim's
+        /// inventory, not as an event (P1R-C04); later exits come as events.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        async fn a_lost_connection_keeps_the_processes_and_their_exit_events() {
+        async fn a_lost_connection_keeps_the_processes_and_the_next_claim_accounts_for_exits() {
             let mut host = Host::start();
             let root = tempfile::tempdir().unwrap();
             let ws = workspace(root.path());
@@ -3952,10 +4383,18 @@ mod tests {
             let second = host.connect_reporting_exits(on_exit).await;
             let claim = second.claimed().unwrap();
             assert!(claim.previous_controller);
-            assert_eq!(claim.processes.len(), 2);
+            assert_eq!(claim.events_through, 1);
+            let listed: Vec<_> = claim
+                .processes
+                .iter()
+                .map(|entry| (entry.status.process_id.0.as_str(), entry.status.state))
+                .collect();
             assert_eq!(
-                next_exit(&mut exited_ids).await.as_deref(),
-                Some("proc-quick")
+                listed,
+                [
+                    ("proc-long", ProcessState::Running),
+                    ("proc-quick", ProcessState::Exited)
+                ]
             );
             assert_eq!(
                 second.process_status(&long).await.unwrap().state,

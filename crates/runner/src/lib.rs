@@ -122,7 +122,7 @@ mod watch;
 mod wire;
 
 pub use api::{
-    default_exec_timeout_ms, runner_local_exec_env, RunnerApplyPatchRequest,
+    default_exec_timeout_ms, runner_local_exec_env, Recalled, RunnerApplyPatchRequest,
     RunnerApplyPatchResult, RunnerCwd, RunnerError, RunnerExecEnv, RunnerExecPolicy,
     RunnerExecRequest, RunnerExecResult, RunnerProcessRoot, RunnerProcessStatus, RunnerReadProcess,
     RunnerReadResult, RunnerResizeResult, RunnerWriteStdin, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES,
@@ -134,7 +134,7 @@ pub use fork_handlers::prepare_fork_spawns;
 pub use patch_helper::ensure_helper_for_tests;
 pub use process::{
     InProcessRunner, RetentionPolicy, ShellRelease, SlotReservation, DEFAULT_COMPLETED_TTL,
-    DEFAULT_MAX_COMPLETED, DEFAULT_MAX_PROCESSES, DEFAULT_TIMEOUT,
+    DEFAULT_MAX_COMPLETED, DEFAULT_MAX_PROCESSES, DEFAULT_MAX_UNACKNOWLEDGED, DEFAULT_TIMEOUT,
 };
 
 /// True when this process probed a working Linux sandbox helper.
@@ -152,16 +152,17 @@ pub use socket::{
 };
 pub use uds::{
     runner_disconnected, runner_reconnecting, ClaimError, DisconnectHook, LinkEvent, LinkObserver,
-    RunnerHello, UdsRunner, CLAIM_START_BOUND, RECLAIM_BACKOFF_MAX, RUNNER_CALL_DEADLINE,
+    RunnerHello, RunnerStopped, UdsRunner, CLAIM_START_BOUND, RECLAIM_BACKOFF_MAX,
+    RUNNER_CALL_DEADLINE,
 };
 pub use watch::{FsWatchEvent, FsWatchKind, WatchClosed, WatchSubscription};
 #[cfg(feature = "devguard")]
 pub use wire::serve_runner_connection_with_registration;
 pub use wire::{
     host_worker, read_frame, recovery_pending, serve_runner_connection, write_frame, ClaimNote,
-    ClaimObserver, ClaimRefusal, IndependentRunner, RunnerClaim, RunnerEvent, RunnerEvents,
-    RunnerInventoryEntry, RunnerOp, RunnerOpResult, Served, StopHandle, WireEnvelope, WireKind,
-    CLAIM_WAIT_BOUND, STOP_DRAIN_BOUND, WIRE_PROTOCOL,
+    ClaimObserver, ClaimRefusal, IndependentRunner, RecalledProcess, RunnerClaim, RunnerEvent,
+    RunnerEvents, RunnerInventoryEntry, RunnerOp, RunnerOpResult, Served, StopHandle, WireEnvelope,
+    WireKind, CLAIM_WAIT_BOUND, STOP_DRAIN_BOUND, WIRE_PROTOCOL,
 };
 
 /// Execution-plane API. Control-plane fields (`work_id`, coordination,
@@ -340,6 +341,18 @@ impl RuntimeBackend {
     /// (P1R-C01, P1R-C03): see [`UdsRunner::dispatch_epoch`].
     pub fn new_work_refusal(&self) -> Option<ErrorBody> {
         self.dispatch_epoch().err()
+    }
+
+    /// Tell an independent Runner that this gateway recorded how these processes ended
+    /// (P1R-C04): see [`UdsRunner::acknowledge`]. Any other runner keeps nothing for a
+    /// controller, so it is told nothing.
+    pub async fn acknowledge(&self, process_ids: &[ProcessId]) -> Result<(), RunnerError> {
+        match self {
+            Self::Uds(runner) if runner.hello().lifecycle == RunnerLifecycle::Independent => {
+                runner.acknowledge(process_ids).await
+            }
+            _ => Ok(()),
+        }
     }
 
     /// This backend, sending its requests under the controller epoch `epoch` when there is one

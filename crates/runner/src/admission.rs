@@ -29,7 +29,7 @@
 //! Cancelling is the one settlement used, and only where its precondition holds: this owner
 //! never asked DevGuard to launch the attempt, so a cancellation finds it prepared or settled.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
@@ -564,6 +564,95 @@ fn wire_name(value: &impl Serialize) -> String {
         .unwrap_or_default()
 }
 
+/// The admissions an independent Runner asked the authority for, by attempt ID, each with the
+/// process it was for (P1R-C04): what it needs to look its attempts up again, since the
+/// authority checks a lookup against the attempt's meaning. Kept for the Runner's lifetime.
+#[derive(Clone, Default)]
+pub struct Admissions(Arc<std::sync::Mutex<HashMap<String, (ProcessId, Admission)>>>);
+
+impl Admissions {
+    fn remember(&self, process_id: &ProcessId, admission: &Admission) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                admission.attempt_id.clone(),
+                (process_id.clone(), admission.clone()),
+            );
+    }
+
+    fn admitted(&self, attempt_id: &str, process_id: &ProcessId) -> Option<Admission> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(attempt_id)
+            .filter(|(admitted_for, _)| admitted_for == process_id)
+            .map(|(_, admission)| admission.clone())
+    }
+}
+
+/// A governed execution's attempt, which a gateway asks its independent Runner to look up
+/// (P1R-C04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptRef {
+    pub attempt_id: String,
+    pub process_id: ProcessId,
+}
+
+/// What the authority states of an attempt that an independent Runner looked up (P1R-C04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptLookup {
+    pub attempt_id: String,
+    pub process_id: ProcessId,
+    pub found: LookedUp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "lookup", content = "attempt", rename_all = "snake_case")]
+pub enum LookedUp {
+    /// This Runner never asked the authority to admit this attempt for this process.
+    NotAdmitted,
+    /// The authority has no record of the attempt.
+    NotFound,
+    /// The authority's record of the attempt.
+    Found(AttemptState),
+    /// The authority could not be asked, or gave no usable answer: ask again later.
+    Failed,
+}
+
+/// Look up each of `attempts` with `authority`, as this owner admitted it (P1R-C04). An attempt
+/// that this owner never admitted for its process is not asked about.
+pub async fn look_up(
+    authority: Option<Arc<dyn AttemptAuthority>>,
+    admissions: &Admissions,
+    attempts: Vec<AttemptRef>,
+) -> Vec<AttemptLookup> {
+    let mut found = Vec::with_capacity(attempts.len());
+    for AttemptRef {
+        attempt_id,
+        process_id,
+    } in attempts
+    {
+        let looked_up = match (admissions.admitted(&attempt_id, &process_id), &authority) {
+            (None, _) => LookedUp::NotAdmitted,
+            (Some(_), None) => LookedUp::Failed,
+            (Some(admission), Some(authority)) => {
+                match call(authority, &admission, Call::Lookup).await {
+                    Answer::Attempt(attempt) => LookedUp::Found(attempt_state(&attempt)),
+                    Answer::Refused(devguard::ErrorCode::NotFound) => LookedUp::NotFound,
+                    Answer::Refused(_) | Answer::NotSent(_) | Answer::Unknown => LookedUp::Failed,
+                }
+            }
+        };
+        found.push(AttemptLookup {
+            attempt_id,
+            process_id,
+            found: looked_up,
+        });
+    }
+    found
+}
+
 /// Prepares and launches governed executions for the owner that holds both the process slots
 /// and the registered identity.
 #[derive(Clone)]
@@ -572,6 +661,7 @@ pub struct Preparer {
     runner: InProcessRunner,
     ttl_bound: Duration,
     launcher: Option<Launcher>,
+    admissions: Option<Admissions>,
 }
 
 impl Preparer {
@@ -581,7 +671,14 @@ impl Preparer {
             runner,
             ttl_bound: Duration::from_millis(devguard_prepared_ttl()),
             launcher: None,
+            admissions: None,
         }
+    }
+
+    /// Remember each admission asked for in `admissions`, to look it up again (P1R-C04).
+    pub fn with_admissions(mut self, admissions: Option<Admissions>) -> Self {
+        self.admissions = admissions;
+        self
     }
 
     /// Hold prepared attempts for at most `bound` here, whatever the authority grants.
@@ -662,6 +759,9 @@ impl Preparer {
             reserved: None,
             applied: Applied::NotLaunched,
         };
+        if let Some(admissions) = &self.admissions {
+            admissions.remember(&req.process_id, &admission);
+        }
         let started = Instant::now();
         match call(&self.authority, &admission, Call::Admit).await {
             Answer::Attempt(attempt) => {
@@ -1873,5 +1973,72 @@ pub(crate) mod tests {
         ] {
             assert_ne!(meaning(ws, req).digest().unwrap(), digest);
         }
+    }
+
+    /// An independent Runner looks up only the attempts it admitted, each for the process it
+    /// admitted it for and as it admitted it. An authority that cannot answer, or a Runner
+    /// without its registration, leaves the attempt to be asked again (P1R-C04).
+    #[tokio::test]
+    async fn an_independent_runner_looks_up_only_the_attempts_it_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner();
+        let admissions = Admissions::default();
+        let fake = Fake::admitting([prepared()])
+            .then_lookup(Answer::Attempt(record(dg::Phase::LaunchCommitted, None)))
+            .then_lookup(Answer::Attempt(record(
+                dg::Phase::Released,
+                Some(dg::Release::NoHelperCreated),
+            )))
+            .then_lookup(Answer::Refused(devguard::ErrorCode::NotFound))
+            .then_lookup(Answer::Unknown)
+            .then_lookup(Answer::NotSent(unreachable_registration()));
+        let report = Preparer::new(fake.clone(), runner.clone())
+            .with_admissions(Some(admissions.clone()))
+            .prepare_and_dispose(
+                governed(dir.path()),
+                touch(dir.path(), "proc-l"),
+                "cs-l".into(),
+            )
+            .await;
+        assert_eq!(report.attempt, AttemptState::Cancelled);
+        let authority: Arc<dyn AttemptAuthority> = fake.clone();
+        let attempt = |attempt_id: &str, process_id: &str| AttemptRef {
+            attempt_id: attempt_id.into(),
+            process_id: ProcessId(process_id.into()),
+        };
+        let found = |lookups: Vec<AttemptLookup>| -> Vec<LookedUp> {
+            lookups.into_iter().map(|lookup| lookup.found).collect()
+        };
+
+        let elsewhere = look_up(
+            Some(authority.clone()),
+            &admissions,
+            vec![attempt("cs-other", "proc-l"), attempt("cs-l", "proc-other")],
+        )
+        .await;
+        assert_eq!(found(elsewhere), [LookedUp::NotAdmitted; 2]);
+        assert_eq!(fake.count(LOOKUP), 0);
+        for expected in [
+            LookedUp::Found(AttemptState::Launched),
+            LookedUp::Found(AttemptState::Released),
+            LookedUp::NotFound,
+            LookedUp::Failed,
+            LookedUp::Failed,
+        ] {
+            let lookups = look_up(
+                Some(authority.clone()),
+                &admissions,
+                vec![attempt("cs-l", "proc-l")],
+            )
+            .await;
+            assert_eq!(found(lookups), [expected]);
+        }
+        let unregistered = look_up(None, &admissions, vec![attempt("cs-l", "proc-l")]).await;
+        assert_eq!(found(unregistered), [LookedUp::Failed]);
+        assert_eq!(fake.count(LOOKUP), 5);
+        // Each lookup asked about the admission itself, under its digest.
+        let seen = fake.seen.lock().unwrap();
+        assert!(seen.iter().all(|admission| *admission == seen[0]));
+        assert_nothing_started(dir.path(), &runner);
     }
 }

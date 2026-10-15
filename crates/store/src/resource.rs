@@ -155,6 +155,32 @@ impl ResourceSerializer {
         }
     }
 
+    /// Hold `workspace_id` for `process_id`, a live process that a gateway found again when it
+    /// reconciled with its independent Runner (P1R-C04): a confirmed process, as after its
+    /// spawn, so waiters already queued fail with `WORKSPACE_BUSY`. Holding it again for the
+    /// same process changes nothing; anything else that holds the workspace refuses it.
+    pub(crate) fn hold_process(
+        &mut self,
+        workspace_id: &str,
+        process_id: &str,
+    ) -> Result<(), ErrorBody> {
+        let resource = Resource::Workspace(workspace_id.to_string());
+        match self.exclusive.get(&resource) {
+            Some(ExclusiveHolder::Process(id)) if id == process_id => return Ok(()),
+            Some(ExclusiveHolder::Spawning(id)) if id == process_id => {}
+            Some(_) => return Err(busy(&resource)),
+            None if self.shared_count(&resource) > 0 => return Err(busy(&resource)),
+            None => {}
+        }
+        self.grant(
+            resource.clone(),
+            LockMode::Exclusive,
+            ExclusiveHolder::Process(process_id.to_string()),
+        );
+        self.fail_waiters(&resource, shell_busy());
+        Ok(())
+    }
+
     pub(crate) fn clear_shell(&mut self, workspace_id: &str) {
         let resource = Resource::Workspace(workspace_id.to_string());
         if matches!(

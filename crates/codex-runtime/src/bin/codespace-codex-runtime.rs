@@ -148,8 +148,8 @@ async fn serve() {
     }
 }
 
-/// What an independent Runner logs of each Claim (P1R-C03): any process of its user that can
-/// reach its socket may claim it while no connection controls it.
+/// What an independent Runner logs of each Claim (P1R-C03, P1R-C04): any process of its user
+/// that can reach its socket may claim it while no connection controls it.
 fn log_claim(note: ClaimNote) {
     let peer = |pid: Option<i32>| pid.map_or_else(|| "unknown".into(), |pid| pid.to_string());
     match note {
@@ -161,7 +161,8 @@ fn log_claim(note: ClaimNote) {
             "codespace-codex-runtime: process {} claimed the Runner under epoch {epoch}{}",
             peer(peer_pid),
             if previous_controller {
-                "; an earlier controller started work, so it starts nothing"
+                "; an earlier controller started work, so it starts nothing where that \
+                 controller did until it reconciled it"
             } else {
                 ""
             }

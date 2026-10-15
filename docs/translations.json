@@ -78,8 +78,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "ef6902babea74a960118cef8b12204606c8707a3c13b5f28bb0cec113f633222",
-      "translation_sha256": "b7562abebafea29eb2da52ea4f421c41a8f2ed5af475a3be49a0937e215a9ae0"
+      "source_sha256": "73d4de8918976b98bd92f2b1811d0872d9603edf23ac847b59eb9e74a9f36514",
+      "translation_sha256": "9616be59db270581e1035460a8bef34bf06815f46c2db4d79eb87f2bd66d5a6d"
     },
     {
       "id": "cs-rg-qualification",
@@ -257,8 +257,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "0e413aee000ab6f986dd428388789defbf866d86f9cf1376bf9c7bee2b21eab3",
-      "translation_sha256": "5acba3bbfa22171eb019ede270d3c4f04587454759a1e7af728e5205b567014a"
+      "source_sha256": "c0257f9844525cb9a2dbbca6fa6ee4dbfa376de877cb8a647d55e4a476031a2d",
+      "translation_sha256": "095fe129c42f71fab2a7ec47bdbffdd81f0c6141e616e454c46e4f2f3134833b"
     },
     {
       "id": "operations",
@@ -310,8 +310,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "dc741a1830193cedbf1a5a49327bed25d7d4ba59782e00e24fc3e55b34f872df",
-      "translation_sha256": "debd98914cb9bdf0f84e1b4ea409695ec5a049a19ad785708ee0ba6f94fbfcb8"
+      "source_sha256": "3b42dfbca4a44361af4476134e59d02af7313f5093590057b0e81ca35b3f42b5",
+      "translation_sha256": "b44f15c0a1c415e6015e4d76ca6421a648ef61572b2b959c9e6faa21d8b6b35c"
     },
     {
       "id": "chatgpt-connector",
@@ -400,8 +400,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "be5e155f374697eb4aedd3cb5eb08db8b00a67ec0c91b91f7b4503f3cf143220",
-      "translation_sha256": "9bd1f5d137a1cbb5d1ed97be05129f276420927664c337c80e53b9e4283b6477"
+      "source_sha256": "9d03ae6de59d281f2f992bd39e4bf32516946ea0b490de3e0325d2f78cb0574d",
+      "translation_sha256": "10d6fffe680c807b9b7dd22148032e2529ea452d1d527ac2ec6f1cade693aa0b"
     },
     {
       "id": "execution-substrate",
@@ -465,8 +465,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "be934715cd35e1d90c81bbe881681a889592de3a28ff56455b9e448b997bf2e5",
-      "translation_sha256": "b307eb918b5be50b4a7ec79f78d1ce1dd7d1a05a0ff81fc6f2c21fe382b571f1"
+      "source_sha256": "93e4ef27d771f9bec226af62ae66a785962aea6030050164195d9d9bcadc82ce",
+      "translation_sha256": "512a93517c56dd59aebae0271025658fd3c17a9f318bf3e6217b061245eb2b40"
     },
     {
       "id": "protocol-compatibility",
@@ -576,8 +576,8 @@
         "프로세스-정직성",
         "프로필-mvp"
       ],
-      "source_sha256": "e3e7395c07e2660aae172e256231cea660d464c1e6f464d7e27f96b56e9c720e",
-      "translation_sha256": "2e812460939e5716d4ca20d5a097346cab81c0c39062f0e48e9b29118e5ad313"
+      "source_sha256": "cdb542f72d794730735b7a71cf5c45bfb3aa012d3d6f637196dc28dc41249516",
+      "translation_sha256": "5bd6ab3149c3c72b7d94a96910ff412be67163ad73b0df1b0c8d12b2b9d109cf"
     },
     {
       "id": "runner-isolation",
@@ -602,6 +602,7 @@
         "macos-no-docker",
         "network-and-filesystem-scope",
         "process-records",
+        "reconciliation",
         "runner-isolation",
         "what-the-compose-fixture-does",
         "이후-프로세스-분리",
@@ -612,8 +613,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "b8ca7eaf43a128d33f41ae39999349c275dd677177589f8873d6997dbfb71b76",
-      "translation_sha256": "004b9bb59acd29d188e81b46d7f1fc9b32f3ca145faeb20e55d579a0bce2bc69"
+      "source_sha256": "e76149aba184f9de7f6e11441db5f9f519db95f20b62eb367de67e49381f98d2",
+      "translation_sha256": "950575f22d943f0904b7a805b4cd81f154f218a14e219bc16e92e8449d6ff1f7"
     },
     {
       "id": "error-codes",
@@ -641,8 +642,8 @@
         "전송-실패",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "9dec383f2ff5d3c470603d03f6bac2cee684b87ac775c13ab229d99a73c97936",
-      "translation_sha256": "70569634b14f9b6419c3eb1c90228eb9b3ef364c6b33a6b61ec8c5db75c3bc26"
+      "source_sha256": "5892534235706ee8d0d3a9bf18a1d36b18578441567f3eba92f69d91fbce2010",
+      "translation_sha256": "45046341089415fcc7d64e850629e6605ece6d1ab48b3a05e9579e32f8f56bbd"
     },
     {
       "id": "codex-reuse",
@@ -723,8 +724,8 @@
         "핀-6b9826e의-후보",
         "핵심-대-어댑터"
       ],
-      "source_sha256": "aae68b25a95333d12733ae14054ed304a24ce90931cf29c8cafd0200c4238a93",
-      "translation_sha256": "c9df1c720035bf7138a79d0f748972cf226d8c8728242bad526ab1fa0bd6df19"
+      "source_sha256": "8012d6d5acbcd330b65c62f1ac75c0fa83b8d0cdf93f3e07bb4816ce6fe5b8de",
+      "translation_sha256": "539ff72fecf5ae9411a4f4d7941a5b61c12a4aa7aab3ec473ff4fd49190c9a7f"
     },
     {
       "id": "upstream-lock",

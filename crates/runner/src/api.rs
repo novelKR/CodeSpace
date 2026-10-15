@@ -153,6 +153,25 @@ pub struct RunnerProcessStatus {
     pub eof: bool,
 }
 
+/// What an independent Runner knows of a process that it was asked to start (P1R-C04). It
+/// remembers, for its whole lifetime, whether it created a process for each `process_id`, and
+/// nothing else of a process it no longer holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "recalled", rename_all = "snake_case")]
+pub enum Recalled {
+    /// No request to start it reached this Runner.
+    NotReceived,
+    /// A request to start it reached this Runner, which created no process for it.
+    Refused,
+    /// This Runner created it and holds it, running or ended.
+    Held {
+        workspace_id: String,
+        status: RunnerProcessStatus,
+    },
+    /// This Runner created it, and no longer holds it: it ended, and how is not known any more.
+    Dropped,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerResizeResult {
     pub rows: u16,

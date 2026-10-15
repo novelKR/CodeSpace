@@ -348,6 +348,42 @@ impl Store {
         mark_resuming_on(&conn, approval_id)
     }
 
+    /// The approval with this ID, if there is one.
+    pub fn approval(&self, approval_id: &ApprovalId) -> Result<Option<ApprovalRecord>, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        load(&conn, &approval_id.0)?
+            .map(Row::into_record)
+            .transpose()
+    }
+
+    /// Settle an approval whose resume a gateway left `resuming` (P1R-C04), once its
+    /// reconciliation learned what became of the execution: `Some` result consumes it with
+    /// the process that the Runner created, `None` gives it back unconsumed because the
+    /// Runner proved that it created none. Returns whether the approval was settled: not when
+    /// it is no longer being resumed. Refused while a resume of it is in progress, which
+    /// settles it itself.
+    pub fn settle_interrupted_resume(
+        &self,
+        approval_id: &ApprovalId,
+        started: Option<&OperationResumeResult>,
+    ) -> Result<bool, ErrorBody> {
+        let _guard = self.mark_inflight(&approval_id.0)?;
+        let state = {
+            let conn = self.conn.lock().expect("sqlite mutex");
+            load(&conn, &approval_id.0)?
+                .ok_or_else(|| not_found(approval_id))?
+                .state
+        };
+        if state != ApprovalState::Resuming.as_str() {
+            return Ok(false);
+        }
+        match started {
+            Some(result) => self.finish_resume(approval_id, Ok(result))?,
+            None => self.return_resume(approval_id)?,
+        }
+        Ok(true)
+    }
+
     pub fn fail_next_finish(&self) {
         *self.fail_next_finish.lock().expect("fail flag") = true;
     }

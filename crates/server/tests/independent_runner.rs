@@ -1,10 +1,11 @@
 //! The gateway with an independent Runner (P1R-C01), each started as an operator starts it: the
-//! Runner outlives a gateway, the next gateway inherits its processes but starts nothing, and a
-//! gateway that ends leaves or stops the Runner as its exit intent says. Each gateway records
-//! its executions in the operations database, which it is the only writer of (P1R-C02), and
-//! takes control of the Runner with a Claim for that database (P1R-C03). The tests with a
-//! Runner need the worker binary (`CODESPACE_RUNTIME_BIN`) and return early without it, as the
-//! gateway's other worker tests do.
+//! Runner outlives a gateway, the next gateway inherits its processes, and a gateway that ends
+//! leaves or stops the Runner as its exit intent says. Each gateway records its executions in
+//! the operations database, which it is the only writer of (P1R-C02), takes control of the
+//! Runner with a Claim for that database (P1R-C03), and reconciles what earlier controllers
+//! left before it starts work where they did (P1R-C04). The tests with a Runner need the
+//! worker binary (`CODESPACE_RUNTIME_BIN`) and return early without it, as the gateway's other
+//! worker tests do.
 
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -245,6 +246,20 @@ impl Gateway {
         self.started_in("demo", command).await
     }
 
+    /// The refusal of new work in `demo` once the gateway reconciled it (P1R-C04): the
+    /// refusals with RECOVERY_PENDING while it reconciles are passed over.
+    async fn refused_once_reconciled(&self) -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let refused = error_body(&self.exec(&["/bin/echo", "new"]).await);
+            if refused["code"] != "RECOVERY_PENDING" {
+                return refused;
+            }
+            assert!(Instant::now() < deadline, "not reconciled: {refused}");
+            sleep(Duration::from_millis(40)).await;
+        }
+    }
+
     async fn started_in(&self, workspace_id: &str, command: &[&str]) -> String {
         let started = self.exec_in(workspace_id, command).await.expect("exec");
         let body = payload(&started);
@@ -369,8 +384,9 @@ fn parent_of(pid: u32) -> Option<u32> {
 
 /// A gateway killed while its process runs leaves the process to the Runner: the next gateway
 /// reads it and sees it end at its original timeout, not at one restarted when that gateway
-/// connected, but starts nothing itself, and its normal shutdown with the intent `stop` then
-/// stops the Runner (P1R-C01).
+/// connected; it reconciles, and holds the workspace for the process again, so new work there
+/// is busy (P1R-C04); and its normal shutdown with the intent `stop` then stops the Runner
+/// (P1R-C01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_independent_runner_keeps_a_killed_gateways_process_to_its_original_timeout() {
     let Some(bin) = runtime_bin() else {
@@ -391,8 +407,8 @@ async fn an_independent_runner_keeps_a_killed_gateways_process_to_its_original_t
     let next = setup.gateway("stop").await;
     assert_eq!(next.status(&process_id).await["state"], "running");
     next.output(&process_id, "started").await;
-    let refused = next.exec(&["/bin/echo", "new"]).await;
-    assert_eq!(error_body(&refused)["code"], "RECOVERY_PENDING");
+    let refused = next.refused_once_reconciled().await;
+    assert_eq!(refused["code"], "WORKSPACE_BUSY", "{refused}");
     let status = loop {
         let status = next.status(&process_id).await;
         if status["state"] == "exited" {
@@ -740,8 +756,8 @@ async fn a_claim_is_refused_while_a_stopped_gateway_holds_the_runner_and_granted
 
     let next = setup.gateway("stop").await;
     assert_eq!(next.status(&process_id).await["state"], "running");
-    let refused = next.exec(&["/bin/echo", "new"]).await;
-    assert_eq!(error_body(&refused)["code"], "RECOVERY_PENDING");
+    let refused = next.refused_once_reconciled().await;
+    assert_eq!(refused["code"], "WORKSPACE_BUSY", "{refused}");
     let ended = next.shut_down().await;
     assert!(ended.success(), "{ended:?}");
     let status = exited(&mut runner).await;

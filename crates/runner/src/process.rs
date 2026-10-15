@@ -32,14 +32,18 @@ use tokio::task::JoinHandle;
 
 use crate::lifecycle::process_start_identity;
 use crate::{
-    runner_local_exec_env, RunnerCwd, RunnerExecRequest, RunnerExecResult, RunnerProcessRoot,
-    RunnerProcessStatus, RunnerReadProcess, RunnerReadResult, RunnerResizeResult, RunnerWriteStdin,
+    runner_local_exec_env, Recalled, RunnerCwd, RunnerExecRequest, RunnerExecResult,
+    RunnerProcessRoot, RunnerProcessStatus, RunnerReadProcess, RunnerReadResult,
+    RunnerResizeResult, RunnerWriteStdin,
 };
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_PROCESSES: usize = 8;
 pub const DEFAULT_COMPLETED_TTL: Duration = Duration::from_secs(15 * 60);
 pub const DEFAULT_MAX_COMPLETED: usize = 64;
+/// How many ended processes an independent Runner keeps, after their handles are released,
+/// for a controller that has not acknowledged them yet (P1R-C04).
+pub const DEFAULT_MAX_UNACKNOWLEDGED: usize = 64;
 
 /// Called with a server-minted `process_id` when that process exits.
 pub type ShellRelease = Arc<dyn Fn(&str) + Send + Sync>;
@@ -72,11 +76,31 @@ pub struct InProcessRunner {
     inner: Arc<Mutex<HashMap<String, Slot>>>,
     /// Slots taken for processes not yet created. Locked after `inner`, never before it.
     reserved: Arc<Mutex<HashSet<String>>>,
+    /// What an independent Runner remembers for its controllers. Locked last.
+    memory: Arc<Mutex<Memory>>,
     /// The live process limit, when set here instead of by `CODESPACE_MAX_PROCESSES`.
     max_processes: Option<usize>,
     on_release: ShellRelease,
     retention: RetentionPolicy,
     pub(crate) watches: crate::watch::WatchSet,
+}
+
+/// What an independent Runner remembers for its controllers (P1R-C04), once
+/// [`InProcessRunner::keep_until_acknowledged`] turned it on: for its whole lifetime, whether it
+/// created a process for each `process_id` it was asked to start, by its ID alone; and how many
+/// ended processes it keeps, after their handles are released, until a controller
+/// acknowledges them.
+#[derive(Default)]
+struct Memory {
+    keep: Option<usize>,
+    received: HashMap<String, Received>,
+}
+
+/// Whether a runner created the process it was asked to start (P1R-C04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Received {
+    Executed,
+    Refused,
 }
 
 /// A process slot, taken before the process is created (CSRG-U3). A slot counts against the
@@ -116,6 +140,8 @@ struct Slot {
     completed_at: Arc<Mutex<Option<Instant>>>,
     lifecycle: Arc<Mutex<Lifecycle>>,
     on_kill: Option<KillHook>,
+    /// When a controller acknowledged how the ended process ended (P1R-C04).
+    acknowledged: Option<Instant>,
 }
 
 enum SessionIo {
@@ -127,6 +153,9 @@ enum SessionIo {
         session: Arc<PtySession>,
         writer: mpsc::Sender<Vec<u8>>,
     },
+    /// The ended process's handle was released when it would have been evicted, and its
+    /// status and output are kept until a controller acknowledges them (P1R-C04).
+    Released,
 }
 
 /// Lets a test act inside a managed PTY spawn's window, while the launch's two descriptors are
@@ -465,6 +494,7 @@ impl InProcessRunner {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             reserved: Arc::new(Mutex::new(HashSet::new())),
+            memory: Arc::new(Mutex::new(Memory::default())),
             max_processes: None,
             on_release,
             retention,
@@ -516,30 +546,138 @@ impl InProcessRunner {
         live_count(&map) + reserved
     }
 
+    /// Evict the ended processes past the retention policy: those that ended more than `ttl`
+    /// ago, and the oldest beyond `max_completed`. An independent Runner releases the handle of
+    /// such a process at the same moment, but keeps its status and output until a controller
+    /// acknowledges them (P1R-C04): releasing the handle earlier would change what its drop does
+    /// to the process group of a tty process, so it is never released earlier (D11). Once
+    /// acknowledged, a released process stays `ttl` longer; beyond `keep` released processes,
+    /// the oldest goes, and the runner remembers only that it ended.
     fn evict_completed(&self, map: &mut HashMap<String, Slot>) {
         let now = Instant::now();
         let ttl = self.retention.ttl;
-        map.retain(|_, slot| {
-            let completed = slot.completed_at.lock().ok().and_then(|guard| *guard);
-            !matches!(completed, Some(at) if now.duration_since(at) > ttl)
-        });
-        let mut completed: Vec<(String, Instant)> = map
+        let keep = self.memory.lock().expect("memory").keep;
+        let mut ended: Vec<(String, Instant)> = map
             .iter()
-            .filter_map(|(id, slot)| {
-                slot.completed_at
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.map(|at| (id.clone(), at)))
-            })
+            .filter(|(_, slot)| !matches!(slot.io, SessionIo::Released))
+            .filter_map(|(id, slot)| completed_at(slot).map(|at| (id.clone(), at)))
             .collect();
-        if completed.len() <= self.retention.max_completed {
+        ended.sort_by_key(|(_, at)| *at);
+        let over = ended.len().saturating_sub(self.retention.max_completed);
+        for (index, (id, at)) in ended.into_iter().enumerate() {
+            if index >= over && now.duration_since(at) <= ttl {
+                continue;
+            }
+            match map.get_mut(&id) {
+                Some(slot) if keep.is_some() && slot.acknowledged.is_none() => {
+                    slot.io = SessionIo::Released;
+                    slot.on_kill = None;
+                }
+                _ => {
+                    map.remove(&id);
+                }
+            }
+        }
+        let Some(keep) = keep else {
+            return;
+        };
+        map.retain(|_, slot| {
+            !(matches!(slot.io, SessionIo::Released)
+                && slot
+                    .acknowledged
+                    .is_some_and(|at| now.duration_since(at) > ttl))
+        });
+        let mut released: Vec<(String, Instant)> = map
+            .iter()
+            .filter(|(_, slot)| matches!(slot.io, SessionIo::Released))
+            .filter_map(|(id, slot)| completed_at(slot).map(|at| (id.clone(), at)))
+            .collect();
+        if released.len() <= keep {
             return;
         }
-        completed.sort_by_key(|(_, at)| *at);
-        let drop_n = completed.len() - self.retention.max_completed;
-        for (id, _) in completed.into_iter().take(drop_n) {
+        released.sort_by_key(|(_, at)| *at);
+        let drop_n = released.len() - keep;
+        for (id, _) in released.into_iter().take(drop_n) {
             map.remove(&id);
         }
+    }
+
+    /// Hand `reservation`'s slot to the process created for it, under the runner's lock: the
+    /// runner remembers that it created it (P1R-C04).
+    fn fill(&self, reservation: SlotReservation, slot: Slot) {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        let process_id = reservation.process_id.clone();
+        reservation.fill(&mut map, slot);
+        self.remember(&process_id, Received::Executed);
+    }
+
+    fn remember(&self, process_id: &str, received: Received) {
+        let mut memory = self.memory.lock().expect("memory");
+        if memory.keep.is_none() {
+            return;
+        }
+        let known = memory
+            .received
+            .entry(process_id.to_string())
+            .or_insert(received);
+        if received == Received::Executed {
+            *known = Received::Executed;
+        }
+    }
+
+    /// Keep what an independent Runner's controllers need from now on (P1R-C04): whether a
+    /// process was created for each `process_id` this runner is asked to start, for its whole
+    /// lifetime, and each ended process's status and output until a controller acknowledges
+    /// them, at most `keep` of them once their handles are released.
+    pub fn keep_until_acknowledged(&self, keep: usize) {
+        self.memory.lock().expect("memory").keep = Some(keep.max(1));
+    }
+
+    /// A request to start `process_id` reached this runner. Unless it created the process, it
+    /// remembers that it refused it (P1R-C04).
+    pub(crate) fn note_received(&self, process_id: &str) {
+        self.remember(process_id, Received::Refused);
+    }
+
+    /// What this runner knows of `process_id` (P1R-C04). Only an independent Runner that keeps
+    /// what its controllers need remembers a process it no longer holds.
+    pub fn recall(&self, process_id: &ProcessId) -> Recalled {
+        let mut map = self.inner.lock().expect("runner");
+        self.evict_completed(&mut map);
+        if let Some(slot) = map.get(&process_id.0) {
+            return Recalled::Held {
+                workspace_id: slot.workspace_id.clone(),
+                status: slot_status(process_id, slot),
+            };
+        }
+        match self
+            .memory
+            .lock()
+            .expect("memory")
+            .received
+            .get(&process_id.0)
+        {
+            Some(Received::Executed) => Recalled::Dropped,
+            Some(Received::Refused) => Recalled::Refused,
+            None => Recalled::NotReceived,
+        }
+    }
+
+    /// A controller recorded how these processes ended (P1R-C04): each is evicted as any
+    /// other ended process from now on, and one whose handle was already released stays
+    /// `ttl` longer. A process that has not ended is left as it is.
+    pub fn acknowledge(&self, process_ids: &[ProcessId]) {
+        let mut map = self.inner.lock().expect("runner");
+        let now = Instant::now();
+        for process_id in process_ids {
+            if let Some(slot) = map.get_mut(&process_id.0) {
+                if slot.acknowledged.is_none() && completed_at(slot).is_some() {
+                    slot.acknowledged = Some(now);
+                }
+            }
+        }
+        self.evict_completed(&mut map);
     }
 
     pub async fn spawn_host(
@@ -700,12 +838,9 @@ impl InProcessRunner {
             completed_at: completed_at.clone(),
             lifecycle: lifecycle.clone(),
             on_kill: on_kill.clone(),
+            acknowledged: None,
         };
-        {
-            let mut map = self.inner.lock().expect("runner");
-            self.evict_completed(&mut map);
-            reservation.fill(&mut map, slot);
-        }
+        self.fill(reservation, slot);
 
         let out_handle = stdout.map(|out| {
             let buf = output.clone();
@@ -885,12 +1020,9 @@ impl InProcessRunner {
             completed_at: completed_at.clone(),
             lifecycle: lifecycle.clone(),
             on_kill: on_kill.clone(),
+            acknowledged: None,
         };
-        {
-            let mut map = self.inner.lock().expect("runner");
-            self.evict_completed(&mut map);
-            reservation.fill(&mut map, slot);
-        }
+        self.fill(reservation, slot);
 
         if let Some(mut watch) = watch {
             let (observer, life) = (observer.clone(), lifecycle.clone());
@@ -979,6 +1111,12 @@ impl InProcessRunner {
             match &slot.io {
                 SessionIo::Pipe { stdin, .. } => WriteTarget::Pipe(stdin.clone()),
                 SessionIo::Pty { writer, .. } => WriteTarget::Pty(writer.clone()),
+                SessionIo::Released => {
+                    return Err(ErrorBody::new(
+                        ErrorCode::ProcessNotFound,
+                        "stdin is closed",
+                    ))
+                }
             }
         };
         match target {
@@ -1093,6 +1231,10 @@ impl InProcessRunner {
             SessionIo::Pipe { .. } => Err(ErrorBody::new(
                 ErrorCode::ProcessNotTty,
                 "process is not attached to a PTY",
+            )),
+            SessionIo::Released => Err(ErrorBody::new(
+                ErrorCode::ProcessNotRunning,
+                "process is not running",
             )),
             SessionIo::Pty { session, .. } => {
                 if session.has_exited() {
@@ -1288,6 +1430,8 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
             after_kill(&slot.on_kill);
             Ok(true)
         }
+        // Only an ended process's handle is released.
+        SessionIo::Released => Ok(false),
     }
 }
 
@@ -1326,6 +1470,11 @@ async fn pump_reader<R: tokio::io::AsyncRead + Unpin>(
             Err(_) => break,
         }
     }
+}
+
+/// When the process of `slot` ended: it was reaped and its output ended.
+fn completed_at(slot: &Slot) -> Option<Instant> {
+    slot.completed_at.lock().ok().and_then(|guard| *guard)
 }
 
 /// A process's status, from its slot.
@@ -2311,7 +2460,7 @@ mod tests {
                 let map = runner.inner.lock().unwrap();
                 match &map[&process_id.0].io {
                     SessionIo::Pipe { child, .. } => exited_unreaped(&child.lock().unwrap()),
-                    SessionIo::Pty { .. } => panic!("{} is not a pipe child", process_id.0),
+                    _ => panic!("{} is not a pipe child", process_id.0),
                 }
             };
             if exited {
@@ -2381,7 +2530,7 @@ mod tests {
                             let child = child.lock().unwrap();
                             child.id().is_some() && exited_unreaped(&child)
                         }
-                        SessionIo::Pty { .. } => panic!("not a pipe child"),
+                        _ => panic!("not a pipe child"),
                     }
                 };
                 seen.lock().unwrap().push((point, unreaped));
@@ -2463,7 +2612,7 @@ mod tests {
         let map = runner.inner.lock().unwrap();
         match &map[&process_id.0].io {
             SessionIo::Pty { session, .. } => session.has_exited(),
-            SessionIo::Pipe { .. } => panic!("{} is not a PTY child", process_id.0),
+            _ => panic!("{} is not a PTY child", process_id.0),
         }
     }
 
@@ -2962,7 +3111,7 @@ mod tests {
                 let pid = child.lock().unwrap().id().expect("running child");
                 libc::pid_t::try_from(pid).unwrap()
             }
-            SessionIo::Pty { .. } => panic!("{} is not a pipe child", process_id.0),
+            _ => panic!("{} is not a pipe child", process_id.0),
         }
     }
 
@@ -3118,5 +3267,215 @@ mod tests {
             }
         }
         runner.kill_host_workspace("demo").unwrap();
+    }
+
+    /// A quick process `process_id` that ended, run by `runner`.
+    async fn ended_process(
+        runner: &InProcessRunner,
+        ws: &Workspace,
+        process_id: &ProcessId,
+        tty: bool,
+    ) {
+        let mut req = RunnerExecRequest::for_host(
+            vec!["/bin/sh".into(), "-c".into(), "echo done".into()],
+            process_id.clone(),
+            Profile::WorkspaceWrite,
+        );
+        req.tty = tty;
+        runner.spawn_host(ws, req).await.unwrap();
+        wait_exited(runner, process_id).await;
+    }
+
+    fn released(runner: &InProcessRunner, process_id: &ProcessId) -> bool {
+        matches!(
+            runner
+                .inner
+                .lock()
+                .unwrap()
+                .get(&process_id.0)
+                .map(|slot| &slot.io),
+            Some(SessionIo::Released)
+        )
+    }
+
+    /// An independent Runner releases an ended process's handle when it would have evicted it,
+    /// a tty one included, and no earlier (D11), but keeps its status and output until a
+    /// controller acknowledges them; acknowledged, it goes after the retention time, and the
+    /// runner remembers only that it created it (P1R-C04).
+    #[tokio::test]
+    async fn an_independent_runner_keeps_an_ended_process_until_it_is_acknowledged() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let ttl = Duration::from_millis(300);
+        let runner = InProcessRunner::with_retention(
+            Arc::new(|_| {}),
+            RetentionPolicy {
+                ttl,
+                max_completed: 64,
+            },
+        );
+        runner.keep_until_acknowledged(DEFAULT_MAX_UNACKNOWLEDGED);
+        for (process_id, tty) in [("proc-pipe", false), ("proc-tty", true)] {
+            let process_id = ProcessId(process_id.into());
+            ended_process(&runner, &ws, &process_id, tty).await;
+            // Within the retention time the handle is held, as always.
+            assert!(!released(&runner, &process_id));
+            tokio::time::sleep(ttl + Duration::from_millis(100)).await;
+            // Past it the handle goes, and the status and the output stay.
+            assert_eq!(runner.occupied_slots(), 0);
+            assert!(released(&runner, &process_id), "{process_id:?}");
+            let status = runner.process_status(&process_id).await.unwrap();
+            assert_eq!(
+                (status.state, status.termination, status.eof),
+                (ProcessState::Exited, Some(ProcessTermination::Exited), true)
+            );
+            assert!(wait_chunk(&runner, &process_id).await.contains("done"));
+            match runner.recall(&process_id) {
+                Recalled::Held {
+                    workspace_id,
+                    status: recalled,
+                } => assert_eq!((workspace_id.as_str(), recalled), ("demo", status)),
+                other => panic!("unexpected {other:?}"),
+            }
+            assert_eq!(
+                runner
+                    .write_stdin(RunnerWriteStdin {
+                        process_id: process_id.clone(),
+                        data: "x".into(),
+                    })
+                    .await
+                    .unwrap_err()
+                    .as_execution()
+                    .map(|body| body.code),
+                Some(ErrorCode::ProcessNotFound)
+            );
+            assert_eq!(
+                runner
+                    .resize(&process_id, 30, 90)
+                    .await
+                    .unwrap_err()
+                    .as_execution()
+                    .map(|body| body.code),
+                Some(ErrorCode::ProcessNotRunning)
+            );
+            runner.terminate(&process_id).await.unwrap();
+            // Acknowledged, it stays the retention time once more, then goes.
+            runner.acknowledge(std::slice::from_ref(&process_id));
+            assert!(runner.process_status(&process_id).await.is_ok());
+            tokio::time::sleep(ttl + Duration::from_millis(100)).await;
+            assert_eq!(
+                runner
+                    .process_status(&process_id)
+                    .await
+                    .unwrap_err()
+                    .as_execution()
+                    .map(|body| body.code),
+                Some(ErrorCode::ProcessNotFound)
+            );
+            assert_eq!(runner.recall(&process_id), Recalled::Dropped);
+        }
+    }
+
+    /// An acknowledged process is evicted as any ended process always was: its handle is not
+    /// kept past the retention time (P1R-C04).
+    #[tokio::test]
+    async fn an_independent_runner_evicts_an_acknowledged_process_as_before() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let ttl = Duration::from_millis(300);
+        let runner = InProcessRunner::with_retention(
+            Arc::new(|_| {}),
+            RetentionPolicy {
+                ttl,
+                max_completed: 64,
+            },
+        );
+        runner.keep_until_acknowledged(DEFAULT_MAX_UNACKNOWLEDGED);
+        let process_id = ProcessId("proc-acked".into());
+        ended_process(&runner, &ws, &process_id, false).await;
+        runner.acknowledge(std::slice::from_ref(&process_id));
+        assert!(runner.process_status(&process_id).await.is_ok());
+        tokio::time::sleep(ttl + Duration::from_millis(100)).await;
+        assert!(runner.process_status(&process_id).await.is_err());
+        assert_eq!(runner.recall(&process_id), Recalled::Dropped);
+    }
+
+    /// Beyond its bound of released processes an independent Runner drops the oldest first,
+    /// remembering that it created it (P1R-C04).
+    #[tokio::test]
+    async fn an_independent_runner_drops_the_oldest_released_process_beyond_its_bound() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::with_retention(
+            Arc::new(|_| {}),
+            RetentionPolicy {
+                ttl: Duration::from_secs(60),
+                max_completed: 1,
+            },
+        );
+        runner.keep_until_acknowledged(1);
+        let ids: Vec<_> = (1..=3).map(|n| ProcessId(format!("proc-{n}"))).collect();
+        for process_id in &ids {
+            ended_process(&runner, &ws, process_id, false).await;
+        }
+        // The newest holds its handle; the next one is released and kept; the oldest went.
+        assert_eq!(runner.occupied_slots(), 0);
+        assert!(!released(&runner, &ids[2]));
+        assert!(released(&runner, &ids[1]));
+        assert_eq!(runner.recall(&ids[0]), Recalled::Dropped);
+        assert!(matches!(runner.recall(&ids[1]), Recalled::Held { .. }));
+        assert!(matches!(runner.recall(&ids[2]), Recalled::Held { .. }));
+        assert_eq!(
+            runner
+                .read_process(RunnerReadProcess {
+                    process_id: ids[0].clone(),
+                    cursor: 0,
+                })
+                .await
+                .unwrap_err()
+                .as_execution()
+                .map(|body| body.code),
+            Some(ErrorCode::ProcessNotFound)
+        );
+    }
+
+    /// An independent Runner remembers, for each `process_id` it was asked to start, whether it
+    /// created the process; a runner that keeps nothing for a controller remembers nothing of a
+    /// process it does not hold (P1R-C04).
+    #[tokio::test]
+    async fn an_independent_runner_remembers_each_process_it_was_asked_to_start() {
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        runner.keep_until_acknowledged(DEFAULT_MAX_UNACKNOWLEDGED);
+        let refused = ProcessId("proc-refused".into());
+        let created = ProcessId("proc-created".into());
+        let never = ProcessId("proc-never".into());
+        // Refused before any process is created, with or without the Linux sandbox, under
+        // which a missing executable is a sandbox helper that fails.
+        let no_program = RunnerExecRequest::for_host(
+            vec![String::new()],
+            refused.clone(),
+            Profile::WorkspaceWrite,
+        );
+        assert_eq!(
+            runner.spawn_host(&ws, no_program).await.unwrap_err().code,
+            ErrorCode::InvalidCommand
+        );
+        runner.note_received(&refused.0);
+        ended_process(&runner, &ws, &created, false).await;
+        // Noting the request after the answer never hides a created process.
+        runner.note_received(&created.0);
+        assert_eq!(runner.recall(&refused), Recalled::Refused);
+        assert!(matches!(
+            runner.recall(&created),
+            Recalled::Held { ref workspace_id, ref status }
+                if workspace_id == "demo" && status.state == ProcessState::Exited
+        ));
+        assert_eq!(runner.recall(&never), Recalled::NotReceived);
+
+        let managed = InProcessRunner::new(Arc::new(|_| {}));
+        managed.note_received(&refused.0);
+        assert_eq!(managed.recall(&refused), Recalled::NotReceived);
     }
 }

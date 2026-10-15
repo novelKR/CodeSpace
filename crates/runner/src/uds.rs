@@ -12,6 +12,10 @@
 //! refuses requests with `RUNNER_RECONNECTING` meanwhile; once it cannot claim that Runner
 //! again, it refuses them with `RUNNER_DISCONNECTED`. Any other client refuses every request
 //! with `RUNNER_DISCONNECTED` once its connection to an independent Runner ended.
+//!
+//! The Runner's answer to a Claim holds every process it holds and the number of the last exit
+//! event before it took that inventory: the client delivers only the exit events after it
+//! (P1R-C04), as the inventory accounts for the earlier ones.
 
 use std::collections::HashMap;
 use std::io;
@@ -26,12 +30,12 @@ use codespace_domain::{ErrorBody, ErrorCode, FindResult, ProcessId, ReadResult};
 use codespace_policy::Workspace;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, watch, Mutex};
 use tokio::time::timeout;
 
 use crate::wire::{
-    read_frame, recovery_pending, write_frame, ClaimRefusal, RunnerClaim, RunnerEvent, RunnerOp,
-    RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,
+    read_frame, write_frame, ClaimRefusal, RecalledProcess, RunnerClaim, RunnerEvent,
+    RunnerInventoryEntry, RunnerOp, RunnerOpResult, WireEnvelope, WireKind, WIRE_PROTOCOL,
 };
 use crate::{
     Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult, RunnerError, RunnerExecRequest,
@@ -100,6 +104,15 @@ pub enum LinkEvent {
 }
 
 pub type LinkObserver = Arc<dyn Fn(LinkEvent) + Send + Sync>;
+
+/// How a stopped independent Runner left its processes (P1R-C01, P1R-C04).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerStopped {
+    /// How many processes were still running when the Runner terminated them.
+    pub terminated: u32,
+    /// Every process the Runner held when it answered, with its last status.
+    pub processes: Vec<RunnerInventoryEntry>,
+}
 
 /// Why a client does not control an independent Runner (P1R-C03).
 #[derive(Debug, Clone)]
@@ -185,8 +198,11 @@ struct Client {
     reclaim: OnceLock<Reclaim>,
     /// The gateway leaves the Runner: no connection is made again.
     leaving: AtomicBool,
-    /// The number of the last exit event delivered (P1R-C03).
+    /// The number of the last exit event delivered, or accounted for by a Claim's inventory
+    /// (P1R-C03, P1R-C04).
     last_event: AtomicU64,
+    /// The Claim of the client's current connection, once it has one (P1R-C04).
+    claims: watch::Sender<Option<RunnerClaim>>,
 }
 
 pub struct UdsRunner {
@@ -316,9 +332,18 @@ impl UdsRunner {
     /// database `store_id` (P1R-C03). The connection's later requests carry the Claim's epoch.
     pub async fn claim(&self, store_id: &str) -> Result<RunnerClaim, ClaimError> {
         let link = self.client.current().map_err(ClaimError::Transport)?;
-        self.client
+        let claim = self
+            .client
             .claim_on(&link, store_id, self.call_deadline)
-            .await
+            .await?;
+        self.client.claims.send_replace(Some(claim.clone()));
+        Ok(claim)
+    }
+
+    /// The Claim of this client's current connection, and each later one as the client claims
+    /// its Runner again (P1R-C04).
+    pub fn claims(&self) -> watch::Receiver<Option<RunnerClaim>> {
+        self.client.claims.subscribe()
     }
 
     /// Connect to the independent Runner at `socket` and claim it for the operations database
@@ -450,8 +475,9 @@ impl UdsRunner {
 
     /// The controller epoch under which this client sends a new execution, patch or approval
     /// resume, none for a worker that is not claimed, or why it starts none (P1R-C01,
-    /// P1R-C03): the connection to its independent Runner is lost or being made again, or an
-    /// earlier controller started work on the Runner.
+    /// P1R-C03): the connection to its independent Runner is lost or being made again. Where
+    /// an earlier controller started work, the Runner itself refuses new work until the
+    /// gateway reconciled that workspace (P1R-C04).
     pub fn dispatch_epoch(&self) -> Result<Option<u64>, ErrorBody> {
         if !self.client.independent() {
             return Ok(None);
@@ -461,7 +487,6 @@ impl UdsRunner {
             .current()
             .map_err(RunnerError::into_error_body)?;
         match link.claim.get() {
-            Some(claim) if claim.previous_controller => Err(recovery_pending()),
             Some(claim) => Ok(Some(self.epoch.unwrap_or(claim.epoch))),
             None => Ok(self.epoch),
         }
@@ -487,16 +512,83 @@ impl UdsRunner {
     }
 
     /// Stop the independent Runner: it ends every process and exits (P1R-C01). How many
-    /// processes were still running. No connection is made again.
-    pub async fn stop_runner(&self) -> Result<u32, RunnerError> {
+    /// processes were still running, and how each process it held ended (P1R-C04). No
+    /// connection is made again.
+    pub async fn stop_runner(&self) -> Result<RunnerStopped, RunnerError> {
         self.client.leaving.store(true, Ordering::SeqCst);
         let stopped = match self.call(RunnerOp::Stop).await {
-            Ok(RunnerOpResult::Stopped { terminated }) => Ok(terminated),
+            Ok(RunnerOpResult::Stopped {
+                terminated,
+                processes,
+            }) => Ok(RunnerStopped {
+                terminated,
+                processes,
+            }),
             Ok(other) => Err(unexpected(other)),
             Err(err) => Err(err),
         };
         self.close().await;
         stopped
+    }
+
+    /// What the independent Runner knows of each of `process_ids` (P1R-C04), in that order.
+    pub async fn recall(
+        &self,
+        process_ids: &[ProcessId],
+    ) -> Result<Vec<RecalledProcess>, RunnerError> {
+        match self
+            .call(RunnerOp::Recall {
+                process_ids: process_ids.to_vec(),
+            })
+            .await?
+        {
+            RunnerOpResult::Recalled(recalled) if recalled.len() == process_ids.len() => {
+                Ok(recalled)
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Tell the independent Runner that this gateway reconciled these workspaces (P1R-C04): it
+    /// starts work there for this gateway again.
+    pub async fn reconciled(&self, workspace_ids: &[String]) -> Result<(), RunnerError> {
+        match self
+            .call(RunnerOp::Reconciled {
+                workspace_ids: workspace_ids.to_vec(),
+            })
+            .await?
+        {
+            RunnerOpResult::Reconciled => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Tell the independent Runner that this gateway recorded how these processes ended
+    /// (P1R-C04): it keeps them only as long as any other ended process from now on.
+    pub async fn acknowledge(&self, process_ids: &[ProcessId]) -> Result<(), RunnerError> {
+        match self
+            .call(RunnerOp::Acknowledge {
+                process_ids: process_ids.to_vec(),
+            })
+            .await?
+        {
+            RunnerOpResult::Acknowledged => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Have the independent Runner look up, with the resource authority, the attempts it
+    /// admitted for these processes (P1R-C04), in that order.
+    #[cfg(feature = "devguard")]
+    pub async fn look_up_attempts(
+        &self,
+        attempts: Vec<crate::admission::AttemptRef>,
+    ) -> Result<Vec<crate::admission::AttemptLookup>, RunnerError> {
+        let asked = attempts.len();
+        match self.call(RunnerOp::Lookup { attempts }).await? {
+            RunnerOpResult::LookedUp(found) if found.len() == asked => Ok(found),
+            other => Err(unexpected(other)),
+        }
     }
 
     /// Whether the worker's `Hello` stated that it answers `Registration` (CSRG-U2).
@@ -698,6 +790,7 @@ impl Client {
             reclaim: OnceLock::new(),
             leaving: AtomicBool::new(false),
             last_event: AtomicU64::new(0),
+            claims: watch::Sender::new(None),
         }
     }
 
@@ -767,7 +860,7 @@ impl Client {
         if let Err(err) = write_result {
             link.pending.lock().await.remove(&request_id);
             if matches!(err, RunnerError::TransportAmbiguous { .. }) {
-                self.close_link(link).await;
+                self.stop_writing(link).await;
             }
             return Err(err);
         }
@@ -803,6 +896,16 @@ impl Client {
             Ok(other) => Err(ClaimError::Transport(unexpected(other))),
             Err(err) => Err(ClaimError::Transport(err)),
         }
+    }
+
+    /// A write over `link` failed, most often because the Runner had closed the connection: no
+    /// request goes over it again. Answers the Runner wrote before it closed are still read, a
+    /// `Stop`'s among them, and the requests still waiting end once the stream does, as when
+    /// the Runner closes it first.
+    async fn stop_writing(&self, link: &Link) {
+        link.alive.store(false, Ordering::SeqCst);
+        let mut writer = link.writer.lock().await;
+        let _ = writer.shutdown().await;
     }
 
     /// End `link`: no request goes over it again, and those waiting on it end ambiguous. A
@@ -858,6 +961,7 @@ impl Client {
                         if !self.leaving.load(Ordering::SeqCst) {
                             *state = State::Linked(link);
                             drop(state);
+                            self.claims.send_replace(Some(claim.clone()));
                             (reclaim.observer)(LinkEvent::Reclaimed(claim));
                             return;
                         }
@@ -999,6 +1103,14 @@ async fn read_loop(
                         }
                     }
                     WireKind::Response => {
+                        // The Claim's inventory accounts for every exit numbered up to its
+                        // `events_through`, and the controller's events follow its answer
+                        // (P1R-C04).
+                        if let Some(RunnerOpResult::Claimed(claim)) = &envelope.result {
+                            client
+                                .last_event
+                                .fetch_max(claim.events_through, Ordering::SeqCst);
+                        }
                         if let Some(id) = envelope.request_id.clone() {
                             if let Some(tx) = link.pending.lock().await.remove(&id) {
                                 let _ = tx.send(Ok(envelope));
@@ -1410,5 +1522,102 @@ mod tests {
         runner.terminate(&ProcessId("proc-5".into())).await.unwrap();
         let _ = answering.await.unwrap();
         assert_eq!(*delivered.lock().unwrap(), ["proc-1", "proc-3", "proc-4"]);
+    }
+
+    /// The exits that a Claim's inventory accounts for, numbered up to its `events_through`,
+    /// are not delivered after its answer; later ones are, and the Claim is told to whoever
+    /// watches the client's Claims (P1R-C04).
+    #[tokio::test]
+    async fn an_independent_claim_accounts_for_the_exits_before_it() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook = delivered.clone();
+        let runner = UdsRunner::from_stream(
+            client,
+            Arc::new(move |process_id: &str| hook.lock().unwrap().push(process_id.to_string())),
+        );
+        let mut claims = runner.claims();
+        assert!(claims.borrow().is_none());
+        let (mut read, mut write) = server.into_split();
+        let exited = |process_id: &str| RunnerEvent::ProcessExited {
+            process_id: ProcessId(process_id.into()),
+        };
+        let answering = tokio::spawn(async move {
+            let frame = read_frame(&mut read).await.unwrap().unwrap();
+            let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+            assert!(matches!(request.op, Some(RunnerOp::Claim { .. })));
+            let claim = RunnerClaim {
+                epoch: 4,
+                previous_controller: true,
+                barrier: vec!["demo".into()],
+                processes: Vec::new(),
+                events_through: 3,
+            };
+            write_frame(
+                &mut write,
+                &WireEnvelope::response(
+                    request.request_id.unwrap(),
+                    Ok(RunnerOpResult::Claimed(claim)),
+                ),
+            )
+            .await
+            .unwrap();
+            for (seq, process_id) in [(2, "proc-2"), (3, "proc-3"), (4, "proc-4")] {
+                write_frame(&mut write, &WireEnvelope::event(seq, exited(process_id)))
+                    .await
+                    .unwrap();
+            }
+            let frame = read_frame(&mut read).await.unwrap().unwrap();
+            let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+            assert_eq!(request.epoch, Some(4));
+            write_frame(
+                &mut write,
+                &WireEnvelope::response(request.request_id.unwrap(), Ok(RunnerOpResult::Terminate)),
+            )
+            .await
+            .unwrap();
+            (read, write)
+        });
+        let claim = runner.claim("store-test").await.unwrap();
+        assert_eq!(claim.barrier, ["demo"]);
+        claims.changed().await.unwrap();
+        assert_eq!(claims.borrow().as_ref(), Some(&claim));
+        runner.terminate(&ProcessId("proc-5".into())).await.unwrap();
+        let _ = answering.await.unwrap();
+        assert_eq!(*delivered.lock().unwrap(), ["proc-4"]);
+    }
+
+    /// A Runner that answers a request and then closes the connection, as one that stops does,
+    /// fails the write of a request sent after that, but the answer it wrote before it closed
+    /// is still read (P1R-C04): a late request does not cost a `Stop` its answer.
+    #[tokio::test]
+    async fn an_answer_written_before_the_runner_closed_outlives_a_later_failed_write() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let runner = UdsRunner::from_stream(client, Arc::new(|_: &str| {}));
+        let (mut read, mut write) = server.into_split();
+        let first = tokio::spawn({
+            let runner = runner.clone();
+            async move { runner.terminate(&ProcessId("proc-1".into())).await }
+        });
+        let frame = read_frame(&mut read).await.unwrap().unwrap();
+        let request: WireEnvelope = serde_json::from_slice(&frame).unwrap();
+        write_frame(
+            &mut write,
+            &WireEnvelope::response(request.request_id.unwrap(), Ok(RunnerOpResult::Terminate)),
+        )
+        .await
+        .unwrap();
+        drop((read, write));
+        // This test's runtime runs one task at a time: the client has not read the answer yet.
+        let late = runner.terminate(&ProcessId("proc-2".into())).await;
+        assert!(
+            matches!(late, Err(RunnerError::TransportAmbiguous { .. })),
+            "{late:?}"
+        );
+        first.await.unwrap().unwrap();
+        assert!(matches!(
+            runner.terminate(&ProcessId("proc-3".into())).await,
+            Err(RunnerError::TransportBeforeDispatch { .. })
+        ));
     }
 }
