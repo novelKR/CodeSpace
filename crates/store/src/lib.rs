@@ -354,6 +354,15 @@ impl Store {
             .confirm_process(process_id);
     }
 
+    /// Hold the workspace for a live process found again after a reconnect (P1R-C04): see
+    /// the resource serializer's `hold_process`.
+    pub fn hold_process(&self, workspace_id: &str, process_id: &str) -> Result<(), ErrorBody> {
+        self.locks
+            .lock()
+            .expect("lock mutex")
+            .hold_process(workspace_id, process_id)
+    }
+
     pub fn clear_shell(&self, workspace_id: &str) {
         self.locks
             .lock()
@@ -1112,6 +1121,43 @@ mod tests {
         assert_eq!(status.status, PatchStatus::Checked);
         assert_eq!(status.events[0].name, OperationEventName::Minted);
         assert_eq!(status.events[1].name, OperationEventName::Finished);
+    }
+
+    /// A live process found again after a reconnect holds its workspace as a confirmed
+    /// process does: new work is busy, holding it again for the same process changes nothing,
+    /// a spawn reservation of that process becomes its hold, anything else holding the
+    /// workspace refuses it, and the process's release frees it (P1R-C04).
+    #[tokio::test]
+    async fn a_process_found_again_holds_its_workspace() {
+        let store = Store::memory().unwrap();
+        let demo = Resource::Workspace("demo".into());
+        store.hold_process("demo", "proc-1").unwrap();
+        store.hold_process("demo", "proc-1").unwrap();
+        assert_eq!(store.exclusive_kind(&demo), Some("process"));
+        assert_eq!(
+            store.hold_process("demo", "proc-2").unwrap_err().code,
+            ErrorCode::WorkspaceBusy
+        );
+        assert_eq!(
+            store.acquire_write("demo").await.err().map(|err| err.code),
+            Some(ErrorCode::WorkspaceBusy)
+        );
+        store.release_process("proc-1");
+        assert_eq!(store.exclusive_kind(&demo), None);
+
+        let mut reservation = store.acquire_shell_busy("demo", "proc-3").await.unwrap();
+        reservation.arm_dispatch();
+        store.hold_process("demo", "proc-3").unwrap();
+        assert_eq!(store.exclusive_kind(&demo), Some("process"));
+        drop(reservation);
+        assert_eq!(store.exclusive_kind(&demo), Some("process"));
+        store.release_process("proc-3");
+
+        let _write = store.acquire_write("demo").await.unwrap();
+        assert_eq!(
+            store.hold_process("demo", "proc-4").unwrap_err().code,
+            ErrorCode::WorkspaceBusy
+        );
     }
 
     #[tokio::test]

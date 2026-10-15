@@ -218,14 +218,17 @@ impl Drop for RuntimeProcess {
 }
 
 /// After a Claim that found work an earlier controller started, this one included before it
-/// lost its connection: nothing new starts (P1R-C01, P1R-C03).
+/// lost its connection: nothing new starts in those workspaces until the gateway reconciled
+/// them (P1R-C01, P1R-C03, P1R-C04).
 fn warn_recovery_pending(claim: &RunnerClaim) {
     if claim.previous_controller {
         tracing::warn!(
             epoch = claim.epoch,
+            barrier = ?claim.barrier,
             "an earlier controller started work on this independent Runner: its processes can be \
-             queried, read, written to, resized and terminated, but new executions, patches and \
-             approval resumes are refused with RECOVERY_PENDING"
+             queried, read, written to, resized and terminated, and new executions, patches and \
+             approval resumes in those workspaces are refused with RECOVERY_PENDING until this \
+             gateway reconciled them"
         );
     }
 }

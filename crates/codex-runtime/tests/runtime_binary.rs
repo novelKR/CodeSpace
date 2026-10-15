@@ -6,7 +6,9 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codespace_domain::{ErrorCode, ProcessId, ProcessState, Profile, WorkspaceId};
+use codespace_domain::{
+    ErrorCode, ProcessId, ProcessState, ProcessTermination, Profile, WorkspaceId,
+};
 use codespace_policy::Workspace;
 use codespace_runner::{
     read_frame, write_frame, Runner, RunnerClaim, RunnerError, RunnerExecRequest, RunnerLifecycle,
@@ -146,7 +148,7 @@ async fn hello_on_live_socket() {
     match parsed.result {
         Some(RunnerOpResult::Hello { protocol, .. }) => {
             assert_eq!(protocol, WIRE_PROTOCOL);
-            assert_eq!(protocol, 10);
+            assert_eq!(protocol, 11);
         }
         other => panic!("unexpected hello {other:?}"),
     }
@@ -369,6 +371,7 @@ async fn an_independent_runner_outlives_its_gateways_until_one_stops_it() {
     let (next, inherited) = gateway(&socket).await;
     assert_eq!(next.hello().identity, hello.identity);
     assert_eq!((inherited.epoch, inherited.previous_controller), (2, true));
+    assert_eq!(inherited.barrier, ["demo"]);
     let mut processes: Vec<_> = inherited
         .processes
         .iter()
@@ -404,7 +407,35 @@ async fn an_independent_runner_outlives_its_gateways_until_one_stops_it() {
         Err(RunnerError::Execution(body)) => assert_eq!(body.code, ErrorCode::RecoveryPending),
         other => panic!("unexpected {other:?}"),
     }
-    assert_eq!(next.stop_runner().await.unwrap(), 2);
+    let stopped = next.stop_runner().await.unwrap();
+    assert_eq!(stopped.terminated, 2);
+    let mut ended: Vec<_> = stopped
+        .processes
+        .iter()
+        .map(|entry| {
+            (
+                entry.status.process_id.0.as_str(),
+                entry.status.state,
+                entry.status.termination,
+            )
+        })
+        .collect();
+    ended.sort_by_key(|(process_id, ..)| *process_id);
+    assert_eq!(
+        ended,
+        [
+            (
+                "proc-pipe",
+                ProcessState::Exited,
+                Some(ProcessTermination::Terminated)
+            ),
+            (
+                "proc-tty",
+                ProcessState::Exited,
+                Some(ProcessTermination::Terminated)
+            )
+        ]
+    );
     let status = exited(&mut runner).await;
     assert!(status.success(), "{status:?}");
     assert!(!still_beating(&pipe_beat).await);

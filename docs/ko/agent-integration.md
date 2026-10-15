@@ -150,7 +150,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 
 실행 중인 명령은 작업 공간을 점유합니다. 패치를 적용하거나 다른 명령을 시작하려면 기존 명령이 끝날 때까지 기다리거나 종료하세요. 읽기와 검색은 계속 가능합니다. 개발 서버를 오래 실행하는 작업 흐름이라면 수정 전에 서버를 멈추는 절차가 필요합니다.
 
-`workspace_info.execution.process.capabilities.lifetime`은 소유자가 MCP 세션이 아니라 러너 인스턴스임을 알립니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지하므로, 저장한 `process_id`로 다시 연결하면 됩니다. UDS worker 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 소유 서브트리가 종료되고 핸들이 사라집니다. 재시작은 `process_id`를 복구하지 않습니다. 아직 지원하는 모드가 아닌 [독립 Runner](runner-isolation.md#independent-runner)에서는 `runner_disconnect`가 `keep_running`이고, `gateway_shutdown`은 게이트웨이가 detach하면 `keep_running`, Runner를 중지하면 `terminate`입니다. 그 게이트웨이가 하는 일은 `initialize.instructions`에서 확인하세요. 그 게이트웨이는 연결을 잃은 뒤 Runner를 다시 Claim하는 동안 요청을 `RUNNER_RECONNECTING`으로 거부합니다. 이 거부는 아무것도 보내지 않았고 승인도 소모하지 않았으므로, 잠시 뒤 재시도하세요. spawn 응답을 받기 전에 `process_id`를 잃으면 `process_status`로 찾지 말고 명령을 중복 시작하지 마세요.
+`workspace_info.execution.process.capabilities.lifetime`은 소유자가 MCP 세션이 아니라 러너 인스턴스임을 알립니다. Streamable HTTP나 MCP 클라이언트 끊김은 프로세스를 유지하므로, 저장한 `process_id`로 다시 연결하면 됩니다. UDS worker 연결이 끊기거나 게이트웨이가 종료되면(stdio EOF 포함) 소유 서브트리가 종료되고 핸들이 사라집니다. 재시작은 `process_id`를 복구하지 않습니다. 아직 지원하는 모드가 아닌 [독립 Runner](runner-isolation.md#independent-runner)에서는 `runner_disconnect`가 `keep_running`이고, `gateway_shutdown`은 게이트웨이가 detach하면 `keep_running`, Runner를 중지하면 `terminate`입니다. 그 게이트웨이가 하는 일은 `initialize.instructions`에서 확인하세요. 그 게이트웨이는 연결을 잃은 뒤 Runner를 다시 Claim하는 동안 요청을 `RUNNER_RECONNECTING`으로 거부합니다. 이 거부는 아무것도 보내지 않았고 승인도 소모하지 않았으므로, 잠시 뒤 재시도하세요. 그 뒤 이전에 작업을 시작한 workspace에서는 Runner와 그 workspace를 [대조](runner-isolation.md#reconciliation)할 때까지 새 명령, 패치, 승인 재개를 `RECOVERY_PENDING`으로 거부합니다. 잠시 뒤 재시도하면 되는지는 그 메시지가 알려 줍니다. 그곳에서 실행 중으로 확인한 프로세스는 지금처럼 workspace를 점유합니다. spawn 응답을 받기 전에 `process_id`를 잃으면 `process_status`로 찾지 말고 명령을 중복 시작하지 마세요.
 
 ## 보류된 변경 확인
 
@@ -175,7 +175,7 @@ MCP 클라이언트 SDK로 stdio 또는 Streamable HTTP를 초기화하고, 초�
 }
 ```
 
-`approval_resolve`는 권한 프로필을 바꾸지 않습니다. `operation_resume`은 `granted`를 `queued`로 옮긴 뒤 정책을 다시 검사하고, 자원을 받은 다음에야 `resuming`으로 올립니다. `queued`에서 재시작하면 다시 acquire합니다. `resuming`에서 재시작하면 저장한 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`가 반환됩니다. `consumed`는 단말 결과가 저장된 뒤에만 기록됩니다. 중단된 exec 재개는 다시 spawn하지 않습니다. 거절은 단말입니다. `approvals`가 `off`여도 세 도구는 목록에 있으며, 그때는 명시적 `approval_create`만 홀드를 만듭니다. v1은 호스트와 모델을 구분하지 않으므로 같은 MCP 호출자가 grant할 수 있습니다.
+`approval_resolve`는 권한 프로필을 바꾸지 않습니다. `operation_resume`은 `granted`를 `queued`로 옮긴 뒤 정책을 다시 검사하고, 자원을 받은 다음에야 `resuming`으로 올립니다. `queued`에서 재시작하면 다시 acquire합니다. `resuming`에서 재시작하면 저장한 결과, 패치 원장 복구, 또는 `APPROVAL_AMBIGUOUS`가 반환됩니다. [독립 Runner](runner-isolation.md#reconciliation)에서는 중단된 exec 재개가 Runner가 그 재개를 위해 만든 `process_id`를 반환하거나, Runner가 아무것도 만들지 않았음이 증명되면 다시 granted가 됩니다. `consumed`는 단말 결과가 저장된 뒤에만 기록됩니다. 중단된 exec 재개는 다시 spawn하지 않습니다. 거절은 단말입니다. `approvals`가 `off`여도 세 도구는 목록에 있으며, 그때는 명시적 `approval_create`만 홀드를 만듭니다. v1은 호스트와 모델을 구분하지 않으므로 같은 MCP 호출자가 grant할 수 있습니다.
 
 ## 재시도와 복구
 

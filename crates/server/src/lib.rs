@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod patch_helper;
 pub mod protocol;
 pub mod records;
+pub mod recovery;
 pub mod runtime;
 pub mod stdio;
 

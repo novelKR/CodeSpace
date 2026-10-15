@@ -357,6 +357,69 @@ impl Store {
         load(&conn, process_id)
     }
 
+    /// The records that a gateway reconciles after its Claim of `runner` under `epoch`
+    /// (P1R-C04): every execution sent to another Runner, or to `runner` under an earlier Claim
+    /// or before Claims were recorded, that has not ended as far as its record says, and every
+    /// one whose approval is still being resumed. What the gateway sends under its own Claim is
+    /// not. Oldest first.
+    pub fn records_to_reconcile(
+        &self,
+        runner: &RunnerRef,
+        epoch: u64,
+    ) -> Result<Vec<ProcessRecord>, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let mut statement = conn
+            .prepare(&format!(
+                "{RECORD_SELECT}
+                 WHERE (phase IN ('dispatching', 'running', 'unknown')
+                        OR approval_id IN
+                           (SELECT approval_id FROM approvals WHERE state = 'resuming'))
+                   AND NOT (runner_boot_id IS ?1 AND runner_pid = ?2
+                            AND runner_started_at_ms = ?3 AND runner_nonce = ?4
+                            AND controller_epoch IS NOT NULL AND controller_epoch >= ?5)
+                 ORDER BY created_at_ms, process_id"
+            ))
+            .map_err(record_err)?;
+        let rows = statement
+            .query_map(
+                params![
+                    runner.boot_id,
+                    runner.pid,
+                    to_sql(runner.started_at_ms),
+                    runner.nonce,
+                    to_sql(epoch),
+                ],
+                map_record,
+            )
+            .map_err(record_err)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(record_err)??);
+        }
+        Ok(records)
+    }
+
+    /// The records of the executions that resumed this approval, oldest first (P1R-C04).
+    pub fn records_of_approval(
+        &self,
+        approval_id: &ApprovalId,
+    ) -> Result<Vec<ProcessRecord>, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let mut statement = conn
+            .prepare(&format!(
+                "{RECORD_SELECT} WHERE approval_id = ?1 ORDER BY created_at_ms, process_id"
+            ))
+            .map_err(record_err)?;
+        let rows = statement
+            .query_map(params![approval_id.0], map_record)
+            .map_err(record_err)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(record_err)??);
+        }
+        Ok(records)
+    }
+
     /// Change the record of an execution that `runner` was sent, and write it back when it
     /// changed. Records of executions sent to another Runner are never changed.
     fn change_record(
@@ -954,5 +1017,172 @@ mod tests {
                 "{needle} reached the database"
             );
         }
+    }
+
+    /// An execution sent under the controller epoch `epoch`, which may resume `approval_id`.
+    fn dispatch_under(
+        store: &Store,
+        process_id: &str,
+        epoch: Option<u64>,
+        approval_id: Option<&ApprovalId>,
+    ) {
+        dispatch_to(store, &runner(), process_id, epoch, approval_id);
+    }
+
+    /// An execution sent to `runner` under the controller epoch `epoch`, which may resume
+    /// `approval_id`.
+    fn dispatch_to(
+        store: &Store,
+        runner: &RunnerRef,
+        process_id: &str,
+        epoch: Option<u64>,
+        approval_id: Option<&ApprovalId>,
+    ) {
+        store
+            .record_dispatch(&NewProcessRecord {
+                process_id,
+                runner,
+                controller_epoch: epoch,
+                workspace_id: "demo",
+                approval_id,
+                attempt_id: None,
+                participation: RecordedParticipation::Off,
+                tty: false,
+                argv: &argv(),
+            })
+            .unwrap();
+    }
+
+    fn ids(records: &[ProcessRecord]) -> Vec<&str> {
+        let mut ids: Vec<_> = records
+            .iter()
+            .map(|record| record.process_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// After its Claim under epoch 4 a gateway reconciles what earlier Claims, gateways before
+    /// Claims were recorded, and other Runners left unsettled: executions whose records have
+    /// not ended, and those whose approval is still being resumed. What it sends under its own
+    /// Claim, and what ended, are not (P1R-C04).
+    #[test]
+    fn a_gateway_reconciles_what_earlier_claims_left_unsettled() {
+        let store = Store::memory().unwrap();
+        let runner = runner();
+        dispatch_under(&store, "proc-dispatching", Some(3), None);
+        dispatch_under(&store, "proc-running", Some(2), None);
+        store
+            .record_running(&runner, "proc-running", Some(&root()), None)
+            .unwrap();
+        dispatch_under(&store, "proc-unrecorded-epoch", None, None);
+        dispatch_under(&store, "proc-ended", Some(3), None);
+        store
+            .record_end(&runner, "proc-ended", &exited(0, 4))
+            .unwrap();
+        let resumed = queued_approval(&store, "resumed");
+        dispatch_under(&store, "proc-resumed", Some(3), Some(&resumed));
+        store
+            .record_end(&runner, "proc-resumed", &ProcessEnd::NotStarted)
+            .unwrap();
+        dispatch_under(&store, "proc-current", Some(4), None);
+        // Another Runner's epochs are its own; a Runner after a reboot is another Runner.
+        let other = RunnerRef {
+            nonce: "nonce-b".into(),
+            ..runner.clone()
+        };
+        dispatch_to(&store, &other, "proc-other-runner", Some(9), None);
+        let rebooted = RunnerRef {
+            boot_id: None,
+            ..runner.clone()
+        };
+        dispatch_to(&store, &rebooted, "proc-other-boot", Some(4), None);
+        dispatch_to(&store, &other, "proc-other-ended", Some(1), None);
+        store
+            .record_end(&other, "proc-other-ended", &exited(0, 1))
+            .unwrap();
+        assert_eq!(
+            ids(&store.records_to_reconcile(&runner, 4).unwrap()),
+            [
+                "proc-dispatching",
+                "proc-other-boot",
+                "proc-other-runner",
+                "proc-resumed",
+                "proc-running",
+                "proc-unrecorded-epoch"
+            ]
+        );
+        assert_eq!(
+            ids(&store.records_to_reconcile(&runner, 3).unwrap()),
+            [
+                "proc-other-boot",
+                "proc-other-runner",
+                "proc-running",
+                "proc-unrecorded-epoch"
+            ]
+        );
+        // Once its approval is settled, an ended execution needs nothing more.
+        assert!(store.settle_interrupted_resume(&resumed, None).unwrap());
+        assert_eq!(
+            ids(&store.records_to_reconcile(&runner, 4).unwrap()),
+            [
+                "proc-dispatching",
+                "proc-other-boot",
+                "proc-other-runner",
+                "proc-running",
+                "proc-unrecorded-epoch"
+            ]
+        );
+        assert_eq!(
+            ids(&store.records_of_approval(&resumed).unwrap()),
+            ["proc-resumed"]
+        );
+    }
+
+    /// An approval that a gateway left `resuming` is consumed with the process the Runner
+    /// created, or given back when it created none, once; never while a resume of it is in
+    /// progress (P1R-C04).
+    #[test]
+    fn an_interrupted_resume_is_settled_once() {
+        let store = Store::memory().unwrap();
+        let started = queued_approval(&store, "started");
+        dispatch_under(&store, "proc-started", Some(1), Some(&started));
+        let result = codespace_domain::OperationResumeResult {
+            approval_id: started.clone(),
+            state: ApprovalState::Consumed,
+            apply_patch: None,
+            exec_command: Some(codespace_domain::ExecCommandResult {
+                process_id: codespace_domain::ProcessId("proc-started".into()),
+                dispatch_status: codespace_domain::ExecDispatchStatus::Confirmed,
+                coordination: None,
+            }),
+        };
+        assert!(store
+            .settle_interrupted_resume(&started, Some(&result))
+            .unwrap());
+        assert_eq!(approval_state(&store, &started), ApprovalState::Consumed);
+        assert!(!store.settle_interrupted_resume(&started, None).unwrap());
+        assert_eq!(approval_state(&store, &started), ApprovalState::Consumed);
+        match store.claim_resume(&started).unwrap() {
+            ResumeClaim::ReplaySuccess(replayed) => assert_eq!(replayed, result),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let unstarted = queued_approval(&store, "unstarted");
+        dispatch_under(&store, "proc-unstarted", Some(1), Some(&unstarted));
+        {
+            // A resume in progress settles it itself.
+            let ResumeClaim::Reconcile(_, _guard) = store.claim_resume(&unstarted).unwrap() else {
+                panic!("expected reconcile");
+            };
+            let err = store
+                .settle_interrupted_resume(&unstarted, None)
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::ApprovalConflict);
+            assert_eq!(approval_state(&store, &unstarted), ApprovalState::Resuming);
+        }
+        assert!(store.settle_interrupted_resume(&unstarted, None).unwrap());
+        assert_eq!(approval_state(&store, &unstarted), ApprovalState::Granted);
+        assert!(!store.settle_interrupted_resume(&unstarted, None).unwrap());
     }
 }

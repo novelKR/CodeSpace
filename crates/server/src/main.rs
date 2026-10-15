@@ -10,7 +10,8 @@ use codespace_server::config::{
 };
 use codespace_server::http::serve_http_handler;
 use codespace_server::logging;
-use codespace_server::records::ProcessRecords;
+use codespace_server::records::{Leases, ProcessRecords};
+use codespace_server::recovery::Recovery;
 use codespace_server::runtime::RuntimeProcess;
 use codespace_server::stdio;
 use codespace_server::CodeSpace;
@@ -75,6 +76,9 @@ async fn serve(cli: Cli, lifecycle: GatewayLifecycle) -> Result<()> {
     if let Some(records) = &started.records {
         handler = handler.with_records(records.clone());
     }
+    if let Some(recovery) = &started.recovery {
+        handler = handler.with_recovery(recovery.clone());
+    }
     #[cfg(feature = "devguard")]
     handler.register_owner_now();
     let (result, ending) = match lifecycle {
@@ -137,6 +141,8 @@ struct StartedRunner {
     lifecycle: GatewayLifecycle,
     /// The records of the executions sent to an independent Runner (P1R-C02).
     records: Option<Arc<ProcessRecords>>,
+    /// The reconciliation with an independent Runner after each Claim (P1R-C04).
+    recovery: Option<Arc<Recovery>>,
 }
 
 impl StartedRunner {
@@ -148,7 +154,8 @@ impl StartedRunner {
             runner,
             process,
             lifecycle,
-            records: _,
+            records,
+            recovery: _,
         } = self;
         if let (GatewayLifecycle::Independent { exit_intent }, RuntimeBackend::Uds(runner)) =
             (lifecycle, &runner)
@@ -169,8 +176,16 @@ impl StartedRunner {
                     ),
                 },
                 RunnerExitIntent::Stop => match runner.stop_runner().await {
-                    Ok(terminated) => {
-                        tracing::info!(terminated, "stopped the independent Runner")
+                    Ok(stopped) => {
+                        // How each process ended, as the Runner reported it as it stopped
+                        // (P1R-C04).
+                        if let Some(records) = &records {
+                            records.stopped(&stopped.processes);
+                        }
+                        tracing::info!(
+                            terminated = stopped.terminated,
+                            "stopped the independent Runner"
+                        )
                     }
                     Err(err) => {
                         return Err(anyhow::anyhow!(
@@ -207,13 +222,15 @@ async fn start_runner(
             process: None,
             lifecycle,
             records: None,
+            recovery: None,
         }),
         RunnerMode::Uds => {
             if let (GatewayLifecycle::Independent { .. }, Some(socket)) =
                 (lifecycle, &cli.runner_socket)
             {
                 // Each exit releases its lease and is recorded (P1R-C02).
-                let (on_release, exits) = ProcessRecords::release_hook(store.clone());
+                let leases = Leases::new(store.clone());
+                let (on_release, exits) = ProcessRecords::release_hook(leases.clone());
                 // The Runner remembers the operations database it was first claimed for
                 // (P1R-C03).
                 let store_id = store.store_id().map_err(|err| {
@@ -221,7 +238,7 @@ async fn start_runner(
                 })?;
                 // The gateway only connects and claims; the Runner registers itself, from its
                 // own credential file, and nothing is handed to it (P1R-C01).
-                let (runner, _claim) =
+                let (runner, claim) =
                     RuntimeProcess::connect_independent(socket, &store_id, on_release).await?;
                 #[cfg(feature = "devguard")]
                 if cli.devguard.worker().is_some() {
@@ -231,13 +248,18 @@ async fn start_runner(
                     .hello()
                     .identity
                     .ok_or_else(|| anyhow::anyhow!("the independent Runner has no identity"))?;
-                let runner = RuntimeBackend::Uds(runner);
-                let records = ProcessRecords::start(store, &identity, runner.clone(), exits);
+                let backend = RuntimeBackend::Uds(runner.clone());
+                let records =
+                    ProcessRecords::start(store.clone(), &identity, backend.clone(), exits);
+                // What earlier claims left is reconciled before new work starts where they
+                // started work, and again after each later Claim (P1R-C04).
+                let recovery = Recovery::start(store, runner, records.clone(), leases, &claim);
                 return Ok(StartedRunner {
-                    runner,
+                    runner: backend,
                     process: None,
                     lifecycle,
                     records: Some(records),
+                    recovery: Some(recovery),
                 });
             }
             if let Some(bin) = &cli.runtime_bin {
@@ -257,6 +279,7 @@ async fn start_runner(
                         process: Some(process),
                         lifecycle,
                         records: None,
+                        recovery: None,
                     });
                 }
                 let (process, runner) =
@@ -267,6 +290,7 @@ async fn start_runner(
                     process: Some(process),
                     lifecycle,
                     records: None,
+                    recovery: None,
                 });
             }
             let socket = cli.runner_socket.as_ref().ok_or_else(|| {
@@ -280,6 +304,7 @@ async fn start_runner(
                 process: None,
                 lifecycle,
                 records: None,
+                recovery: None,
             })
         }
     }
