@@ -20,7 +20,7 @@ Runner는 허용된 요청을 실행합니다. `PathSandbox`는 논리적인 파
 
 선택적 UDS worker는 같은 호스트에서 프로세스를 분리합니다. 소켓을 전용 디렉터리에 두지만 프로세스 분리 자체가 명령 샌드박스는 아닙니다. Linux 도우미의 사용 가능 검사가 성공하면 명령 샌드박스를 사용합니다. 조건과 실패 시 동작은 [러너 격리](runner-isolation.md)에 설명합니다.
 
-아직 지원하는 모드가 아닌 [독립 Runner](runner-isolation.md#claim)는 같은 사용자의 연결을 모두 받고, Claim한 연결 하나에만 한 번에 제어를 맡깁니다. 게이트웨이가 Runner를 제어하지 않는 동안에는 소켓에 닿을 수 있는 그 사용자의 프로세스라면 무엇이든 Runner를 Claim할 수 있으며, Linux 샌드박스 없이 실행한 명령도 여기에 포함됩니다. [누가 제어권을 얻을 수 있는가](runner-isolation.md#claim-exposure)를 참고하세요.
+[qualification](recovery-qualification.md)을 통과한 곳에서만 지원하는 [독립 Runner](runner-isolation.md#claim)는 같은 사용자의 연결을 모두 받고, Claim한 연결 하나에만 한 번에 제어를 맡깁니다. 게이트웨이가 Runner를 제어하지 않는 동안에는 소켓에 닿을 수 있는 그 사용자의 프로세스라면 무엇이든 Runner를 Claim할 수 있으며, Linux 샌드박스 없이 실행한 명령도 여기에 포함됩니다. [누가 제어권을 얻을 수 있는가](runner-isolation.md#claim-exposure)를 참고하세요.
 
 <a id="워크스페이스-레지스트리"></a>
 <a id="워크스페이스-레지스트리"></a>

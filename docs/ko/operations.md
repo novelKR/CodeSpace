@@ -115,7 +115,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다. 프로세스가 게이트웨이보다 오래 살고, 게이트웨이가 그 프로세스를 작업 데이터베이스에 기록하며, 연결을 잃은 게이트웨이가 다시 Claim한 뒤 자기 기록과 대조하는 [독립 Runner](runner-isolation.md#independent-runner)는 아직 지원하는 모드가 아닙니다. 이런 Runner 자체를 잃으면 운영자가 `codespace-mcp records`로 그 Runner가 실행하던 것을 정리합니다([Runner 손실](#runner-loss)).
+worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다. 프로세스가 게이트웨이보다 오래 살고, 게이트웨이가 그 프로세스를 작업 데이터베이스에 기록하며, 연결을 잃은 게이트웨이가 다시 Claim한 뒤 자기 기록과 대조하는 [독립 Runner](runner-isolation.md#independent-runner)는 [qualification](recovery-qualification.md)이 통과시킨 조합에서만 지원하며, 아직 통과한 조합은 없습니다([도입과 되돌리기](#independent-runner-adoption)). 이런 Runner 자체를 잃으면 운영자가 `codespace-mcp records`로 그 Runner가 실행하던 것을 정리합니다([Runner 손실](#runner-loss)).
 
 <a id="로그"></a>
 <a id="로그"></a>
@@ -141,11 +141,42 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 
 패치 응답을 받지 못했다면 `operation_id` 또는 `operation_key` 중 하나만 지정해 `operation_status`를 조회합니다. 재시작 후 미완료 기록은 `unknown`이 되므로 파일을 확인한 뒤 다음 행동을 결정하세요. 프로세스는 `process_id`로 관리하며 `operation_status`로 복구할 수 없습니다. 프로세스가 죽을 때 `queued`이던 확인 홀드는 다시 acquire합니다. `resuming`이던 홀드는 패치 원장에서 복구하거나, 저장된 단말 결과를 재현하거나, `APPROVAL_AMBIGUOUS`를 반환할 수 있습니다. exec는 다시 spawn하지 않습니다. 독립 Runner에 연결한 게이트웨이는 `resuming`으로 남은 exec 홀드를 [대조](runner-isolation.md#reconciliation)할 때 정리합니다. Runner가 그 홀드를 위해 만든 프로세스로 consumed가 되거나, Runner가 아무것도 만들지 않았음이 증명되면 다시 granted가 됩니다. [재시도와 복구 규칙](agent-integration.md)을 참고하세요.
 
+<a id="independent-runner-adoption"></a>
+
+## 독립 Runner 도입과 되돌리기
+
+[독립 Runner](runner-isolation.md#independent-runner)는 [qualification](recovery-qualification.md)이 통과시킨 조합에서만 지원하며, 아직 통과한 조합은 없습니다. 이 모드는 opt-in이고 기본값은 계속 `in-process`입니다. 통과한 조합에서만, 그것도 qualification을 받은 CodeSpace 빌드, DevGuard release, 정책 그대로 도입하세요. 그 밖의 것은 모두 새 후보입니다.
+
+1. **준비합니다.** 모든 workspace 밖에 상태 디렉터리를 두고, 실행 기록이 생기기 전의 CodeSpace 버전이 열지 않을 작업 데이터베이스([스키마 버전](#operations-database))와 Runner용 mode 0700 소켓 디렉터리를 준비합니다. DevGuard를 쓰면 Runner가 실행 소유자로서 `codespace` 소비자의 인스턴스 하나로 등록하므로, 그 소비자로 등록하는 다른 게이트웨이가 있으면 먼저 멈춥니다.
+2. **Runner를 시작합니다.** qualification이 시작하듯 Runner를 자기 세션에서 시작해, 터미널이 닫히거나 어떤 게이트웨이가 끝나도 Runner에 닿지 않게 합니다. Linux에서는 `setsid`가 이렇게 하며, 아래 Python 줄은 macOS와 Linux 모두에서 같은 일을 합니다. DevGuard를 쓰면 [상태 전용 연결](devguard-integration.md#devguard-status-connection)의 소비자 설정과 release의 `devguard-launch`를 줍니다. DevGuard 없이 쓰면 `--devguard-*` 설정을 빼며, 이때 `required` workspace는 거부됩니다.
+
+   ```bash
+   python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+     "$PWD/dist/codespace-codex-runtime" "$RUNNER_DIR/runner.sock" --lifecycle independent \
+     --devguard-socket "$DEVGUARD_SOCKET" --devguard-consumer codespace \
+     --devguard-generation "$DEVGUARD_GENERATION" \
+     --devguard-credential-file "$DEVGUARD_CREDENTIAL_FILE" \
+     --devguard-launch-helper "$DEVGUARD_LAUNCH" >>"$STATE_DIR/runner.log" 2>&1 </dev/null &
+   ```
+
+3. **게이트웨이를 시작합니다.** 종료 의도 `detach`와 작업 데이터베이스를 주고, DevGuard를 쓰면 같은 소비자 설정으로 `--devguard register`를 줍니다. 한 데이터베이스는 한 번에 한 게이트웨이만 맡으며, 다른 게이트웨이는 최대 15초 기다린 뒤 시작하지 않습니다.
+
+   ```bash
+   ./dist/codespace-mcp --runner uds --runner-socket "$RUNNER_DIR/runner.sock" \
+     --runner-lifecycle independent --runner-exit-intent detach \
+     --operations-db "$STATE_DIR/operations.sqlite" --devguard register ...
+   ```
+
+4. **게이트웨이를 재시작합니다.** SIGTERM이나 SIGUSR1을 보내거나 입력을 닫아 게이트웨이를 끝내고, 같은 설정으로 다음 게이트웨이를 시작합니다. Runner의 프로세스는 계속 실행되고, 다음 게이트웨이는 Runner를 Claim해 남은 것을 대조한 뒤 요청을 받습니다. `RUNNER_RECONNECTING`과 `RECOVERY_PENDING`은 클라이언트에게 잠시 뒤 재시도하라고 알립니다([Agent Loop 연동](agent-integration.md)).
+5. **Runner를 drain합니다.** 더 쓰지 않을 때는 Runner의 프로세스가 끝나기를 기다리거나 종료한 뒤, `--runner-exit-intent stop`으로 게이트웨이를 시작하고 그 입력을 닫습니다. 그 게이트웨이가 Runner를 Claim해 중지하면, Runner는 아직 가진 것을 끝내고 소켓을 지운 뒤 종료 상태 0으로 끝납니다. Runner에 SIGTERM을 보내도 같은 방식으로 멈추지만, 그때 연결된 게이트웨이는 Runner를 잃으므로 게이트웨이를 먼저 멈추세요. Runner가 끝났고, `codespace-mcp records list`가 기록을 하나도 나열하지 않으며, DevGuard를 쓰면 그 인스턴스가 retire되었을 때 drain이 끝난 것입니다. 인스턴스가 retire되면 소비자의 다음 소유자가 `resource_authority.registration.state`를 `registered`로 보고합니다.
+
+**되돌리기.** 독립 모드로 게이트웨이를 더 시작하지 않고, 5단계처럼 Runner를 drain한 뒤, 이전에 qualification을 통과한 조합으로 돌아갑니다. 같은 DevGuard release와 정책으로 `in-process` 모드나 `--runtime-bin`을 쓰는 `uds` 모드의 게이트웨이를 씁니다([qualification과 도입](devguard-integration.md#devguard-qualification)). 작업 데이터베이스는 그대로 둡니다. 이전 사본을 복원하지 말고, 실행 기록이 생기기 전의 CodeSpace 버전으로 열지 마세요. 잃어서 drain할 수 없는 Runner는 [Runner 손실](#runner-loss)대로 정리합니다. DevGuard가 그 인스턴스를 retire할 때까지는 다른 소유자가 그 소비자로 등록할 수 없습니다.
+
 <a id="runner-loss"></a>
 
 ## Runner 손실
 
-[독립 Runner](runner-isolation.md#independent-runner)에 연결한 게이트웨이에만 해당하며, 이 모드는 아직 지원하지 않습니다. 그 Runner가 kill되거나, 크래시하거나, 멈추거나, 호스트가 재시작하면 Runner가 실행하던 것을 Runner에서 더는 알아낼 수 없고, 그 프로세스는 Runner보다 오래 살 수 있습니다([Runner 손실](runner-isolation.md#runner-loss)). 게이트웨이는 그 프로세스에 대해 기록으로 `lost_reason`과 함께 `unknown`이라고 답합니다. 그 프로세스가 점유하던 workspace는 운영자가 그중 아무것도 실행 중이지 않음을 확인하고 기록을 풀 때까지 계속 거부되며, 다음 게이트웨이에서는 `RECOVERY_PENDING`으로 거부됩니다. CodeSpace는 이 프로세스를 하나도 종료하지 않고, 아무것도 다시 시작하지 않으며, 이 프로세스에 대해 DevGuard에 묻지도 않습니다.
+[독립 Runner](runner-isolation.md#independent-runner)에 연결한 게이트웨이에만 해당하며, 이 모드는 [qualification](recovery-qualification.md)을 통과한 곳에서만 지원합니다. 그 Runner가 kill되거나, 크래시하거나, 멈추거나, 호스트가 재시작하면 Runner가 실행하던 것을 Runner에서 더는 알아낼 수 없고, 그 프로세스는 Runner보다 오래 살 수 있습니다([Runner 손실](runner-isolation.md#runner-loss)). 게이트웨이는 그 프로세스에 대해 기록으로 `lost_reason`과 함께 `unknown`이라고 답합니다. 그 프로세스가 점유하던 workspace는 운영자가 그중 아무것도 실행 중이지 않음을 확인하고 기록을 풀 때까지 계속 거부되며, 다음 게이트웨이에서는 `RECOVERY_PENDING`으로 거부됩니다. CodeSpace는 이 프로세스를 하나도 종료하지 않고, 아무것도 다시 시작하지 않으며, 이 프로세스에 대해 DevGuard에 묻지도 않습니다.
 
 1. **기록을 나열합니다.** 아직 workspace를 점유할 수 있는 기록을 보여 줍니다. 데이터베이스를 읽기만 하므로 게이트웨이가 실행 중이어도 됩니다.
 

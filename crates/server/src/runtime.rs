@@ -177,7 +177,7 @@ impl RuntimeProcess {
             previous_controller = claim.previous_controller,
             processes = claim.processes.len(),
             events_through = claim.events_through,
-            "claimed an independent Runner; it is not a supported mode yet"
+            "claimed an independent Runner"
         );
         warn_recovery_pending(&claim);
         Ok((runner, claim))

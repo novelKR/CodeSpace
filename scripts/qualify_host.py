@@ -1,5 +1,6 @@
-"""CSRG-U6 qualification on the host: CodeSpace's gateway driven over its MCP stdio, DevGuard's
-installed service and fixture authority observed, and the evidence written and sealed.
+"""CSRG-U6 and P1R-C06 qualification on the host: CodeSpace's gateway driven over its MCP stdio,
+an independent Runner started and probed as an operator would, DevGuard's installed service and
+fixture authority observed, and the evidence written and sealed.
 
 Nothing here reads, prints or passes a credential. A gateway is given the credential file's path
 and opens the file itself; DevGuard's journal is opened read-only and only the fields a check
@@ -14,7 +15,10 @@ from pathlib import Path
 import platform
 import queue
 import re
+import signal
+import socket as sockets
 import sqlite3
+import struct
 import subprocess
 import threading
 import time
@@ -600,6 +604,38 @@ class Gateway:
                 'malformed_lines': self.client.malformed}
 
 
+# How a gateway can end: its input closed, as a client that goes away does; SIGTERM; SIGUSR1,
+# which ends it for a restart and always detaches an independent Runner; or SIGKILL, a loss.
+GATEWAY_ENDS = ('eof', 'sigterm', 'sigusr1', 'sigkill')
+
+
+def end_gateway(gateway, how, limit=60):
+    """End a gateway as `how` says and wait for it to exit: its exit status, how long that took,
+    and whether it had to be killed. Its log is complete afterwards."""
+    began = time.monotonic()
+    if how == 'eof':
+        try:
+            gateway.process.stdin.close()
+        except OSError:
+            pass
+    elif how == 'sigkill':
+        gateway.process.kill()
+    elif how in ('sigterm', 'sigusr1'):
+        gateway.process.send_signal(signal.SIGTERM if how == 'sigterm' else signal.SIGUSR1)
+    else:
+        raise ValueError(f'a gateway ends by one of {GATEWAY_ENDS}, not {how!r}')
+    stopped = None
+    try:
+        gateway.process.wait(timeout=limit)
+    except subprocess.TimeoutExpired:
+        stopped = 'SIGKILL'
+        gateway.process.kill()
+        gateway.process.wait()
+    gateway.log_reader.join(timeout=10)
+    return {'how': how, 'returncode': gateway.process.returncode, 'stopped': stopped,
+            'exit_ms': round((time.monotonic() - began) * 1000, 3)}
+
+
 # ---------------------------------------------------------------- processes and descriptors
 
 def group_alive(pgid):
@@ -677,6 +713,308 @@ def host_facts():
     else:
         facts.update({'logical_cpus': str(os.cpu_count())})
     return facts
+
+
+def pid_alive(pid):
+    """Whether a process with this PID exists, a zombie included."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def running(pid):
+    """Whether a process with this PID runs: it exists and is not a zombie, as `ps` shows it on
+    macOS and Linux alike."""
+    state = run_text('ps', '-o', 'stat=', '-p', str(pid), timeout=10, env=dict(os.environ, LC_ALL='C', LANG='C'))
+    return bool(state) and not state.startswith('Z')
+
+
+def process_facts(pid):
+    """When a process started (Unix seconds) and its command's name, from ps in the C locale;
+    None when it is gone."""
+    env = dict(os.environ, LC_ALL='C', LANG='C')
+    started = run_text('ps', '-o', 'lstart=', '-p', str(pid), timeout=10, env=env)
+    command = run_text('ps', '-o', 'comm=', '-p', str(pid), timeout=10, env=env)
+    if not started and not command:
+        return None
+    try:
+        started_unix = time.mktime(time.strptime(' '.join((started or '').split()), '%a %b %d %H:%M:%S %Y'))
+    except ValueError:
+        started_unix = None
+    return {'started_unix': started_unix, 'command': command}
+
+
+def read_pid(path, limit=10.0):
+    """The PID a command wrote to `path`, once it has written it, or None after `limit`."""
+    deadline = time.monotonic() + limit
+    while True:
+        try:
+            text = Path(path).read_text().strip()
+            if text.isdigit():
+                return int(text)
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.02)
+
+
+class PidWatch(threading.Thread):
+    """Notes when each watched process is first seen gone, polling every `period` seconds, so
+    that a timeout is timed by the process's own end and not by when a gateway reports it."""
+
+    def __init__(self, period=0.05):
+        super().__init__(daemon=True)
+        self.period = period
+        self.lock = threading.Lock()
+        self.watched = {}
+        self.halt = threading.Event()
+        self.start()
+
+    def watch(self, key, pid):
+        with self.lock:
+            self.watched[key] = {'pid': pid, 'gone_unix': None if pid_alive(pid) else time.time()}
+
+    def gone(self, key):
+        """When the process was first seen gone (Unix seconds), or None while it runs."""
+        with self.lock:
+            return (self.watched.get(key) or {}).get('gone_unix')
+
+    def wait(self, key, limit):
+        deadline = time.monotonic() + limit
+        while self.gone(key) is None and time.monotonic() < deadline:
+            time.sleep(self.period)
+        return self.gone(key)
+
+    def run(self):
+        while not self.halt.wait(self.period):
+            with self.lock:
+                pending = [(key, entry['pid']) for key, entry in self.watched.items() if entry['gone_unix'] is None]
+            for key, pid in pending:
+                if not pid_alive(pid):
+                    with self.lock:
+                        self.watched[key]['gone_unix'] = time.time()
+
+    def stop(self):
+        self.halt.set()
+        self.join(timeout=5)
+
+
+# ---------------------------------------------------------------- the independent Runner (P1R)
+
+def accepts(path, timeout=1.0):
+    """Whether something accepts connections at the Unix socket `path`. A connection that says
+    nothing leaves an independent Runner as it was."""
+    connection = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        connection.connect(str(path))
+        return True
+    except OSError:
+        return False
+    finally:
+        connection.close()
+
+
+CLAIMED = re.compile(r'process (\S+) claimed the Runner under epoch (\d+)(; an earlier controller)?')
+REFUSED_CLAIM = re.compile(r'refused the Claim of process (\S+) \((\w+)\)')
+
+
+def claim_lines(text):
+    """The Claims an independent Runner logged, granted and refused, in order, with the PID of
+    the process that made each (P1R-C03)."""
+    found = []
+    for line in text.splitlines():
+        granted = CLAIMED.search(line)
+        refused = None if granted else REFUSED_CLAIM.search(line)
+        match = granted or refused
+        if not match:
+            continue
+        pid = int(match[1]) if match[1].isdigit() else None
+        if granted:
+            found.append({'granted': True, 'pid': pid, 'epoch': int(granted[2]),
+                          'previous_controller': bool(granted[3])})
+        else:
+            found.append({'granted': False, 'pid': pid, 'refusal': refused[2]})
+    return found
+
+
+class RunnerProcess:
+    """An independent Runner (`codespace-codex-runtime SOCKET --lifecycle independent`) that the
+    harness starts as an operator would (D3): in its own session, so its pipe processes share its
+    process group, in a minimal environment, with its log kept as evidence. Its DevGuard settings
+    name the authority's socket, the consumer, its credential file (the path only: the Runner
+    reads it, the harness never does) and the launch helper."""
+
+    def __init__(self, binary, socket, env, log_path, devguard=(), limit=30.0):
+        self.socket = Path(socket)
+        self.argv = [str(binary), str(socket), '--lifecycle', 'independent', *[str(flag) for flag in devguard]]
+        self.log_path = Path(log_path)
+        with open(self.log_path, 'ab') as log:
+            self.process = subprocess.Popen(self.argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
+                                            start_new_session=True)
+        self.pid = self.process.pid
+        self.listening = self.wait_listening(limit)
+
+    def wait_listening(self, limit):
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                return False
+            if accepts(self.socket):
+                return True
+            time.sleep(0.02)
+        return False
+
+    def log(self):
+        try:
+            return self.log_path.read_text(errors='replace')
+        except OSError:
+            return ''
+
+    def claims(self):
+        return claim_lines(self.log())
+
+    def alive(self):
+        return self.process.poll() is None
+
+    def wait(self, limit=30.0):
+        """Its exit status once it has exited, or None after `limit` seconds."""
+        try:
+            return self.process.wait(timeout=limit)
+        except subprocess.TimeoutExpired:
+            return None
+
+    def stop(self, limit=20.0):
+        """SIGTERM, which stops the Runner as a controller's Stop does; killed if it still runs
+        after `limit` seconds."""
+        if self.alive():
+            self.process.send_signal(signal.SIGTERM)
+        code = self.wait(limit)
+        killed = code is None
+        if killed:
+            self.process.kill()
+            code = self.process.wait()
+        return {'returncode': code, 'killed': killed}
+
+    def kill(self):
+        if self.alive():
+            self.process.kill()
+        return self.process.wait()
+
+
+WIRE_PROTOCOL = 11
+
+
+class WireClient:
+    """A connection to an independent Runner speaking its internal protocol (version 11: a
+    big-endian u32 length, then a JSON envelope), as any process of the Runner's user can. The
+    fence probes use it; exit events, which the Runner sends only to its controller, are passed
+    over."""
+
+    def __init__(self, path, timeout=30.0):
+        self.connection = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+        self.connection.settimeout(timeout)
+        try:
+            self.connection.connect(str(path))
+        except OSError:
+            self.connection.close()
+            raise
+        self.count = 0
+
+    def request(self, op, data=None, epoch=None):
+        """The Runner's answer to one request: whether it succeeded, its result's type and data,
+        or its error's code and message, and the round trip."""
+        self.count += 1
+        ident = f'qualify-{os.getpid()}-{self.count}'
+        envelope = {'protocol': WIRE_PROTOCOL, 'kind': 'request', 'request_id': ident,
+                    'op': {'op': op} if data is None else {'op': op, 'data': data}}
+        if epoch is not None:
+            envelope['epoch'] = epoch
+        body = json.dumps(envelope).encode()
+        began = time.monotonic()
+        self.connection.sendall(struct.pack('>I', len(body)) + body)
+        while True:
+            message = self._receive()
+            if message.get('kind') == 'response' and message.get('request_id') == ident:
+                break
+        result, error = message.get('result') or {}, message.get('error') or {}
+        return {'op': op, 'ok': bool(message.get('ok')), 'type': result.get('type'), 'data': result.get('data'),
+                'code': error.get('code'), 'message': error.get('message'),
+                'latency_ms': round((time.monotonic() - began) * 1000, 3)}
+
+    def _exactly(self, count):
+        data = b''
+        while len(data) < count:
+            chunk = self.connection.recv(count - len(data))
+            if not chunk:
+                raise ConnectionError('the Runner closed the connection')
+            data += chunk
+        return data
+
+    def _receive(self):
+        (length,) = struct.unpack('>I', self._exactly(4))
+        return json.loads(self._exactly(length))
+
+    def hello(self):
+        return self.request('hello')
+
+    def claim(self, store_id):
+        return self.request('claim', {'store_id': store_id})
+
+    def detach(self):
+        return self.request('detach')
+
+    def close(self):
+        try:
+            self.connection.close()
+        except OSError:
+            pass
+
+
+def operations_query(database, query, parameters=()):
+    """Rows of a gateway's operations database, read-only, as dictionaries."""
+    connection = sqlite3.connect(f'file:{database}?mode=ro', uri=True, timeout=5)
+    try:
+        connection.row_factory = sqlite3.Row
+        return [dict(row) for row in connection.execute(query, parameters).fetchall()]
+    finally:
+        connection.close()
+
+
+def store_id(database):
+    """The operations database's identity, which an independent Runner keeps from its first
+    Claim (P1R-C03); no secret from the database's owner."""
+    rows = operations_query(database, 'SELECT store_id FROM store_identity')
+    return rows[0]['store_id'] if rows else None
+
+
+def process_records(database):
+    """Every process record of an operations database, read-only, by process ID (P1R-C02). A
+    record holds the argv's digest, never the argv, its environment or a secret."""
+    return {row['process_id']: row for row in operations_query(database, 'SELECT * FROM processes')}
+
+
+def records_command(binary, database, env, *args, timeout=60):
+    """`codespace-mcp records ARGS` on an operations database (P1R-C05): its JSON report (None
+    when it printed none), whether it did all it was asked, and the end of what it wrote to its
+    standard error."""
+    env = dict(env, CODESPACE_OPERATIONS_DB=str(database))
+    try:
+        result = subprocess.run([str(binary), 'records', *args], stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return {'report': None, 'done': False, 'returncode': None, 'stderr': f'no answer within {timeout} s'}
+    try:
+        report = json.loads(result.stdout) if result.stdout.strip() else None
+    except ValueError:
+        report = None
+    return {'report': report, 'done': result.returncode == 0, 'returncode': result.returncode,
+            'stderr': result.stderr[-2000:]}
 
 
 # ---------------------------------------------------------------- the installed DevGuard service

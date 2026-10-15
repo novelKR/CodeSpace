@@ -24,8 +24,8 @@ pub enum RunnerLifecycleMode {
     #[default]
     Managed,
     /// An independent Runner that an operator or a harness started: the gateway only connects
-    /// to it through `--runner-socket`, and its processes outlive the gateway. Not a supported
-    /// mode yet.
+    /// to it through `--runner-socket`, and its processes outlive the gateway. Supported only on
+    /// the combinations its qualification qualifies (P1R-C06).
     Independent,
 }
 
@@ -135,7 +135,8 @@ pub struct Cli {
 
     /// The UDS Runner's lifecycle: `managed` (default), or `independent` for a Runner that an
     /// operator or a harness started, which the gateway only connects to through
-    /// `--runner-socket` (P1R-C01). `independent` is not a supported mode yet.
+    /// `--runner-socket` (P1R-C01). `independent` is supported only on the combinations its
+    /// qualification qualifies (P1R-C06).
     #[arg(long, value_enum, default_value_t = RunnerLifecycleMode::Managed)]
     pub runner_lifecycle: RunnerLifecycleMode,
 

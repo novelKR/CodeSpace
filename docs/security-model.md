@@ -15,7 +15,7 @@ The Runner executes approved requests. `PathSandbox` checks logical file scope; 
 
 The optional UDS worker separates processes on the same host. Its socket lives in a private directory, but process separation is not an OS command sandbox. The Linux helper supplies the command sandbox when its probe succeeds. [Runner isolation](runner-isolation.md) defines those conditions and failure behavior.
 
-An [independent Runner](runner-isolation.md#claim), not a supported mode yet, serves every connection of its own user and lets one at a time control it after a Claim. While no gateway controls it, any process of that user that can reach its socket can claim it, a command run without the Linux sandbox included; see [who can take control](runner-isolation.md#claim-exposure).
+An [independent Runner](runner-isolation.md#claim), supported only where [qualified](recovery-qualification.md), serves every connection of its own user and lets one at a time control it after a Claim. While no gateway controls it, any process of that user that can reach its socket can claim it, a command run without the Linux sandbox included; see [who can take control](runner-isolation.md#claim-exposure).
 
 <a id="workspace-registry"></a>
 <a id="profiles-mvp"></a>

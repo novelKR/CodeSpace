@@ -1,8 +1,9 @@
-"""CSRG-U6 qualification analysis: pure functions over recorded samples, so that every verdict
-can be recomputed from the raw evidence alone. Targets and rules follow DevGuard's SLO protocol
-(DevGuard docs/planning/verification.md and scripts/measure.py) wherever they apply; nothing here
-redefines them."""
+"""CSRG-U6 and P1R-C06 qualification analysis: pure functions over recorded samples, so that every
+verdict can be recomputed from the raw evidence alone. Targets and rules follow DevGuard's SLO
+protocol (DevGuard docs/planning/verification.md and scripts/measure.py) wherever they apply;
+nothing here redefines them."""
 import math
+import re
 
 # The established targets (DevGuard docs/planning/verification.md, "SLO protocol").
 STATUS_P99_MS = 500
@@ -356,3 +357,242 @@ def suite_verdict(verdicts):
     if ran and all(v == 'pass' for v in ran):
         return 'passed'
     return 'incomplete'
+
+
+# ---------------------------------------------------------------- recovery (P1R-C06)
+
+# A timeout target may be seen gone this much before its recorded deadline (the Runner's timer
+# and the gateway's clock) and this much after it (the process's own end, observed every 50 ms).
+TIMEOUT_EARLY_S = 0.25
+TIMEOUT_LATE_S = 2.0
+# Fewer restarts than this share of those planned is not a complete observation.
+MIN_RESTARTS = 0.8
+# How a gateway that ends this way exits: its input closed, SIGTERM and SIGUSR1 end it normally.
+GATEWAY_EXIT = {'eof': 0, 'sigterm': 0, 'sigusr1': 0, 'sigkill': -9}
+
+
+def percentiles(values):
+    """p50, p99 and the maximum of raw values, nearest rank."""
+    return {'p50': number(nearest_rank(values, 0.5)), 'p99': number(nearest_rank(values, 0.99)),
+            'max': number(max(values, default=None))}
+
+
+def continuity_metrics(rows, label):
+    """A numbered output stream across every read of it, through any number of gateways. Each line
+    is `label` and a fixed-width number. Within a stretch of retained output each line is the one
+    after the last; a read that asked from before what the Runner still retains (`output_lost`,
+    `retained_from` above its cursor) declares a gap, after which the numbers may only move on. A
+    line seen again, a number that goes back, or one skipped where no gap was declared fails."""
+    pattern = re.compile(re.escape(label) + r' (\d{8})')
+    segments, text, gaps = [], '', []
+    for row in rows:
+        retained = row.get('retained_from')
+        if row.get('output_lost') and retained is not None and row['from'] < retained:
+            segments.append(text)
+            text = ''
+            gaps.append({'from': row['from'], 'retained_from': retained, 'reason': row.get('lost_reason')})
+        text += row.get('chunk') or ''
+    segments.append(text)
+    lines = undeclared = repeated = declared = 0
+    first = last = None
+    for index, segment in enumerate(segments):
+        for position, value in enumerate(pattern.findall(segment)):
+            value = int(value)
+            lines += 1
+            if last is not None and value <= last:
+                repeated += 1
+                continue
+            expected = 1 if last is None else last + 1
+            if value != expected:
+                if position == 0 and index > 0:
+                    declared += value - expected
+                else:
+                    undeclared += value - expected
+            first = value if first is None else first
+            last = value
+    return {'reads': len(rows), 'lines': lines, 'first': first, 'last': last, 'declared_gaps': len(gaps),
+            'gap_reasons': sorted({str(gap['reason']) for gap in gaps}), 'declared_lost_lines': declared,
+            'undeclared_lost_lines': undeclared, 'repeated_lines': repeated,
+            'passed': None if not lines else (undeclared == 0 and repeated == 0)}
+
+
+def timeout_metrics(rows):
+    """Timeout targets, each started with the gateway's process timeout: when its process was first
+    seen gone against the deadline its record held when it started. Extended: the recorded
+    deadline moved, or the process outlived it by more than TIMEOUT_LATE_S; early: it ended more
+    than TIMEOUT_EARLY_S before it; misreported: CodeSpace did not report it timed out. A target
+    whose end was not observed is missing."""
+    offsets, extended, early, misreported, missing = [], 0, 0, 0, 0
+    for row in rows:
+        deadline, gone = row.get('deadline_at_ms'), row.get('gone_unix')
+        if deadline is None or gone is None:
+            missing += 1
+            continue
+        offset = gone - deadline / 1000
+        offsets.append(offset * 1000)
+        if row.get('deadline_after_ms') != deadline or offset > TIMEOUT_LATE_S:
+            extended += 1
+        elif offset < -TIMEOUT_EARLY_S:
+            early += 1
+        if row.get('termination') != 'timeout':
+            misreported += 1
+    return {'targets': len(rows), 'in_gap': sum(1 for row in rows if row.get('in_gap')),
+            'extended': extended, 'early': early, 'misreported': misreported, 'missing': missing,
+            'end_offset_ms': percentiles(offsets),
+            'passed': None if not rows else not (extended or early or misreported)}
+
+
+def restart_metrics(rows):
+    """Each gateway's cycle: it claimed the Runner under the next epoch and served, inherited every
+    long-running target still running, and every request of another process (a Claim, and
+    requests that would change a target under an earlier, the current or no epoch) was refused,
+    changing nothing (a stale mutation otherwise); a rival gateway started on the same operations
+    database meanwhile never claimed the Runner and gave up for the writer lock; and, when the
+    cycle ended in a restart, the gateway ended as asked."""
+    restarted = [row for row in rows if row.get('restart')]
+    serving = [row['serving_ms'] for row in rows if row.get('serving_ms') is not None]
+    ends = {}
+    for row in restarted:
+        ends[row.get('how')] = ends.get(row.get('how'), 0) + 1
+    unexpected_exit = sum(1 for row in restarted
+                          if (row.get('ended') or {}).get('returncode') != GATEWAY_EXIT.get(row.get('how'))
+                          or (row.get('ended') or {}).get('stopped'))
+    epochs = sum(1 for row in rows if not row.get('claim') or row['claim'].get('epoch') != row.get('expected_epoch'))
+    lost_targets = sum(1 for row in rows for state in (row.get('inherited') or {}).values() if state != 'running')
+    fence = [request for row in rows for request in ((row.get('fence') or {}).get('requests') or [])]
+    stale = sum(1 for request in fence if request.get('ok'))
+    unfenced = sum(1 for request in fence if not request.get('ok') and request.get('code') != 'STALE_CONTROLLER')
+    granted = sum(1 for row in rows if (row.get('fence') or {}).get('claim') != 'controller_active')
+    rivals = [row['rival'] for row in rows if row.get('rival')]
+    rival_claims = sum(1 for rival in rivals if rival.get('claims'))
+    rival_served = sum(1 for rival in rivals if not rival.get('killed') and rival.get('returncode') == 0)
+    rival_unrefused = sum(1 for rival in rivals if not rival.get('killed') and not rival.get('another_writer'))
+    errors = [row['error'] for row in rows if row.get('error')]
+    return {'cycles': len(rows), 'restarts': len(restarted), 'ends': ends, 'serving_ms': percentiles(serving),
+            'unexpected_exits': unexpected_exit, 'epoch_mismatches': epochs, 'targets_not_running': lost_targets,
+            'fence_requests': len(fence), 'stale_mutations': stale, 'unfenced_refusals': unfenced,
+            'fence_claims_not_refused': granted, 'rivals': len(rivals), 'rival_claims': rival_claims,
+            'rivals_served': rival_served, 'rivals_not_refused_for_the_lock': rival_unrefused,
+            'rivals_killed_waiting': sum(1 for rival in rivals if rival.get('killed')), 'errors': errors[:20],
+            'passed': None if not rows else not (unexpected_exit or epochs or lost_targets or stale or unfenced
+                                                 or granted or rival_claims or rival_served or rival_unrefused
+                                                 or errors)}
+
+
+def approval_metrics(rows, markers):
+    """Approvals held before a restart, granted, and resumed by the next gateway, some while a
+    resume was in flight when the gateway was killed: each was resumed, its command ran exactly
+    once (its tag in the marker file), and a second resume returned the process the first one
+    did. One the authority refused for capacity when it was resumed is reported, not failed."""
+    counts = {}
+    for tags in markers.values():
+        for tag in tags:
+            counts[tag] = counts.get(tag, 0) + 1
+    resumed = [row for row in rows if (row.get('resume') or {}).get('process_id')]
+    not_admitted = sum(1 for row in rows if row.get('not_admitted'))
+    duplicates = sum(1 for row in rows if counts.get(row['tag'], 0) > 1)
+    unmatched = sum(1 for row in resumed if (row.get('again') or {}).get('process_id') != row['resume']['process_id'])
+    unresumed = sum(1 for row in rows if not (row.get('resume') or {}).get('process_id') and not row.get('not_admitted'))
+    not_ran = sum(1 for row in resumed if counts.get(row['tag'], 0) == 0)
+    return {'approvals': len(rows), 'killed_during_resume': sum(1 for row in rows if row.get('killed_during_resume')),
+            'resumed': len(resumed), 'unresumed': unresumed, 'not_admitted': not_admitted, 'duplicates': duplicates,
+            'second_resume_differs': unmatched, 'resumed_but_never_ran': not_ran,
+            'ready_ms': percentiles([row['ready_ms'] for row in rows if row.get('ready_ms') is not None]),
+            'passed': None if not rows else not (duplicates or unmatched or not_ran or unresumed)}
+
+
+def marker_metrics(markers, execs):
+    """Every tagged command the harness sent: none ran twice, and none that was refused ran. An
+    approval's command is judged by its resumes (approval_metrics)."""
+    counts = {}
+    for tags in markers.values():
+        for tag in tags:
+            counts[tag] = counts.get(tag, 0) + 1
+    refused = [row['tag'] for row in execs if row.get('outcome') != 'started' and not row.get('approval')]
+    return {'tagged': len(execs), 'started': sum(1 for row in execs if row.get('outcome') == 'started'),
+            'refused': len(refused), 'ran_twice': sorted(tag for tag, count in counts.items() if count > 1),
+            'refused_but_ran': sorted(tag for tag in refused if counts.get(tag)),
+            'passed': not any(count > 1 for count in counts.values()) and not any(counts.get(tag) for tag in refused)}
+
+
+def drain_failures(drain):
+    """What the drain at an interval's end failed to show: a gateway claimed the Runner under the
+    next epoch and stopped it with its controller's Stop, which found nothing the harness had not
+    already ended; the Runner exited 0 and removed its socket; with an authority, its instance
+    retired and nothing of the consumer stayed charged."""
+    failures = []
+    if not drain:
+        return ['the Runner was not drained']
+    if drain.get('error'):
+        failures.append(f"the drain failed: {drain['error']}")
+    if drain.get('claim_epoch') != drain.get('expected_epoch'):
+        failures.append(f"the draining gateway claimed the Runner under epoch {drain.get('claim_epoch')}, "
+                        f"not {drain.get('expected_epoch')}")
+    ended = drain.get('gateway')
+    if ended is not None and (ended.get('returncode') != 0 or ended.get('stopped')):
+        failures.append(f"the draining gateway exited {ended.get('returncode')} when its input closed")
+    if drain.get('terminated') is None:
+        failures.append('the Runner did not log its Stop')
+    elif drain['terminated']:
+        failures.append(f"the Stop terminated {drain['terminated']} processes the harness had already ended")
+    if drain.get('runner_exit') != 0:
+        failures.append(f"the Runner exited {drain.get('runner_exit')} after Stop")
+    if drain.get('socket_left'):
+        failures.append("the Runner's socket was left after Stop")
+    if drain.get('governed') and not drain.get('retired'):
+        failures.append("the Runner's DevGuard instance was not retired")
+    if drain.get('governed') and drain.get('charged'):
+        failures.append('work of the consumer stayed charged after the drain')
+    return failures
+
+
+def recovery_interval_verdict(kind, invalid, metrics):
+    """A recovery interval: the control path as a control interval judges it, over the time a
+    gateway served, and the recovery evidence. inconclusive when the observation is invalid; fail
+    on any failure; inconclusive when too little was observed."""
+    verdict, reasons = interval_verdict(kind, invalid, metrics)
+    if invalid:
+        return verdict, reasons
+    failures = list(reasons) if verdict == 'fail' else []
+    shortfalls = list(reasons) if verdict == 'inconclusive' else []
+    recovery = metrics['recovery']
+    for name in ('restarts', 'timeouts', 'approvals', 'markers'):
+        if recovery[name]['passed'] is False:
+            failures.append(f'recovery {name}')
+    for name, entry in recovery['continuity'].items():
+        if entry['passed'] is False:
+            failures.append(f'output continuity of {name}')
+        elif entry['passed'] is None:
+            shortfalls.append(f'output continuity of {name}: nothing was read')
+    failures += drain_failures(recovery.get('drain'))
+    last = recovery.get('last_gateway')
+    if last is not None and (last.get('returncode') != 0 or last.get('stopped')):
+        failures.append(f"the last gateway exited {last.get('returncode')} when its input closed")
+    restarts = recovery['restarts']
+    if restarts['restarts'] < MIN_RESTARTS * recovery['planned_restarts']:
+        shortfalls.append(f"restarts {restarts['restarts']} of {recovery['planned_restarts']}")
+    timeouts, approvals = recovery['timeouts'], recovery['approvals']
+    if timeouts['passed'] is None:
+        shortfalls.append('timeouts: nothing was measured')
+    else:
+        if timeouts['missing']:
+            shortfalls.append(f"timeouts: {timeouts['missing']} targets unobserved")
+        if not timeouts['in_gap']:
+            shortfalls.append('timeouts: no deadline fell while no gateway ran')
+    if approvals['passed'] is None:
+        shortfalls.append('approvals: nothing was measured')
+    elif not approvals['killed_during_resume']:
+        shortfalls.append('approvals: no gateway was killed with a resume in flight')
+    if failures:
+        return 'fail', failures
+    return ('inconclusive', shortfalls) if shortfalls else ('pass', [])
+
+
+def recovery_verdict(functional, measurement):
+    """The `recovery` suite: qualified only when its functional scenarios passed and its
+    measurement qualified."""
+    if 'failed' in (functional, measurement):
+        return 'failed'
+    if functional == 'passed' and measurement == 'qualified':
+        return 'qualified'
+    return 'inconclusive'
