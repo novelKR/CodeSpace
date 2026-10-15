@@ -9,10 +9,12 @@ use std::time::Duration;
 use codespace_domain::{ErrorCode, ProcessId, ProcessState, Profile, WorkspaceId};
 use codespace_policy::Workspace;
 use codespace_runner::{
-    read_frame, write_frame, Runner, RunnerError, RunnerExecRequest, RunnerLifecycle, RunnerOp,
-    RunnerOpResult, UdsRunner, WireEnvelope, WIRE_PROTOCOL,
+    read_frame, write_frame, Runner, RunnerClaim, RunnerError, RunnerExecRequest, RunnerLifecycle,
+    RunnerOp, RunnerOpResult, UdsRunner, WireEnvelope, WIRE_PROTOCOL,
 };
+use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
+use tokio::sync::mpsc;
 
 const BIN: &str = env!("CARGO_BIN_EXE_codespace-codex-runtime");
 
@@ -144,7 +146,7 @@ async fn hello_on_live_socket() {
     match parsed.result {
         Some(RunnerOpResult::Hello { protocol, .. }) => {
             assert_eq!(protocol, WIRE_PROTOCOL);
-            assert_eq!(protocol, 9);
+            assert_eq!(protocol, 10);
         }
         other => panic!("unexpected hello {other:?}"),
     }
@@ -212,21 +214,47 @@ async fn worker_socket_drop_terminates_owned_child() {
     );
 }
 
-/// An independent Runner (P1R-C01) at `socket`, whose directory it prepares itself.
-fn spawn_independent(socket: &Path) -> tokio::process::Child {
-    tokio::process::Command::new(BIN)
+/// An independent Runner (P1R-C01) at `socket`, whose directory it prepares itself, and the
+/// lines it logs.
+fn spawn_independent(socket: &Path) -> (tokio::process::Child, mpsc::UnboundedReceiver<String>) {
+    let mut runner = tokio::process::Command::new(BIN)
         .arg(socket)
         .args(["--lifecycle", "independent"])
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .expect("spawn an independent Runner")
+        .expect("spawn an independent Runner");
+    let (lines, logged) = mpsc::unbounded_channel();
+    let mut read = tokio::io::BufReader::new(runner.stderr.take().unwrap()).lines();
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = read.next_line().await {
+            let _ = lines.send(line);
+        }
+    });
+    (runner, logged)
 }
 
-/// A gateway's connection to the Runner at `socket`, after its handshake.
-async fn gateway(socket: &Path) -> UdsRunner {
+/// The first line logged that contains `text`.
+async fn logged(lines: &mut mpsc::UnboundedReceiver<String>, text: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let line = lines.recv().await.expect("the Runner logs it");
+            if line.contains(text) {
+                return line;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the Runner does not log {text:?}"))
+}
+
+/// A gateway's connection to the Runner at `socket`, after its handshake and its Claim
+/// (P1R-C03).
+async fn gateway(socket: &Path) -> (UdsRunner, RunnerClaim) {
     let runner = UdsRunner::from_stream(wait_connect(socket).await, Arc::new(|_| {}));
     runner.handshake().await.expect("hello");
-    runner
+    let claim = runner.claim("store-test").await.expect("claim");
+    (runner, claim)
 }
 
 fn mode(path: &Path) -> u32 {
@@ -285,15 +313,16 @@ fn demo_workspace(root: &Path) -> Workspace {
 
 /// An independent Runner keeps its pipe and tty processes after its gateway detaches, the next
 /// gateway inherits them but starts nothing, and a stop ends them and the Runner, which removes
-/// its socket and the directory it created (P1R-C01).
+/// its socket and the directory it created (P1R-C01). The Runner logs each Claim with the
+/// process that made it (P1R-C03).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_independent_runner_outlives_its_gateways_until_one_stops_it() {
     let base = tempfile::tempdir().unwrap();
     std::fs::set_permissions(base.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     let dir = base.path().join("runner");
     let socket = runner_socket(&dir);
-    let mut runner = spawn_independent(&socket);
-    let first = gateway(&socket).await;
+    let (mut runner, mut lines) = spawn_independent(&socket);
+    let (first, claim) = gateway(&socket).await;
     assert_eq!(mode(&dir), 0o700);
     assert_eq!(mode(base.path()), 0o755);
     let hello = first.hello();
@@ -302,7 +331,15 @@ async fn an_independent_runner_outlives_its_gateways_until_one_stops_it() {
         hello.identity.as_ref().map(|identity| identity.pid),
         runner.id()
     );
-    assert!(!hello.previous_controller);
+    assert_eq!((claim.epoch, claim.previous_controller), (1, false));
+    let line = logged(&mut lines, "claimed the Runner").await;
+    assert!(
+        line.contains(&format!(
+            "process {} claimed the Runner under epoch 1",
+            std::process::id()
+        )),
+        "{line}"
+    );
     // A second Runner neither takes nor removes the live socket.
     let second = Command::new(BIN)
         .arg(&socket)
@@ -329,11 +366,27 @@ async fn an_independent_runner_outlives_its_gateways_until_one_stops_it() {
     // No gateway is connected, and both keep running.
     assert!(still_beating(&pipe_beat).await && still_beating(&tty_beat).await);
 
-    let next = gateway(&socket).await;
-    let inherited = next.hello();
-    assert_eq!(inherited.identity, hello.identity);
-    assert!(inherited.previous_controller);
-    assert_eq!(inherited.inherited_processes, 2);
+    let (next, inherited) = gateway(&socket).await;
+    assert_eq!(next.hello().identity, hello.identity);
+    assert_eq!((inherited.epoch, inherited.previous_controller), (2, true));
+    let mut processes: Vec<_> = inherited
+        .processes
+        .iter()
+        .map(|entry| (entry.status.process_id.0.as_str(), entry.status.state))
+        .collect();
+    processes.sort_by_key(|(process_id, _)| *process_id);
+    assert_eq!(
+        processes,
+        [
+            ("proc-pipe", ProcessState::Running),
+            ("proc-tty", ProcessState::Running)
+        ]
+    );
+    let line = logged(&mut lines, "under epoch 2").await;
+    assert!(
+        line.contains("an earlier controller started work"),
+        "{line}"
+    );
     assert_eq!(
         next.process_status(&ProcessId("proc-pipe".into()))
             .await
@@ -367,8 +420,8 @@ async fn sigterm_stops_an_independent_runner_and_its_processes() {
     let base = tempfile::tempdir().unwrap();
     let dir = base.path().join("runner");
     let socket = runner_socket(&dir);
-    let mut runner = spawn_independent(&socket);
-    let connected = gateway(&socket).await;
+    let (mut runner, _lines) = spawn_independent(&socket);
+    let (connected, _) = gateway(&socket).await;
     let ws_dir = tempfile::tempdir().unwrap();
     let ws = demo_workspace(ws_dir.path());
     let beat = ws_dir.path().join("beat");

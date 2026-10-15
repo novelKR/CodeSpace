@@ -111,6 +111,8 @@ impl RecordedParticipation {
 pub struct NewProcessRecord<'a> {
     pub process_id: &'a str,
     pub runner: &'a RunnerRef,
+    /// The controller epoch of the Claim the execution is sent under (P1R-C03).
+    pub controller_epoch: Option<u64>,
     pub workspace_id: &'a str,
     /// The approval this execution resumes: it is marked `resuming` with the record, in one
     /// transaction.
@@ -193,7 +195,8 @@ impl ProcessOutcome {
 pub struct ProcessRecord {
     pub process_id: String,
     pub runner: RunnerRef,
-    /// The controller epoch the execution was sent under (P1R-C03). Nothing issues one yet.
+    /// The controller epoch of the Claim the execution was sent under (P1R-C03); none for a
+    /// record a gateway before it wrote.
     pub controller_epoch: Option<u64>,
     pub workspace_id: String,
     pub approval_id: Option<ApprovalId>,
@@ -286,13 +289,14 @@ impl Store {
                 process_id, runner_boot_id, runner_pid, runner_started_at_ms, runner_nonce,
                 controller_epoch, workspace_id, approval_id, attempt_id, participation, tty,
                 argv_digest, phase, created_at_ms, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
             params![
                 record.process_id,
                 record.runner.boot_id,
                 record.runner.pid,
                 to_sql(record.runner.started_at_ms),
                 record.runner.nonce,
+                record.controller_epoch.map(to_sql),
                 record.workspace_id,
                 record.approval_id.map(|id| id.0.as_str()),
                 record.attempt_id,
@@ -535,6 +539,7 @@ mod tests {
         store.record_dispatch(&NewProcessRecord {
             process_id,
             runner,
+            controller_epoch: Some(3),
             workspace_id: "demo",
             approval_id,
             attempt_id: Some("cs-attempt-1"),
@@ -601,7 +606,7 @@ mod tests {
         let sent = record(&store, "proc-1");
         assert_eq!(sent.phase, ProcessPhase::Dispatching);
         assert_eq!(sent.runner, runner);
-        assert_eq!(sent.controller_epoch, None);
+        assert_eq!(sent.controller_epoch, Some(3));
         assert_eq!(sent.workspace_id, "demo");
         assert_eq!(sent.approval_id, None);
         assert_eq!(sent.attempt_id.as_deref(), Some("cs-attempt-1"));
@@ -914,6 +919,7 @@ mod tests {
                 .record_dispatch(&NewProcessRecord {
                     process_id: "proc-secret",
                     runner: &runner,
+                    controller_epoch: None,
                     workspace_id: "demo",
                     approval_id: None,
                     attempt_id: None,

@@ -1,17 +1,20 @@
 //! The gateway with an independent Runner (P1R-C01), each started as an operator starts it: the
 //! Runner outlives a gateway, the next gateway inherits its processes but starts nothing, and a
 //! gateway that ends leaves or stops the Runner as its exit intent says. Each gateway records
-//! its executions in the operations database, which it is the only writer of (P1R-C02). The
-//! tests with a Runner need the worker binary (`CODESPACE_RUNTIME_BIN`) and return early
-//! without it, as the gateway's other worker tests do.
+//! its executions in the operations database, which it is the only writer of (P1R-C02), and
+//! takes control of the Runner with a Claim for that database (P1R-C03). The tests with a
+//! Runner need the worker binary (`CODESPACE_RUNTIME_BIN`) and return early without it, as the
+//! gateway's other worker tests do.
 
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use codespace_domain::{
-    ProcessTermination, TOOL_EXEC_COMMAND, TOOL_PROCESS_STATUS, TOOL_READ_PROCESS,
+    ProcessState, ProcessTermination, TOOL_EXEC_COMMAND, TOOL_PROCESS_STATUS, TOOL_READ_PROCESS,
 };
+use codespace_runner::{ClaimError, ClaimRefusal, UdsRunner};
 use codespace_store::{ProcessOutcome, ProcessPhase, Store, WriterLock};
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{RunningService, ServiceError};
@@ -69,7 +72,10 @@ impl Setup {
         std::fs::write(
             &cfg,
             serde_json::json!({
-                "workspaces": { "demo": { "root": ws, "profile": "workspace-write" } }
+                "workspaces": {
+                    "demo": { "root": ws, "profile": "workspace-write" },
+                    "online": { "root": ws, "profile": "workspace-write", "network": "enabled" }
+                }
             })
             .to_string(),
         )
@@ -216,10 +222,18 @@ struct Gateway {
 
 impl Gateway {
     async fn exec(&self, command: &[&str]) -> Result<CallToolResult, ServiceError> {
+        self.exec_in("demo", command).await
+    }
+
+    async fn exec_in(
+        &self,
+        workspace_id: &str,
+        command: &[&str],
+    ) -> Result<CallToolResult, ServiceError> {
         self.client
             .call_tool(
                 CallToolRequestParams::new(TOOL_EXEC_COMMAND).with_arguments(object!({
-                    "workspace_id": "demo",
+                    "workspace_id": workspace_id,
                     "command": command
                 })),
             )
@@ -228,7 +242,11 @@ impl Gateway {
 
     /// Start `command` and return its process id.
     async fn started(&self, command: &[&str]) -> String {
-        let started = self.exec(command).await.expect("exec");
+        self.started_in("demo", command).await
+    }
+
+    async fn started_in(&self, workspace_id: &str, command: &[&str]) -> String {
+        let started = self.exec_in(workspace_id, command).await.expect("exec");
         let body = payload(&started);
         assert_eq!(body["dispatch_status"], "confirmed", "{body}");
         body["process_id"].as_str().unwrap().to_string()
@@ -652,6 +670,180 @@ async fn a_restarted_gateway_waits_for_the_one_before_it_and_finds_its_records()
 
     let shut = next.shut_down().await;
     assert!(shut.success(), "{shut:?}");
+    let status = exited(&mut runner).await;
+    assert!(status.success(), "{status:?}");
+}
+
+/// While a gateway controls the independent Runner, even one stopped with SIGSTOP whose
+/// connection stays open, another Claim is refused: nothing pushes a live controller out
+/// (P1R-C03). Once that gateway ends, the next Claim is granted after it, states the processes
+/// it inherits, and lets a later gateway take over in turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_is_refused_while_a_stopped_gateway_holds_the_runner_and_granted_once_it_ends() {
+    let Some(bin) = runtime_bin() else {
+        return;
+    };
+    let setup = Setup::new();
+    let mut runner = setup.start_runner(&bin).await;
+    let first = setup.gateway("detach").await;
+    let process_id = first
+        .started(&["/bin/sh", "-c", "echo started; exec sleep 30"])
+        .await;
+    first.output(&process_id, "started").await;
+    // The store id is no secret from the same user: it guards against a mistaken gateway.
+    let store_id = Store::open(&setup.database()).unwrap().store_id().unwrap();
+    let stopped = std::process::Command::new("kill")
+        .args(["-STOP", &first.process.id().unwrap().to_string()])
+        .status()
+        .unwrap();
+    assert!(stopped.success());
+    let client = UdsRunner::connect(&setup.socket, Arc::new(|_: &str| {}))
+        .await
+        .unwrap();
+    match client.claim(&store_id).await {
+        Err(ClaimError::Refused { refusal, message }) => {
+            assert_eq!(refusal, ClaimRefusal::ControllerActive, "{message}");
+            assert!(message.contains("still open"), "{message}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let killed = Instant::now();
+    first.kill().await;
+    let claim = loop {
+        match client.claim(&store_id).await {
+            Ok(claim) => break claim,
+            // Until the Runner reads the end of the killed gateway's connection.
+            Err(ClaimError::Refused {
+                refusal: ClaimRefusal::ControllerActive,
+                message,
+            }) => {
+                assert!(killed.elapsed() < Duration::from_secs(10), "{message}");
+                sleep(Duration::from_millis(20)).await;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    eprintln!(
+        "p1r-c03 claim latency: granted {:?} after the stopped gateway was killed",
+        killed.elapsed()
+    );
+    assert_eq!((claim.epoch, claim.previous_controller), (2, true));
+    assert!(
+        claim
+            .processes
+            .iter()
+            .any(|entry| entry.status.process_id.0 == process_id
+                && entry.status.state == ProcessState::Running),
+        "{claim:?}"
+    );
+    client.detach().await.unwrap();
+
+    let next = setup.gateway("stop").await;
+    assert_eq!(next.status(&process_id).await["state"], "running");
+    let refused = next.exec(&["/bin/echo", "new"]).await;
+    assert_eq!(error_body(&refused)["code"], "RECOVERY_PENDING");
+    let ended = next.shut_down().await;
+    assert!(ended.success(), "{ended:?}");
+    let status = exited(&mut runner).await;
+    assert!(status.success(), "{status:?}");
+}
+
+/// A gateway whose operations database is not the one the independent Runner was first
+/// claimed for is refused, and leaves the Runner as it was (P1R-C03): the gateway of the
+/// Runner's own database then starts work normally, as nothing was started before it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gateway_with_another_operations_database_is_refused() {
+    let Some(bin) = runtime_bin() else {
+        return;
+    };
+    let setup = Setup::new();
+    let mut runner = setup.start_runner(&bin).await;
+    let first = setup.gateway("detach").await;
+    let ended = first.shut_down().await;
+    assert!(ended.success(), "{ended:?}");
+
+    let args = setup.independent("stop");
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut other = setup.gateway_command(&args);
+    other.env(
+        "CODESPACE_OPERATIONS_DB",
+        setup.root.path().join("other.sqlite"),
+    );
+    let refusal = refused(other).await;
+    assert!(
+        refusal.contains("refused this gateway's Claim (store_mismatch)"),
+        "{refusal}"
+    );
+    let next = setup.gateway("stop").await;
+    let process_id = next.started(&["/bin/echo", "after"]).await;
+    next.output(&process_id, "after").await;
+    let ended = next.shut_down().await;
+    assert!(ended.success(), "{ended:?}");
+    let status = exited(&mut runner).await;
+    assert!(status.success(), "{status:?}");
+}
+
+/// Connects to the Unix socket named by its argument and says how far it got: whether it sees
+/// the socket, then `connected`, or the call that failed and its errno.
+const CONNECT: &str = r#"use Socket;
+my $path = shift;
+print -S $path ? "visible\n" : "invisible\n";
+socket(my $s, AF_UNIX, SOCK_STREAM, 0) or do { printf "socket %d\n", $! + 0; exit 0 };
+connect($s, pack_sockaddr_un($path)) or do { printf "connect %d\n", $! + 0; exit 0 };
+print "connected\n";
+"#;
+
+/// A command that the Linux sandbox runs cannot connect to the independent Runner's socket,
+/// whether its workspace's network is restricted or enabled, so it cannot take control of the
+/// Runner (P1R-C03); the same command run by the test connects. Without the sandbox, which an
+/// enabled network needs, a command connects as any process of the same user does: the
+/// exposure that the operator documents name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sandboxed_command_cannot_reach_the_runner_socket() {
+    let Some(bin) = runtime_bin() else {
+        return;
+    };
+    let setup = Setup::new();
+    let mut runner = setup.start_runner(&bin).await;
+    let socket = setup.socket.display().to_string();
+    let direct = std::process::Command::new("/usr/bin/perl")
+        .args(["-e", CONNECT, &socket])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&direct.stdout),
+        "visible\nconnected\n",
+        "{direct:?}"
+    );
+    let sandboxed = codespace_runner::linux_sandbox_available();
+    let workspaces: &[&str] = if sandboxed {
+        &["demo", "online"]
+    } else {
+        &["demo"]
+    };
+    let gateway = setup.gateway("stop").await;
+    for &workspace_id in workspaces {
+        let process_id = gateway
+            .started_in(workspace_id, &["/usr/bin/perl", "-e", CONNECT, &socket])
+            .await;
+        let status = gateway.ended(&process_id).await;
+        assert_eq!(status["exit_code"], 0, "{workspace_id}: {status}");
+        let output = gateway.output(&process_id, "\n").await;
+        let reached = output.lines().last().unwrap_or_default().to_string();
+        if sandboxed {
+            assert!(
+                ["socket 1", "socket 13", "connect 1", "connect 13"].contains(&reached.as_str()),
+                "{workspace_id}: {output:?}"
+            );
+        } else {
+            assert_eq!(reached, "connected", "{workspace_id}: {output:?}");
+        }
+    }
+    // The gateway still controls the Runner.
+    let process_id = gateway.started(&["/bin/echo", "after"]).await;
+    gateway.output(&process_id, "after").await;
+    let ended = gateway.shut_down().await;
+    assert!(ended.success(), "{ended:?}");
     let status = exited(&mut runner).await;
     assert!(status.success(), "{status:?}");
 }

@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -136,8 +135,6 @@ struct StartedRunner {
     runner: RuntimeBackend,
     process: Option<RuntimeProcess>,
     lifecycle: GatewayLifecycle,
-    /// Set before the gateway ends its connection to an independent Runner itself.
-    leaving: Arc<AtomicBool>,
     /// The records of the executions sent to an independent Runner (P1R-C02).
     records: Option<Arc<ProcessRecords>>,
 }
@@ -151,13 +148,11 @@ impl StartedRunner {
             runner,
             process,
             lifecycle,
-            leaving,
             records: _,
         } = self;
         if let (GatewayLifecycle::Independent { exit_intent }, RuntimeBackend::Uds(runner)) =
             (lifecycle, &runner)
         {
-            leaving.store(true, Ordering::SeqCst);
             let intent = match ending {
                 Ending::Restart => RunnerExitIntent::Detach,
                 Ending::Shutdown => exit_intent,
@@ -206,13 +201,11 @@ async fn start_runner(
             store_for_lease.release_process(process_id);
         })
     };
-    let leaving = Arc::new(AtomicBool::new(false));
     match cli.runner {
         RunnerMode::InProcess => Ok(StartedRunner {
             runner: RuntimeBackend::in_process(on_release),
             process: None,
             lifecycle,
-            leaving,
             records: None,
         }),
         RunnerMode::Uds => {
@@ -221,11 +214,15 @@ async fn start_runner(
             {
                 // Each exit releases its lease and is recorded (P1R-C02).
                 let (on_release, exits) = ProcessRecords::release_hook(store.clone());
-                // The gateway only connects; the Runner registers itself, from its own
-                // credential file, and nothing is handed to it (P1R-C01).
-                let runner =
-                    RuntimeProcess::connect_independent(socket, on_release, leaving.clone())
-                        .await?;
+                // The Runner remembers the operations database it was first claimed for
+                // (P1R-C03).
+                let store_id = store.store_id().map_err(|err| {
+                    anyhow::anyhow!("the operations database's identity: {}", err.message)
+                })?;
+                // The gateway only connects and claims; the Runner registers itself, from its
+                // own credential file, and nothing is handed to it (P1R-C01).
+                let (runner, _claim) =
+                    RuntimeProcess::connect_independent(socket, &store_id, on_release).await?;
                 #[cfg(feature = "devguard")]
                 if cli.devguard.worker().is_some() {
                     codespace_server::runtime::require_registration(&runner, socket)?;
@@ -240,7 +237,6 @@ async fn start_runner(
                     runner,
                     process: None,
                     lifecycle,
-                    leaving,
                     records: Some(records),
                 });
             }
@@ -260,7 +256,6 @@ async fn start_runner(
                         runner: RuntimeBackend::Uds(runner),
                         process: Some(process),
                         lifecycle,
-                        leaving,
                         records: None,
                     });
                 }
@@ -271,7 +266,6 @@ async fn start_runner(
                     runner: RuntimeBackend::Uds(runner),
                     process: Some(process),
                     lifecycle,
-                    leaving,
                     records: None,
                 });
             }
@@ -285,7 +279,6 @@ async fn start_runner(
                 runner: RuntimeBackend::Uds(runner),
                 process: None,
                 lifecycle,
-                leaving,
                 records: None,
             })
         }

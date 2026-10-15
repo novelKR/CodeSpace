@@ -1914,8 +1914,6 @@ pub(crate) mod tests {
                     protocol: WIRE_PROTOCOL,
                     lifecycle: RunnerLifecycle::Managed,
                     identity: None,
-                    previous_controller: false,
-                    inherited_processes: 0,
                     registration,
                     admission: registration,
                     launch: false,
