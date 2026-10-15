@@ -51,7 +51,7 @@ If helper application fails, the Runner attempts per-file snapshot restoration. 
 
 ## Process lifetime
 
-MCP request completion does not end a managed process. Clients continue with its `process_id`. Server restart loses those handles. In UDS mode the gateway owns the worker: internal disconnect/shutdown ends the worker and its children, with no reconnect. An [independent Runner](runner-isolation.md#independent-runner), not a supported mode yet, outlives its gateways instead, and a gateway that lost its connection to it claims it again and reconciles what earlier controllers left before it starts new work where they did. See [runner isolation](runner-isolation.md) for the distinct transport and isolation boundaries.
+MCP request completion does not end a managed process. Clients continue with its `process_id`. Server restart loses those handles. In UDS mode the gateway owns the worker: internal disconnect/shutdown ends the worker and its children, with no reconnect. An [independent Runner](runner-isolation.md#independent-runner), not a supported mode yet, outlives its gateways instead, and a gateway that lost its connection to it claims it again and reconciles what earlier controllers left before it starts new work where they did. When the Runner itself is lost, the gateway answers for its executions from their records, and their workspaces wait for an operator ([Runner loss](runner-isolation.md#runner-loss)). See [runner isolation](runner-isolation.md) for the distinct transport and isolation boundaries.
 
 ## Planned execution coordination
 

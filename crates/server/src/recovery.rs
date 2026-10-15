@@ -16,11 +16,14 @@
 //! | none | holds it running | any | the workspace stays blocked |
 //! | anything else | | | the workspace stays blocked: a failed lookup is asked again, a mismatch waits for an operator |
 //!
-//! A Runner proves that it never received a request only for itself: a record sent to another
-//! Runner keeps its workspace blocked. An approval left `resuming` is consumed with the process
-//! the Runner created for it, given back when the Runner proved that it created none, and
-//! otherwise left as it is. A workspace that waits is reconciled again after each exit, and
-//! one that waits for an answer also after a growing pause.
+//! A Runner proves that it never received a request only for itself. A record of an execution
+//! sent to another Runner that has not ended means that Runner was lost, since another one
+//! answers at its socket (P1R-C05): the record becomes `unknown`, with why, and like every
+//! record whose Runner was lost it keeps its workspace blocked until an operator releases it
+//! (D8). An approval left `resuming` is consumed with the process the Runner created for it,
+//! given back when the Runner proved that it created none, and otherwise left as it is. A
+//! workspace that waits is reconciled again after each exit, and one that waits for an answer
+//! also after a growing pause.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -31,7 +34,10 @@ use codespace_domain::{
     OperationResumeResult, ProcessId, ProcessState,
 };
 use codespace_runner::{Recalled, RunnerClaim, RunnerProcessStatus, UdsRunner};
-use codespace_store::{ProcessOutcome, ProcessPhase, ProcessRecord, RecordedParticipation, Store};
+use codespace_store::{
+    ProcessLoss, ProcessOutcome, ProcessPhase, ProcessRecord, RecordedParticipation, RunnerRef,
+    Store,
+};
 use tokio::sync::watch;
 
 use crate::records::{Leases, ProcessRecords};
@@ -278,6 +284,7 @@ impl Recovery {
     ) -> BTreeMap<String, Bar> {
         let mut bars = Bars::default();
         let ours = self.records.runner();
+        let lost = self.lose_other_runners(records);
         let mut decisions: Vec<Option<Decision>> = Vec::with_capacity(records.len());
         let mut asked = Vec::new();
         for (index, record) in records.iter().enumerate() {
@@ -285,16 +292,24 @@ impl Recovery {
                 ProcessPhase::Terminal => Some(Decision::Settled {
                     started: record.outcome != Some(ProcessOutcome::NotStarted),
                 }),
-                // Only the Runner that was sent it can prove what became of it (P1R-C05).
-                _ if record.runner != *ours => Some(Decision::Blocked(format!(
-                    "process `{}` was sent to another Runner, which this gateway cannot ask \
-                     what became of it",
-                    record.process_id
+                ProcessPhase::Unknown => Some(Decision::Blocked(awaits_release(
+                    record,
+                    record.lost.unwrap_or(ProcessLoss::RunnerLost),
                 ))),
-                ProcessPhase::Unknown => Some(Decision::Blocked(format!(
-                    "the record of process `{}` says that what became of it cannot be learned",
-                    record.process_id
-                ))),
+                // Only the Runner that was sent it can prove what became of it, and that Runner
+                // is lost (P1R-C05).
+                _ if record.runner != *ours => Some(match lost.get(&record.process_id) {
+                    Some(Ok(loss)) => Decision::Blocked(awaits_release(record, *loss)),
+                    Some(Err(err)) => Decision::Pending(format!(
+                        "the Runner that process `{}` was sent to is lost, and its record could \
+                         not say so: {err}",
+                        record.process_id
+                    )),
+                    None => Decision::Pending(format!(
+                        "the record of process `{}` was not marked lost",
+                        record.process_id
+                    )),
+                }),
                 ProcessPhase::Dispatching | ProcessPhase::Running => {
                     asked.push(index);
                     None
@@ -460,6 +475,53 @@ impl Recovery {
             }
         }
         bars.0
+    }
+
+    /// The Runners other than this gateway's that `records` sent executions to which have not
+    /// ended are lost: another Runner answers at their socket (P1R-C05). Each of their records
+    /// that had not ended becomes `unknown`, for a restart of the host when the lost Runner ran
+    /// on an earlier boot. Returns, for each such record, its loss, or why it could not be
+    /// recorded.
+    fn lose_other_runners(
+        &self,
+        records: &[ProcessRecord],
+    ) -> HashMap<String, Result<ProcessLoss, String>> {
+        let ours = self.records.runner();
+        let mut runners: Vec<&RunnerRef> = Vec::new();
+        for record in records {
+            if matches!(
+                record.phase,
+                ProcessPhase::Dispatching | ProcessPhase::Running
+            ) && record.runner != *ours
+                && !runners.contains(&&record.runner)
+            {
+                runners.push(&record.runner);
+            }
+        }
+        let mut lost = HashMap::new();
+        for runner in runners {
+            let loss = ProcessLoss::of(runner, ours.boot_id.as_deref());
+            let marked = self
+                .store
+                .record_runner_lost(runner, loss)
+                .map_err(|err| err.message);
+            if let Ok(processes) = &marked {
+                if !processes.is_empty() {
+                    tracing::warn!(
+                        runner_pid = runner.pid,
+                        loss = loss.as_str(),
+                        ?processes,
+                        "an earlier independent Runner was lost before these processes ended: \
+                         another Runner answers at its socket, so what became of them cannot be \
+                         learned; their workspaces stay blocked until an operator releases them"
+                    );
+                }
+            }
+            for record in records.iter().filter(|record| record.runner == *runner) {
+                lost.insert(record.process_id.clone(), marked.clone().map(|_| loss));
+            }
+        }
+        lost
     }
 
     /// Act on `decision` for `record`, and return what it says of the execution's start.
@@ -667,6 +729,23 @@ impl Bars {
             }
         }
     }
+}
+
+/// Why `record`, whose Runner was lost for `loss`, keeps its workspace blocked until an
+/// operator releases it (P1R-C05, D8).
+fn awaits_release(record: &ProcessRecord, loss: ProcessLoss) -> String {
+    let lost = match loss {
+        ProcessLoss::RunnerLost => {
+            "was sent to a Runner that was lost, so what became of it cannot be learned and it \
+             may still run"
+        }
+        ProcessLoss::HostRebooted => "was sent to a Runner that the host's restart ended",
+    };
+    format!(
+        "process `{}` {lost}; an operator confirms that nothing of it runs and releases its \
+         record (`codespace-mcp records`)",
+        record.process_id
+    )
 }
 
 /// What became of an execution that takes no part in the resource authority, as its Runner

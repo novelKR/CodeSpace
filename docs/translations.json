@@ -78,8 +78,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "73d4de8918976b98bd92f2b1811d0872d9603edf23ac847b59eb9e74a9f36514",
-      "translation_sha256": "9616be59db270581e1035460a8bef34bf06815f46c2db4d79eb87f2bd66d5a6d"
+      "source_sha256": "77bada859adefafb165febb3273f179c6135fcb5b6f757396dd639eb22c3ca0f",
+      "translation_sha256": "319176abbe5b1e8029493d5e3a637e712287a40c518068c6cd0e8b5e38f7b40b"
     },
     {
       "id": "cs-rg-qualification",
@@ -257,8 +257,8 @@
         "재시도와-복구",
         "파일-읽기와-패치"
       ],
-      "source_sha256": "c0257f9844525cb9a2dbbca6fa6ee4dbfa376de877cb8a647d55e4a476031a2d",
-      "translation_sha256": "095fe129c42f71fab2a7ec47bdbffdd81f0c6141e616e454c46e4f2f3134833b"
+      "source_sha256": "a3a4705eb2a425b423aa936b0c3f9b448fbb217f58ec4bbbb8ca7031333ff8d2",
+      "translation_sha256": "6cb63bc559a6b7e9f6fc9c1fa425113c67a08970faef1f84eb98094ef41e6b10"
     },
     {
       "id": "operations",
@@ -284,6 +284,8 @@
         "register-a-workspace",
         "reproduce-the-mvp-flow",
         "run-the-gateway",
+        "runner-loss",
+        "runner-손실",
         "start-the-server",
         "troubleshooting",
         "verify-the-first-connection",
@@ -310,8 +312,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "3b42dfbca4a44361af4476134e59d02af7313f5093590057b0e81ca35b3f42b5",
-      "translation_sha256": "b44f15c0a1c415e6015e4d76ca6421a648ef61572b2b959c9e6faa21d8b6b35c"
+      "source_sha256": "5950758a72f81664dce25afd7c281c9201fab11fa4ae4d78461bdaeb00ce978b",
+      "translation_sha256": "09ca3ed836f6b34f0528e9f750882af013389b47a50047cae4bd512a64250355"
     },
     {
       "id": "chatgpt-connector",
@@ -400,8 +402,8 @@
         "현재-실행-구조",
         "확장-시-유지할-경계"
       ],
-      "source_sha256": "9d03ae6de59d281f2f992bd39e4bf32516946ea0b490de3e0325d2f78cb0574d",
-      "translation_sha256": "10d6fffe680c807b9b7dd22148032e2529ea452d1d527ac2ec6f1cade693aa0b"
+      "source_sha256": "686f0cd9906db317058fa6128080362e74da25bbdd8863095ac849a566d99bb8",
+      "translation_sha256": "02d127df0e182eab1c9c504194143ad9f282162ffed7ca3a8cf53cc3d3d75d6b"
     },
     {
       "id": "execution-substrate",
@@ -465,8 +467,8 @@
         "확인-홀드",
         "훅과-스킬"
       ],
-      "source_sha256": "93e4ef27d771f9bec226af62ae66a785962aea6030050164195d9d9bcadc82ce",
-      "translation_sha256": "512a93517c56dd59aebae0271025658fd3c17a9f318bf3e6217b061245eb2b40"
+      "source_sha256": "366ffeb1ad5ef8112a9dcddc57486851147faf6f257e1bb95be2a764f4a9579a",
+      "translation_sha256": "23aa9948c2ca43fb207ec9843e9b4a93dfb1c23e8023e8d3c8afa6be8da133df"
     },
     {
       "id": "protocol-compatibility",
@@ -576,8 +578,8 @@
         "프로세스-정직성",
         "프로필-mvp"
       ],
-      "source_sha256": "cdb542f72d794730735b7a71cf5c45bfb3aa012d3d6f637196dc28dc41249516",
-      "translation_sha256": "5bd6ab3149c3c72b7d94a96910ff412be67163ad73b0df1b0c8d12b2b9d109cf"
+      "source_sha256": "c9ca06af27ed21c9cce3be7528c9d5aa5cdbe03db171dc02ae24880ffc755859",
+      "translation_sha256": "80cd04a917bbbaf09f0c9f3191fa16b6ef79c1222cf65428a5d0801c5435e70f"
     },
     {
       "id": "runner-isolation",
@@ -604,6 +606,7 @@
         "process-records",
         "reconciliation",
         "runner-isolation",
+        "runner-loss",
         "what-the-compose-fixture-does",
         "이후-프로세스-분리",
         "네트워크와-파일-접근-범위",
@@ -613,8 +616,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "e76149aba184f9de7f6e11441db5f9f519db95f20b62eb367de67e49381f98d2",
-      "translation_sha256": "950575f22d943f0904b7a805b4cd81f154f218a14e219bc16e92e8449d6ff1f7"
+      "source_sha256": "ada35d6e3907abe03287e595acf28acfda9ba546ede51d5d65ce4115db67268a",
+      "translation_sha256": "3336edb2d573475407bb95ff5b8220b3195836e42debb39f1feff0ae61c5a429"
     },
     {
       "id": "error-codes",
@@ -642,8 +645,8 @@
         "전송-실패",
         "전송-실패-작업-없음"
       ],
-      "source_sha256": "5892534235706ee8d0d3a9bf18a1d36b18578441567f3eba92f69d91fbce2010",
-      "translation_sha256": "45046341089415fcc7d64e850629e6605ece6d1ab48b3a05e9579e32f8f56bbd"
+      "source_sha256": "cc10d7c2915b2a339723dfcf81a02201c45aa6396292b2d24a06631561bd45bd",
+      "translation_sha256": "0f20fb1831799f4aae566f1dffff42f20030718959918f819cdcea469974dba7"
     },
     {
       "id": "codex-reuse",

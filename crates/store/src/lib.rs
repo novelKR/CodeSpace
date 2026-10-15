@@ -29,8 +29,8 @@ use sha2::{Digest, Sha256};
 pub use approvals::{ApprovalRecord, ResumeClaim};
 pub use coord::CreateIntent;
 pub use processes::{
-    NewProcessRecord, ProcessEnd, ProcessOutcome, ProcessPhase, ProcessRecord,
-    RecordedParticipation, RootProcess, RunnerRef,
+    unsettled_records_at, NewProcessRecord, ProcessEnd, ProcessLoss, ProcessOutcome, ProcessPhase,
+    ProcessRecord, RecordedParticipation, RootProcess, RunnerRef,
 };
 use resource::AcquireOutcome;
 pub use resource::{LockMode, Resource, ResourceGuard};
@@ -251,6 +251,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         migrate_operations(&conn)?;
         migrate_approvals(&conn)?;
+        processes::migrate(&conn)?;
         // Last, so a database whose upgrade was cut short is upgraded again.
         if version < SCHEMA_VERSION {
             conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
@@ -1462,6 +1463,102 @@ mod tests {
                 "result_json"
             ]
         );
+    }
+
+    /// The `processes` table of a CodeSpace from before P1R-C05, which records no loss.
+    const PROCESSES_BEFORE_LOSS: &str = "CREATE TABLE processes (
+        process_id TEXT PRIMARY KEY,
+        runner_boot_id TEXT,
+        runner_pid INTEGER NOT NULL,
+        runner_started_at_ms INTEGER NOT NULL,
+        runner_nonce TEXT NOT NULL,
+        controller_epoch INTEGER,
+        workspace_id TEXT NOT NULL,
+        approval_id TEXT,
+        attempt_id TEXT,
+        participation TEXT NOT NULL,
+        tty INTEGER NOT NULL,
+        argv_digest TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK (phase IN ('dispatching', 'running', 'terminal', 'unknown')),
+        deadline_at_ms INTEGER,
+        root_pid INTEGER,
+        root_started TEXT,
+        termination TEXT,
+        exit_code INTEGER,
+        signal INTEGER,
+        output_cursor INTEGER,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    );
+    INSERT INTO processes (process_id, runner_boot_id, runner_pid, runner_started_at_ms,
+        runner_nonce, controller_epoch, workspace_id, participation, tty, argv_digest, phase,
+        root_pid, root_started, created_at_ms, updated_at_ms)
+    VALUES ('proc-1', 'boot-a', 4242, 1760000000000, 'nonce-a', 2, 'demo', 'off', 0,
+        'sha256:00', 'running', 777, 'linux:100', 1, 1);
+    PRAGMA user_version = 1;";
+
+    /// Process records from before losses were recorded (P1R-C05) can be listed without
+    /// anything being written to the database, and gain the loss columns, empty, once a gateway
+    /// opens it: each record stays as it was, and so does the schema version.
+    #[test]
+    fn records_from_before_losses_are_listed_as_they_are_and_gain_the_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.sqlite");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(PROCESSES_BEFORE_LOSS)
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let listed = unsettled_records_at(&path).unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        let earlier = &listed[0];
+        assert_eq!(earlier.process_id, "proc-1");
+        assert_eq!(earlier.phase, ProcessPhase::Running);
+        assert_eq!(earlier.runner, runner());
+        assert_eq!((earlier.lost, earlier.released_at_ms), (None, None));
+        assert_eq!(std::fs::read(&path).unwrap(), before, "listing wrote to it");
+
+        let store = Store::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let columns = table_columns(&conn, "processes").unwrap();
+        assert!(columns.ends_with(&["lost".to_string(), "released_at_ms".to_string()]));
+        assert_eq!(user_version(&path), SCHEMA_VERSION);
+        assert_eq!(
+            store.process_record("proc-1").unwrap().as_ref(),
+            Some(earlier)
+        );
+        assert_eq!(unsettled_records_at(&path).unwrap(), listed);
+        // A database brought up to date is opened again as it is.
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.unsettled_records().unwrap(), listed);
+    }
+
+    /// Listing records reads only a database it knows: one that does not exist, or that a newer
+    /// CodeSpace wrote, is refused, and one without process records has none (P1R-C05).
+    #[test]
+    fn listing_records_reads_only_a_database_it_knows() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.sqlite");
+        let err = unsettled_records_at(&missing).unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+        assert!(!missing.exists());
+
+        let newer = dir.path().join("newer.sqlite");
+        dispatch(&Store::open(&newer).unwrap(), "proc-1");
+        rusqlite::Connection::open(&newer)
+            .unwrap()
+            .execute_batch(&format!("PRAGMA user_version = {}", SCHEMA_VERSION + 1))
+            .unwrap();
+        let err = unsettled_records_at(&newer).unwrap_err();
+        assert!(err.contains("newer than this CodeSpace's"), "{err}");
+
+        let plain = dir.path().join("plain.sqlite");
+        rusqlite::Connection::open(&plain)
+            .unwrap()
+            .execute_batch("CREATE TABLE operations (operation_id TEXT PRIMARY KEY);")
+            .unwrap();
+        assert!(unsettled_records_at(&plain).unwrap().is_empty());
     }
 
     /// A database keeps its identity across reopenings, and another database has its own

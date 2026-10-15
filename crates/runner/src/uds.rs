@@ -78,6 +78,21 @@ pub fn runner_disconnected(reason: &str) -> ErrorBody {
     )
 }
 
+/// The refusal of a request to an independent Runner that this gateway lost (P1R-C05): nothing
+/// accepts connections at its socket any more, or another worker answers there. The request was
+/// not sent.
+pub fn runner_lost(reason: &str) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::RunnerDisconnected,
+        format!(
+            "this gateway lost its independent Runner ({reason}), so the request was not sent. \
+             What became of the Runner's processes cannot be learned, and some may still run: \
+             process_status and read_process answer from this gateway's records, and an \
+             operator finds the processes and releases their workspaces"
+        ),
+    )
+}
+
 /// The refusal of a request while this gateway claims its independent Runner again
 /// (P1R-C03): the request was not sent.
 pub fn runner_reconnecting() -> ErrorBody {
@@ -101,6 +116,10 @@ pub enum LinkEvent {
     /// The Runner cannot be claimed again, and why: every later request is refused with
     /// `RUNNER_DISCONNECTED`.
     Gone(String),
+    /// The Runner is lost, and why (P1R-C05): nothing accepts connections at its socket any
+    /// more, or another worker answers there. What becomes of its processes cannot be learned;
+    /// every later request is refused with `RUNNER_DISCONNECTED`.
+    RunnerLost(String),
 }
 
 pub type LinkObserver = Arc<dyn Fn(LinkEvent) + Send + Sync>;
@@ -160,6 +179,8 @@ enum State {
     Reclaiming,
     /// The Runner cannot be claimed again, and why (P1R-C03).
     Gone(String),
+    /// The Runner is lost, and why (P1R-C05).
+    Lost(String),
 }
 
 /// Where and for what a client claims its independent Runner again (P1R-C03).
@@ -173,8 +194,10 @@ struct Reclaim {
 enum Attempt {
     /// Trying again may succeed.
     Retry(String),
-    /// Trying again cannot succeed.
+    /// Trying again cannot succeed: the Runner refused.
     Gone(String),
+    /// Trying again cannot succeed: the Runner is lost (P1R-C05).
+    Lost(String),
 }
 
 struct Client {
@@ -203,6 +226,8 @@ struct Client {
     last_event: AtomicU64,
     /// The Claim of the client's current connection, once it has one (P1R-C04).
     claims: watch::Sender<Option<RunnerClaim>>,
+    /// Why the client lost its Runner, once it did (P1R-C05).
+    lost: watch::Sender<Option<String>>,
 }
 
 pub struct UdsRunner {
@@ -346,6 +371,12 @@ impl UdsRunner {
         self.client.claims.subscribe()
     }
 
+    /// Why this client lost its independent Runner, once it did (P1R-C05): nothing accepts
+    /// connections at the Runner's socket any more, or another worker answers there.
+    pub fn lost(&self) -> watch::Receiver<Option<String>> {
+        self.client.lost.subscribe()
+    }
+
     /// Connect to the independent Runner at `socket` and claim it for the operations database
     /// `store_id` (P1R-C03). While another connection controls the Runner, or that connection's
     /// requests run, and when the Claim's answer was lost, the Claim is asked again over a new
@@ -451,7 +482,9 @@ impl UdsRunner {
             Err(Attempt::Retry(message)) => {
                 Err(ClaimError::Transport(RunnerError::before_dispatch(message)))
             }
-            Err(Attempt::Gone(message)) => Err(ClaimError::NotIndependent(message)),
+            Err(Attempt::Gone(message) | Attempt::Lost(message)) => {
+                Err(ClaimError::NotIndependent(message))
+            }
         }
     }
 
@@ -791,6 +824,7 @@ impl Client {
             leaving: AtomicBool::new(false),
             last_event: AtomicU64::new(0),
             claims: watch::Sender::new(None),
+            lost: watch::Sender::new(None),
         }
     }
 
@@ -839,6 +873,7 @@ impl Client {
             ))),
             State::Reclaiming => Err(RunnerError::execution(runner_reconnecting())),
             State::Gone(reason) => Err(RunnerError::execution(runner_disconnected(reason))),
+            State::Lost(reason) => Err(RunnerError::execution(runner_lost(reason))),
         }
     }
 
@@ -985,6 +1020,12 @@ impl Client {
                     (reclaim.observer)(LinkEvent::Gone(reason));
                     return;
                 }
+                Err(Attempt::Lost(reason)) => {
+                    *self.state() = State::Lost(reason.clone());
+                    self.lost.send_replace(Some(reason.clone()));
+                    (reclaim.observer)(LinkEvent::RunnerLost(reason));
+                    return;
+                }
                 Err(Attempt::Retry(reason)) => {
                     (reclaim.observer)(LinkEvent::Retrying {
                         reason,
@@ -998,8 +1039,9 @@ impl Client {
     }
 
     /// One try to claim the Runner at `socket` again over a new connection, which is not the
-    /// client's until the caller makes it so. Nothing answering at the socket, another Runner
-    /// there, or a refusal that waiting cannot end, means the Runner cannot be claimed again.
+    /// client's until the caller makes it so. Nothing accepting connections at the socket, or
+    /// another worker there, means the Runner is lost (P1R-C05); a refusal that waiting cannot
+    /// end means it cannot be claimed again.
     async fn link_and_claim(
         self: &Arc<Self>,
         socket: &Path,
@@ -1013,7 +1055,7 @@ impl Client {
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                 ) =>
             {
-                return Err(Attempt::Gone(format!(
+                return Err(Attempt::Lost(format!(
                     "nothing accepts connections at {}: {err}",
                     socket.display()
                 )))
@@ -1059,16 +1101,16 @@ impl Client {
                 if identity.is_some() && identity == expected {
                     Ok(())
                 } else {
-                    Err(Attempt::Gone(format!(
+                    Err(Attempt::Lost(format!(
                         "another Runner answers at its socket (pid {})",
                         identity.map_or_else(|| "unknown".into(), |found| found.pid.to_string())
                     )))
                 }
             }
-            Ok(other) => Err(Attempt::Gone(format!(
+            Ok(other) => Err(Attempt::Lost(format!(
                 "the worker at its socket answered Hello with {other:?}"
             ))),
-            Err(RunnerError::Execution(body)) => Err(Attempt::Gone(format!(
+            Err(RunnerError::Execution(body)) => Err(Attempt::Lost(format!(
                 "the worker at its socket refused Hello: {}",
                 body.message
             ))),

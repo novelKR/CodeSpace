@@ -58,8 +58,27 @@ pub struct ReadProcessResult {
     pub output_lost: bool,
     /// First retained process-output offset (`dropped` in the runner).
     pub retained_from: u64,
+    /// Why output is missing or can no longer be read: present whenever output_lost is true,
+    /// and whenever the Runner no longer holds the process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_reason: Option<LostReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordination: Option<CoordinationHint>,
+}
+
+/// Why a process's output is missing, or why what became of the process cannot be learned
+/// (P1R-C05). None of them is a successful end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LostReason {
+    // The output ring kept only the most recent output; the process itself is unaffected.
+    RingOverflow,
+    // The Runner no longer keeps the ended process; the gateway answers from its records.
+    RetentionExpired,
+    // The Runner that ran the process was lost; the process may still run.
+    RunnerLost,
+    // The host restarted since the process started, which ended it.
+    HostRebooted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -67,6 +86,10 @@ pub struct ReadProcessResult {
 pub enum ProcessState {
     Running,
     Exited,
+    // The Runner that ran the process was lost (P1R-C05): it may still run, and CodeSpace
+    // cannot learn what becomes of it. Not an end. A plain comment keeps the schema a single
+    // string enum.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -110,6 +133,11 @@ pub struct ProcessStatusResult {
     pub output_total: u64,
     pub output_retained_from: u64,
     pub eof: bool,
+    /// Why output is missing or the state is uncertain: present whenever
+    /// output_retained_from is above 0, state is unknown, or the Runner no longer holds the
+    /// process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_reason: Option<LostReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordination: Option<CoordinationHint>,
 }
@@ -118,7 +146,16 @@ impl ProcessStatusResult {
     pub fn invariants_hold(&self) -> bool {
         match self.state {
             ProcessState::Running => {
-                self.exit_code.is_none() && self.termination.is_none() && self.signal.is_none()
+                self.exit_code.is_none()
+                    && self.termination.is_none()
+                    && self.signal.is_none()
+                    && matches!(self.lost_reason, None | Some(LostReason::RingOverflow))
+            }
+            ProcessState::Unknown => {
+                self.exit_code.is_none()
+                    && self.termination.is_none()
+                    && self.signal.is_none()
+                    && self.lost_reason == Some(LostReason::RunnerLost)
             }
             ProcessState::Exited => match self.termination {
                 Some(ProcessTermination::Exited) => self.signal.is_none(),
@@ -243,6 +280,7 @@ mod tests {
             output_total: 0,
             output_retained_from: 0,
             eof: false,
+            lost_reason: None,
             coordination: None,
         })
         .unwrap();
@@ -258,6 +296,7 @@ mod tests {
             output_total: 0,
             output_retained_from: 0,
             eof: false,
+            lost_reason: None,
             coordination: None,
         }
         .invariants_hold());
@@ -270,6 +309,7 @@ mod tests {
             output_total: 0,
             output_retained_from: 0,
             eof: false,
+            lost_reason: None,
             coordination: None,
         }
         .invariants_hold());
@@ -290,6 +330,7 @@ mod tests {
             output_total: 12,
             output_retained_from: 0,
             eof: true,
+            lost_reason: None,
             coordination: None,
         })
         .unwrap();
@@ -309,6 +350,7 @@ mod tests {
             output_total: 0,
             output_retained_from: 0,
             eof: true,
+            lost_reason: None,
             coordination: None,
         })
         .unwrap();
@@ -328,6 +370,7 @@ mod tests {
             output_total: 0,
             output_retained_from: 0,
             eof: true,
+            lost_reason: None,
             coordination: None,
         };
         let kill = ProcessSignal {
@@ -376,15 +419,111 @@ mod tests {
             eof: false,
             output_lost: true,
             retained_from: 8,
+            lost_reason: Some(LostReason::RingOverflow),
             coordination: None,
         })
         .unwrap();
         assert_eq!(json["output_lost"], true);
         assert_eq!(json["retained_from"], 8);
+        assert_eq!(json["lost_reason"], "ring_overflow");
         let schema = serde_json::to_value(schemars::schema_for!(ReadProcessResult)).unwrap();
         let dumped = schema.to_string();
         assert!(dumped.contains("output_lost"), "{dumped}");
         assert!(dumped.contains("retained_from"), "{dumped}");
+        assert!(dumped.contains("lost_reason"), "{dumped}");
+        let complete = serde_json::to_value(ReadProcessResult {
+            process_id: ProcessId("proc-1".into()),
+            cursor: 3,
+            chunk: "abc".into(),
+            eof: true,
+            output_lost: false,
+            retained_from: 0,
+            lost_reason: None,
+            coordination: None,
+        })
+        .unwrap();
+        assert!(complete.get("lost_reason").is_none(), "{complete}");
+    }
+
+    /// Each reason for missing output or an uncertain state is a name of a single string enum
+    /// (P1R-C05), and so is the `unknown` state.
+    #[test]
+    fn reasons_and_the_unknown_state_cross_as_names() {
+        let reasons = serde_json::to_value(schemars::schema_for!(LostReason)).unwrap();
+        assert_eq!(
+            reasons["enum"],
+            serde_json::json!([
+                "ring_overflow",
+                "retention_expired",
+                "runner_lost",
+                "host_rebooted"
+            ]),
+            "{reasons}"
+        );
+        let states = serde_json::to_value(schemars::schema_for!(ProcessState)).unwrap();
+        assert_eq!(
+            states["enum"],
+            serde_json::json!(["running", "exited", "unknown"]),
+            "{states}"
+        );
+        let schema = serde_json::to_value(schemars::schema_for!(ProcessStatusResult)).unwrap();
+        assert!(schema.to_string().contains("lost_reason"), "{schema}");
+    }
+
+    /// A process whose Runner was lost is in no state that reads as an end: `unknown` carries
+    /// no exit code, termination or signal, and always says why (P1R-C05). A running process
+    /// can only have lost output to the ring.
+    #[test]
+    fn an_unknown_state_says_why_and_is_no_end() {
+        let status = |state, termination, lost_reason| ProcessStatusResult {
+            process_id: ProcessId("proc-1".into()),
+            state,
+            exit_code: None,
+            termination,
+            signal: None,
+            output_total: 9,
+            output_retained_from: 9,
+            eof: true,
+            lost_reason,
+            coordination: None,
+        };
+        let lost = status(ProcessState::Unknown, None, Some(LostReason::RunnerLost));
+        assert!(lost.invariants_hold());
+        let json = serde_json::to_value(&lost).unwrap();
+        assert_eq!(json["state"], "unknown");
+        assert_eq!(json["lost_reason"], "runner_lost");
+        assert!(json.get("exit_code").is_none());
+        assert!(json.get("termination").is_none());
+
+        assert!(!status(ProcessState::Unknown, None, None).invariants_hold());
+        assert!(!status(
+            ProcessState::Unknown,
+            None,
+            Some(LostReason::RetentionExpired)
+        )
+        .invariants_hold());
+        assert!(!status(
+            ProcessState::Unknown,
+            Some(ProcessTermination::Unknown),
+            Some(LostReason::RunnerLost)
+        )
+        .invariants_hold());
+        let mut ended = status(ProcessState::Unknown, None, Some(LostReason::RunnerLost));
+        ended.exit_code = Some(0);
+        assert!(!ended.invariants_hold());
+
+        assert!(
+            status(ProcessState::Running, None, Some(LostReason::RingOverflow)).invariants_hold()
+        );
+        assert!(
+            !status(ProcessState::Running, None, Some(LostReason::RunnerLost)).invariants_hold()
+        );
+        assert!(status(
+            ProcessState::Exited,
+            Some(ProcessTermination::Unknown),
+            Some(LostReason::HostRebooted)
+        )
+        .invariants_hold());
     }
 
     #[test]

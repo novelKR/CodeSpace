@@ -89,13 +89,15 @@ def stages():
         # against the worker, the fixture authority and the helper built here. With them, the
         # independent Runner (P1R-C01): its identity, socket directory and wire, its Claim with
         # the peer credentials that macOS reads through `getpeereid` (P1R-C03), the gateway's
-        # settings, refusals and reconnect, then the worker binary and the gateway binary
-        # against it, with the default worker built again over the DevGuard one.
+        # settings, refusals and reconnect, the operator's records commands, which read the
+        # host's boot session and whether a process still runs as itself (P1R-C05), then the
+        # worker binary and the gateway binary against it, with the default worker built again
+        # over the DevGuard one.
         + devguard_binaries()
         + [cargo('test', 'devguard'),
            cargo('test', 'codex-runtime', '--features', 'devguard', '--bin', 'codespace-codex-runtime'),
            cargo('test', 'root', '-p', 'codespace-runner', '--features', 'devguard', '--lib', '--', 'registration', 'wire', 'admission', 'launch', 'independent', 'lifecycle'),
-           cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard', 'independent'),
+           cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--lib', '--', 'devguard', 'independent', 'operator'),
            cargo('build', 'codex-runtime', '--bin', 'codespace-codex-runtime'),
            cargo('test', 'codex-runtime', '--test', 'runtime_binary', '--', 'independent'),
            cargo('test', 'root', '-p', 'codespace-server', '--features', 'devguard', '--test', 'independent_runner')],

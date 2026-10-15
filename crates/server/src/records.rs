@@ -5,20 +5,26 @@
 //! ended: the Runner is the authority on live processes. Once a record says how an execution
 //! ended, the gateway acknowledges it to the Runner, which until then keeps the ended process
 //! for a controller (P1R-C04).
+//!
+//! When the Runner no longer holds a process, or the gateway lost the Runner, the records answer
+//! what the Runner cannot, with why (P1R-C05): an execution whose end was recorded is reported
+//! as it ended, and one whose Runner was lost before it ended as `unknown`, never as an end.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use codespace_domain::ProcessTermination;
 use codespace_domain::{
-    ApprovalId, ErrorBody, ErrorCode, ExecCommandParams, ProcessId, ProcessState,
+    ApprovalId, ErrorBody, ErrorCode, ExecCommandParams, LostReason, ProcessId, ProcessState,
+    ProcessStatusResult, ProcessTermination, ReadProcessResult,
 };
 use codespace_runner::{
-    Runner, RunnerIdentity, RunnerInventoryEntry, RunnerProcessRoot, RunnerProcessStatus,
-    RuntimeBackend, ShellRelease,
+    process_signal, Runner, RunnerError, RunnerIdentity, RunnerInventoryEntry, RunnerProcessRoot,
+    RunnerProcessStatus, RuntimeBackend, ShellRelease,
 };
 use codespace_store::{
-    NewProcessRecord, ProcessEnd, RecordedParticipation, RootProcess, RunnerRef, Store,
+    NewProcessRecord, ProcessEnd, ProcessLoss, ProcessOutcome, ProcessPhase, ProcessRecord,
+    RecordedParticipation, RootProcess, RunnerRef, Store,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -87,6 +93,8 @@ pub struct ProcessRecords {
     runner: RunnerRef,
     /// Bumped after each end that the records follow from an exit event (P1R-C04).
     ends: watch::Sender<u64>,
+    /// Set once the gateway lost the Runner (P1R-C05).
+    lost: AtomicBool,
 }
 
 impl ProcessRecords {
@@ -120,6 +128,7 @@ impl ProcessRecords {
                 nonce: identity.nonce.clone(),
             },
             ends: watch::Sender::new(0),
+            lost: AtomicBool::new(false),
         });
         let following = records.clone();
         let Exits(mut exited) = exits;
@@ -153,6 +162,92 @@ impl ProcessRecords {
             }
         });
         records
+    }
+
+    /// Follow the loss of the Runner these records are of (P1R-C05): once `lost` says why the
+    /// gateway lost it, see [`Self::runner_lost`].
+    pub fn follow_loss(self: &Arc<Self>, mut lost: watch::Receiver<Option<String>>) {
+        let records = self.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Some(reason) = lost.borrow_and_update().clone() {
+                    records.runner_lost(&reason);
+                    return;
+                }
+                if lost.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// The gateway lost the Runner these records are of, for `reason` (P1R-C05): what became of
+    /// each execution sent to it that had not ended cannot be learned any more, and some may
+    /// still run, so each of their records becomes `unknown` and keeps its workspace held until
+    /// an operator releases it. An end the Runner reported before still ends its record.
+    pub(crate) fn runner_lost(&self, reason: &str) {
+        self.lost.store(true, Ordering::SeqCst);
+        match self
+            .store
+            .record_runner_lost(&self.runner, ProcessLoss::RunnerLost)
+        {
+            Ok(processes) => tracing::warn!(
+                ?processes,
+                reason,
+                "the independent Runner was lost before these processes ended: what became of \
+                 them cannot be learned, so their records say unknown and their workspaces stay \
+                 held until an operator finds them and releases them"
+            ),
+            Err(err) => tracing::error!(
+                reason,
+                error = %err.message,
+                "the independent Runner was lost, and the records of its processes could not say \
+                 so: their workspaces stay held"
+            ),
+        }
+    }
+
+    /// The record to answer from about `process_id`, which the Runner did not answer about but
+    /// with `err` (P1R-C05): when it no longer holds the process, or the gateway lost it, and
+    /// the record says that the execution was sent. None when the Runner remains the one to
+    /// ask, as for an execution of its own that has not ended as far as its record says.
+    pub(crate) fn recorded(&self, process_id: &ProcessId, err: &RunnerError) -> Option<Recorded> {
+        let lost_runner = match err.as_execution().map(|body| body.code) {
+            Some(ErrorCode::ProcessNotFound) => false,
+            Some(ErrorCode::RunnerDisconnected) if self.lost.load(Ordering::SeqCst) => true,
+            _ => return None,
+        };
+        let record = match self.store.process_record(&process_id.0) {
+            Ok(Some(record)) => record,
+            Ok(None) => return None,
+            Err(err) => {
+                tracing::warn!(
+                    process_id = %process_id.0,
+                    error = %err.message,
+                    "the process record could not be read"
+                );
+                return None;
+            }
+        };
+        if record.outcome == Some(ProcessOutcome::NotStarted) {
+            return None;
+        }
+        let ours = record.runner == self.runner;
+        let loss_since = || ProcessLoss::of(&record.runner, self.runner.boot_id.as_deref());
+        let reason = match (record.lost, record.phase) {
+            (Some(loss), _) => lost_reason(loss),
+            (None, ProcessPhase::Terminal) if ours && lost_runner => LostReason::RunnerLost,
+            // Its end is recorded: only what the Runner retained is gone.
+            (None, ProcessPhase::Terminal) => match loss_since() {
+                ProcessLoss::HostRebooted => LostReason::HostRebooted,
+                ProcessLoss::RunnerLost => LostReason::RetentionExpired,
+            },
+            (None, _) if ours && lost_runner => LostReason::RunnerLost,
+            (None, _) if ours => return None,
+            // Another Runner answers at its Runner's socket.
+            (None, _) => lost_reason(loss_since()),
+        };
+        Some(Recorded { record, reason })
     }
 
     /// The Runner these records are of.
@@ -308,5 +403,88 @@ impl ProcessRecords {
                 false
             }
         }
+    }
+}
+
+/// An execution as its record tells it, when its Runner cannot (P1R-C05).
+pub(crate) struct Recorded {
+    record: ProcessRecord,
+    reason: LostReason,
+}
+
+impl Recorded {
+    /// The furthest output offset the gateway knows of.
+    fn output_total(&self) -> u64 {
+        self.record.output_cursor.unwrap_or(0)
+    }
+
+    /// The execution's status: as its record says it ended, with nothing of its output
+    /// retained. One whose Runner was lost before it ended is `unknown`, never an end; after
+    /// a host restart, it ended, and how is not known.
+    pub(crate) fn status(&self) -> ProcessStatusResult {
+        let record = &self.record;
+        let unknown_end = (
+            ProcessState::Exited,
+            Some(ProcessTermination::Unknown),
+            None,
+            None,
+        );
+        let (state, termination, exit_code, signal) = match (record.phase, record.outcome) {
+            (ProcessPhase::Terminal, Some(ProcessOutcome::Ended(termination))) => match termination
+            {
+                ProcessTermination::Exited => (
+                    ProcessState::Exited,
+                    Some(ProcessTermination::Exited),
+                    record.exit_code,
+                    None,
+                ),
+                ProcessTermination::Signaled => match record.signal {
+                    Some(number) => (
+                        ProcessState::Exited,
+                        Some(ProcessTermination::Signaled),
+                        None,
+                        Some(process_signal(number)),
+                    ),
+                    None => unknown_end,
+                },
+                termination => (ProcessState::Exited, Some(termination), None, None),
+            },
+            (ProcessPhase::Terminal, _) => unknown_end,
+            _ if self.reason == LostReason::HostRebooted => unknown_end,
+            _ => (ProcessState::Unknown, None, None, None),
+        };
+        ProcessStatusResult {
+            process_id: ProcessId(record.process_id.clone()),
+            state,
+            exit_code,
+            termination,
+            signal,
+            output_total: self.output_total(),
+            output_retained_from: self.output_total(),
+            eof: true,
+            lost_reason: Some(self.reason),
+            coordination: None,
+        }
+    }
+
+    /// A read from `cursor`: nothing of the output is retained, and nothing more will be.
+    pub(crate) fn read(&self, cursor: u64) -> ReadProcessResult {
+        ReadProcessResult {
+            process_id: ProcessId(self.record.process_id.clone()),
+            cursor: cursor.max(self.output_total()),
+            chunk: String::new(),
+            eof: true,
+            output_lost: true,
+            retained_from: self.output_total(),
+            lost_reason: Some(self.reason),
+            coordination: None,
+        }
+    }
+}
+
+fn lost_reason(loss: ProcessLoss) -> LostReason {
+    match loss {
+        ProcessLoss::RunnerLost => LostReason::RunnerLost,
+        ProcessLoss::HostRebooted => LostReason::HostRebooted,
     }
 }
