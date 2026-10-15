@@ -5,6 +5,10 @@
 //! the authority on live processes.
 //!
 //! A record keeps the argv's digest, never the argv, its environment or a secret.
+//!
+//! When the Runner an execution was sent to is lost, what became of the execution cannot be
+//! learned any more (P1R-C05): a record that had not ended becomes `unknown`, with why, and
+//! holds its workspace until an operator confirms that nothing of it runs and releases it.
 
 use codespace_domain::{ApprovalId, ErrorBody, ErrorCode, ProcessTermination};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -34,9 +38,30 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS processes (
     signal INTEGER,
     output_cursor INTEGER,
     created_at_ms INTEGER NOT NULL,
-    updated_at_ms INTEGER NOT NULL
+    updated_at_ms INTEGER NOT NULL,
+    lost TEXT,
+    released_at_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_processes_workspace_phase ON processes(workspace_id, phase);";
+
+/// The columns that a database from before P1R-C05 lacks: added, empty, when it is opened. A
+/// CodeSpace from before them leaves them alone, so the schema version stays.
+const LOSS_COLUMNS: [(&str, &str); 2] = [("lost", "TEXT"), ("released_at_ms", "INTEGER")];
+
+/// Add the columns that a `processes` table from before P1R-C05 lacks.
+pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
+    let columns = crate::table_columns(conn, "processes")?;
+    for (name, kind) in LOSS_COLUMNS {
+        if !columns.iter().any(|column| column == name) {
+            conn.execute(
+                &format!("ALTER TABLE processes ADD COLUMN {name} {kind}"),
+                [],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
 
 /// The Runner an execution was sent to, by the identity its `Hello` states (P1R-C01). A Runner
 /// with an earlier Runner's PID, after a restart or a reboot, is another Runner.
@@ -57,12 +82,13 @@ pub enum ProcessPhase {
     Running,
     /// The Runner reported that it ended, or answered that it did not start it.
     Terminal,
-    /// What became of it cannot be learned any more (P1R-C05). Nothing records it yet.
+    /// What became of it cannot be learned any more: the Runner it was sent to was lost before
+    /// it ended (P1R-C05). The record says why.
     Unknown,
 }
 
 impl ProcessPhase {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Dispatching => "dispatching",
             Self::Running => "running",
@@ -82,6 +108,44 @@ impl ProcessPhase {
     }
 }
 
+/// Why what became of an execution cannot be learned any more (P1R-C05).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessLoss {
+    /// The Runner it was sent to was lost: nothing accepts connections at the Runner's socket,
+    /// or another Runner answers there. A process of a killed Runner can outlive it, so the
+    /// execution may still run.
+    RunnerLost,
+    /// The host restarted since the Runner it was sent to started, which ended it.
+    HostRebooted,
+}
+
+impl ProcessLoss {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunnerLost => "runner_lost",
+            Self::HostRebooted => "host_rebooted",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "runner_lost" => Self::RunnerLost,
+            "host_rebooted" => Self::HostRebooted,
+            _ => return None,
+        })
+    }
+
+    /// Why an execution sent to the Runner `lost` cannot be followed any more, on the host
+    /// whose current boot is `boot_id`: a Runner of another boot ended with that boot. Without
+    /// both boots, nothing proves a restart.
+    pub fn of(lost: &RunnerRef, boot_id: Option<&str>) -> Self {
+        match (lost.boot_id.as_deref(), boot_id) {
+            (Some(then), Some(now)) if then != now => Self::HostRebooted,
+            _ => Self::RunnerLost,
+        }
+    }
+}
+
 /// How an execution takes part in the resource authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordedParticipation {
@@ -90,7 +154,7 @@ pub enum RecordedParticipation {
 }
 
 impl RecordedParticipation {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Required => "required",
@@ -217,6 +281,12 @@ pub struct ProcessRecord {
     pub output_cursor: Option<u64>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    /// Why what became of the execution cannot be learned, once its Runner was lost before it
+    /// ended (P1R-C05).
+    pub lost: Option<ProcessLoss>,
+    /// When an operator released the workspace that the record held after its Runner was lost,
+    /// in milliseconds since the Unix epoch (P1R-C05, D8).
+    pub released_at_ms: Option<u64>,
 }
 
 impl ProcessRecord {
@@ -270,6 +340,12 @@ impl ProcessRecord {
         if self.output_cursor.is_none_or(|seen| seen < cursor) {
             self.output_cursor = Some(cursor);
         }
+    }
+
+    /// Whether the record still holds its workspace although what became of its execution
+    /// cannot be learned: it waits for an operator (P1R-C05).
+    pub fn awaits_release(&self) -> bool {
+        self.phase == ProcessPhase::Unknown && self.released_at_ms.is_none()
     }
 }
 
@@ -361,7 +437,7 @@ impl Store {
     /// (P1R-C04): every execution sent to another Runner, or to `runner` under an earlier Claim
     /// or before Claims were recorded, that has not ended as far as its record says, and every
     /// one whose approval is still being resumed. What the gateway sends under its own Claim is
-    /// not. Oldest first.
+    /// not, nor what an operator released (P1R-C05). Oldest first.
     pub fn records_to_reconcile(
         &self,
         runner: &RunnerRef,
@@ -374,6 +450,7 @@ impl Store {
                  WHERE (phase IN ('dispatching', 'running', 'unknown')
                         OR approval_id IN
                            (SELECT approval_id FROM approvals WHERE state = 'resuming'))
+                   AND released_at_ms IS NULL
                    AND NOT (runner_boot_id IS ?1 AND runner_pid = ?2
                             AND runner_started_at_ms = ?3 AND runner_nonce = ?4
                             AND controller_epoch IS NOT NULL AND controller_epoch >= ?5)
@@ -418,6 +495,80 @@ impl Store {
             records.push(row.map_err(record_err)??);
         }
         Ok(records)
+    }
+
+    /// The Runner `lost` was lost (P1R-C05): what became of each execution sent to it that had
+    /// not ended, as far as its record says, cannot be learned any more. Each such record
+    /// becomes `unknown` for `loss`, and holds its workspace until an operator releases it.
+    /// Returns their IDs, oldest first; a record that ended stays as it is.
+    pub fn record_runner_lost(
+        &self,
+        lost: &RunnerRef,
+        loss: ProcessLoss,
+    ) -> Result<Vec<String>, ErrorBody> {
+        let mut conn = self.conn.lock().expect("sqlite mutex");
+        let tx = conn.transaction().map_err(record_err)?;
+        let identity = params![
+            lost.boot_id,
+            lost.pid,
+            to_sql(lost.started_at_ms),
+            lost.nonce
+        ];
+        let unended = "runner_boot_id IS ?1 AND runner_pid = ?2 AND runner_started_at_ms = ?3
+             AND runner_nonce = ?4 AND phase IN ('dispatching', 'running')";
+        let ids = {
+            let mut statement = tx
+                .prepare(&format!(
+                    "SELECT process_id FROM processes WHERE {unended}
+                     ORDER BY created_at_ms, process_id"
+                ))
+                .map_err(record_err)?;
+            let rows = statement
+                .query_map(identity, |row| row.get::<_, String>(0))
+                .map_err(record_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(record_err)?
+        };
+        tx.execute(
+            &format!(
+                "UPDATE processes SET phase = 'unknown', lost = ?5, updated_at_ms = ?6
+                 WHERE {unended}"
+            ),
+            params![
+                lost.boot_id,
+                lost.pid,
+                to_sql(lost.started_at_ms),
+                lost.nonce,
+                loss.as_str(),
+                to_sql(now_ms()),
+            ],
+        )
+        .map_err(record_err)?;
+        tx.commit().map_err(record_err)?;
+        Ok(ids)
+    }
+
+    /// An operator confirmed that nothing of the execution `process_id` runs any more, whose
+    /// Runner was lost, and releases the workspace its record holds (P1R-C05, D8). The record
+    /// stays `unknown`: how the execution ended was never learned. Returns whether it was
+    /// released now: not when it is not waiting for a release, or already was released.
+    pub fn release_record(&self, process_id: &str) -> Result<bool, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        let now = to_sql(now_ms());
+        let released = conn
+            .execute(
+                "UPDATE processes SET released_at_ms = ?2, updated_at_ms = ?2
+                 WHERE process_id = ?1 AND phase = 'unknown' AND released_at_ms IS NULL",
+                params![process_id, now],
+            )
+            .map_err(record_err)?;
+        Ok(released == 1)
+    }
+
+    /// The records that may still hold a workspace (P1R-C05): every execution whose record has
+    /// not ended and was not released, whichever Runner it was sent to, oldest first.
+    pub fn unsettled_records(&self) -> Result<Vec<ProcessRecord>, ErrorBody> {
+        let conn = self.conn.lock().expect("sqlite mutex");
+        unsettled(&conn, RECORD_SELECT)
     }
 
     /// Change the record of an execution that `runner` was sent, and write it back when it
@@ -481,7 +632,73 @@ pub(crate) static CRASH_BEFORE_COMMIT: std::sync::atomic::AtomicBool =
 const RECORD_SELECT: &str = "SELECT process_id, runner_boot_id, runner_pid, runner_started_at_ms,
     runner_nonce, controller_epoch, workspace_id, approval_id, attempt_id, participation, tty,
     argv_digest, phase, deadline_at_ms, root_pid, root_started, termination, exit_code, signal,
-    output_cursor, created_at_ms, updated_at_ms FROM processes";
+    output_cursor, created_at_ms, updated_at_ms, lost, released_at_ms FROM processes";
+
+/// [`RECORD_SELECT`] for a table from before P1R-C05, which records no loss.
+const RECORD_SELECT_BEFORE_LOSS: &str = "SELECT * FROM (SELECT process_id, runner_boot_id,
+    runner_pid, runner_started_at_ms, runner_nonce, controller_epoch, workspace_id, approval_id,
+    attempt_id, participation, tty, argv_digest, phase, deadline_at_ms, root_pid, root_started,
+    termination, exit_code, signal, output_cursor, created_at_ms, updated_at_ms,
+    NULL AS lost, NULL AS released_at_ms FROM processes)";
+
+/// The records that may still hold a workspace, read with `select`.
+fn unsettled(conn: &Connection, select: &str) -> Result<Vec<ProcessRecord>, ErrorBody> {
+    let mut statement = conn
+        .prepare(&format!(
+            "{select}
+             WHERE phase IN ('dispatching', 'running', 'unknown') AND released_at_ms IS NULL
+             ORDER BY created_at_ms, process_id"
+        ))
+        .map_err(record_err)?;
+    let rows = statement.query_map([], map_record).map_err(record_err)?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(record_err)??);
+    }
+    Ok(records)
+}
+
+/// The records that may still hold a workspace in the operations database at `database`, read
+/// without writing anything to it, so that an operator can look while a gateway records into
+/// it (P1R-C05). A database without process records has none; one that a newer CodeSpace wrote
+/// is refused.
+pub fn unsettled_records_at(database: &std::path::Path) -> Result<Vec<ProcessRecord>, String> {
+    use rusqlite::OpenFlags;
+    if !database.exists() {
+        return Err(format!(
+            "the operations database {} does not exist",
+            database.display()
+        ));
+    }
+    let conn = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|err| format!("cannot open {}: {err}", database.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| err.to_string())?;
+    let version = crate::schema_version(&conn)?;
+    if version > crate::SCHEMA_VERSION {
+        return Err(format!(
+            "the operations database has schema version {version}, newer than this \
+             CodeSpace's {}: read it with the CodeSpace that wrote it",
+            crate::SCHEMA_VERSION
+        ));
+    }
+    let columns = crate::table_columns(&conn, "processes")?;
+    if columns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let select = if LOSS_COLUMNS
+        .iter()
+        .all(|(name, _)| columns.iter().any(|column| column == name))
+    {
+        RECORD_SELECT
+    } else {
+        RECORD_SELECT_BEFORE_LOSS
+    };
+    unsettled(&conn, select).map_err(|err| err.message)
+}
 
 fn load(conn: &Connection, process_id: &str) -> Result<Option<ProcessRecord>, ErrorBody> {
     conn.query_row(
@@ -501,6 +718,7 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ProcessRecord,
     let root_pid: Option<u32> = row.get(14)?;
     let root_started: Option<String> = row.get(15)?;
     let termination: Option<String> = row.get(16)?;
+    let lost: Option<String> = row.get(22)?;
     let unreadable = |what: &str, value: &str| {
         Err(ErrorBody::new(
             ErrorCode::Internal,
@@ -518,6 +736,13 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ProcessRecord,
         Some(raw) => match ProcessOutcome::parse(&raw) {
             Some(outcome) => Some(outcome),
             None => return Ok(unreadable("termination", &raw)),
+        },
+    };
+    let lost = match lost {
+        None => None,
+        Some(raw) => match ProcessLoss::parse(&raw) {
+            Some(loss) => Some(loss),
+            None => return Ok(unreadable("loss", &raw)),
         },
     };
     Ok(Ok(ProcessRecord {
@@ -546,6 +771,8 @@ fn map_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ProcessRecord,
         output_cursor: row.get::<_, Option<i64>>(19)?.map(from_sql),
         created_at_ms: from_sql(row.get(20)?),
         updated_at_ms: from_sql(row.get(21)?),
+        lost,
+        released_at_ms: row.get::<_, Option<i64>>(23)?.map(from_sql),
         process_id,
     }))
 }
@@ -1137,6 +1364,132 @@ mod tests {
             ids(&store.records_of_approval(&resumed).unwrap()),
             ["proc-resumed"]
         );
+    }
+
+    /// Once a Runner is lost, each record of what was sent to it that had not ended becomes
+    /// `unknown`, with why, and holds its workspace: a gateway reconciles it, and it is listed,
+    /// until an operator releases it (P1R-C05). A record that ended, and one of another Runner,
+    /// stay as they are. An end the lost Runner reported still ends its record.
+    #[test]
+    fn a_lost_runners_unended_records_wait_for_a_release() {
+        let store = Store::memory().unwrap();
+        let runner = runner();
+        let other = RunnerRef {
+            nonce: "nonce-b".into(),
+            ..runner.clone()
+        };
+        dispatch_under(&store, "proc-dispatching", Some(1), None);
+        dispatch_under(&store, "proc-running", Some(1), None);
+        store
+            .record_running(&runner, "proc-running", Some(&root()), None)
+            .unwrap();
+        dispatch_under(&store, "proc-ended", Some(1), None);
+        store
+            .record_end(&runner, "proc-ended", &exited(0, 3))
+            .unwrap();
+        dispatch_to(&store, &other, "proc-other", Some(1), None);
+        let ended = record(&store, "proc-ended");
+
+        assert_eq!(
+            store
+                .record_runner_lost(&runner, ProcessLoss::RunnerLost)
+                .unwrap(),
+            ["proc-dispatching", "proc-running"]
+        );
+        for process_id in ["proc-dispatching", "proc-running"] {
+            let lost = record(&store, process_id);
+            assert_eq!(lost.phase, ProcessPhase::Unknown, "{process_id}");
+            assert_eq!(lost.lost, Some(ProcessLoss::RunnerLost), "{process_id}");
+            assert_eq!(lost.released_at_ms, None);
+            assert!(lost.awaits_release());
+        }
+        assert_eq!(record(&store, "proc-running").root, Some(root()));
+        assert_eq!(record(&store, "proc-ended"), ended);
+        assert_eq!(
+            record(&store, "proc-other").phase,
+            ProcessPhase::Dispatching
+        );
+        // Nothing is left to lose.
+        assert!(store
+            .record_runner_lost(&runner, ProcessLoss::HostRebooted)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            record(&store, "proc-running").lost,
+            Some(ProcessLoss::RunnerLost)
+        );
+
+        let current = RunnerRef {
+            nonce: "nonce-c".into(),
+            ..runner.clone()
+        };
+        assert_eq!(
+            ids(&store.unsettled_records().unwrap()),
+            ["proc-dispatching", "proc-other", "proc-running"]
+        );
+        assert_eq!(
+            ids(&store.records_to_reconcile(&current, 1).unwrap()),
+            ["proc-dispatching", "proc-other", "proc-running"]
+        );
+
+        // Only a record that waits for it is released, once.
+        assert!(store.release_record("proc-running").unwrap());
+        assert!(!store.release_record("proc-running").unwrap());
+        for process_id in ["proc-ended", "proc-other", "proc-unrecorded"] {
+            assert!(!store.release_record(process_id).unwrap(), "{process_id}");
+        }
+        let released = record(&store, "proc-running");
+        assert_eq!(released.phase, ProcessPhase::Unknown);
+        assert!(released.released_at_ms.is_some());
+        assert!(!released.awaits_release());
+        assert_eq!(
+            ids(&store.unsettled_records().unwrap()),
+            ["proc-dispatching", "proc-other"]
+        );
+        assert_eq!(
+            ids(&store.records_to_reconcile(&current, 1).unwrap()),
+            ["proc-dispatching", "proc-other"]
+        );
+
+        // The lost Runner reported this end before it was lost: the record ends.
+        assert!(store
+            .record_end(&runner, "proc-dispatching", &exited(2, 1))
+            .unwrap());
+        let ended = record(&store, "proc-dispatching");
+        assert_eq!(ended.phase, ProcessPhase::Terminal);
+        assert_eq!(
+            (ended.exit_code, ended.lost),
+            (Some(2), Some(ProcessLoss::RunnerLost))
+        );
+        assert!(!store.release_record("proc-dispatching").unwrap());
+        assert_eq!(ids(&store.unsettled_records().unwrap()), ["proc-other"]);
+    }
+
+    /// A lost Runner of an earlier boot of the host ended with that boot; without both boots,
+    /// nothing proves a restart (P1R-C05).
+    #[test]
+    fn a_loss_names_a_restart_only_across_two_known_boots() {
+        let then = runner();
+        assert_eq!(
+            ProcessLoss::of(&then, Some("boot-b")),
+            ProcessLoss::HostRebooted
+        );
+        assert_eq!(
+            ProcessLoss::of(&then, Some("boot-a")),
+            ProcessLoss::RunnerLost
+        );
+        assert_eq!(ProcessLoss::of(&then, None), ProcessLoss::RunnerLost);
+        let unbooted = RunnerRef {
+            boot_id: None,
+            ..then
+        };
+        assert_eq!(
+            ProcessLoss::of(&unbooted, Some("boot-b")),
+            ProcessLoss::RunnerLost
+        );
+        for loss in [ProcessLoss::RunnerLost, ProcessLoss::HostRebooted] {
+            assert_eq!(ProcessLoss::parse(loss.as_str()), Some(loss));
+        }
     }
 
     /// An approval that a gateway left `resuming` is consumed with the process the Runner

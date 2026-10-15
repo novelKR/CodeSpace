@@ -277,6 +277,13 @@ fn link_observer() -> LinkObserver {
              stop, and this gateway refuses every request that needs the Runner with \
              RUNNER_DISCONNECTED until it is restarted"
         ),
+        LinkEvent::RunnerLost(reason) => tracing::error!(
+            %reason,
+            "lost the independent Runner: what became of its processes cannot be learned and some \
+             may still run, so their records become unknown and keep their workspaces until an \
+             operator finds the processes and releases them (`codespace-mcp records list`); this \
+             gateway refuses every request that needs the Runner with RUNNER_DISCONNECTED"
+        ),
     })
 }
 

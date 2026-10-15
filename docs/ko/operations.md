@@ -115,7 +115,7 @@ export CODESPACE_RUNNER=uds
 export CODESPACE_RUNTIME_BIN="$PWD/dist/codespace-codex-runtime"
 ```
 
-worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다. 프로세스가 게이트웨이보다 오래 살고, 게이트웨이가 그 프로세스를 작업 데이터베이스에 기록하며, 연결을 잃은 게이트웨이가 다시 Claim한 뒤 자기 기록과 대조하는 [독립 Runner](runner-isolation.md#independent-runner)는 아직 지원하는 모드가 아닙니다.
+worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테이너가 아닙니다. 게이트웨이가 전용 소켓 디렉터리를 만들고 자식 프로세스를 관리합니다. worker 연결이 끊기거나 게이트웨이가 종료되면 해당 worker의 프로세스도 종료됩니다. 재접속과 프로세스 복구는 지원하지 않습니다. MCP/HTTP 클라이언트 끊김은 그 프로세스를 죽이지 않습니다. 기본값은 `in-process`입니다. 프로세스가 게이트웨이보다 오래 살고, 게이트웨이가 그 프로세스를 작업 데이터베이스에 기록하며, 연결을 잃은 게이트웨이가 다시 Claim한 뒤 자기 기록과 대조하는 [독립 Runner](runner-isolation.md#independent-runner)는 아직 지원하는 모드가 아닙니다. 이런 Runner 자체를 잃으면 운영자가 `codespace-mcp records`로 그 Runner가 실행하던 것을 정리합니다([Runner 손실](#runner-loss)).
 
 <a id="로그"></a>
 <a id="로그"></a>
@@ -130,8 +130,8 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 | `CODESPACE_OPERATIONS_DB` 미설정 | 패치 작업과 지시 큐를 메모리에 보관하며 재시작 시 사라짐. 독립 Runner에 연결하는 게이트웨이는 이 설정 없이 시작하지 않음 |
 | `CODESPACE_PROCESS_TIMEOUT_SECS` | 양의 정수. 기본 30초. 러너 환경에 설정 |
 | `CODESPACE_MAX_PROCESSES` | 러너 전체의 실행 중 프로세스 기본 상한 8개. 넘는 요청은 프로세스를 만들기 전에 거부. 작업 공간별 점유 규칙도 적용 |
-| 프로세스 출력 | 마지막 256 KiB 보관. stdout/stderr를 합침. `read_process`는 `output_lost`와 `retained_from`을 보고하고, 종료는 `process_status`로 조회. 실행 중인 PTY 크기는 `process_resize`로 변경 |
-| 종료된 핸들 | 기본 최대 15분, 최대 64개 보관. 영구 저장하지 않음. 독립 Runner는 끝난 프로세스의 상태와 출력을 게이트웨이가 확인할 때까지 보관하며, 핸들을 놓은 뒤에는 최대 64개까지 보관함([끝난 프로세스](runner-isolation.md#reconciliation)) |
+| 프로세스 출력 | 마지막 256 KiB 보관. stdout/stderr를 합침. `read_process`는 `output_lost`와 `retained_from`을 보고하고, 출력이 빠진 이유는 `lost_reason`이 알려 줌. 종료는 `process_status`로 조회. 실행 중인 PTY 크기는 `process_resize`로 변경 |
+| 종료된 핸들 | 기본 최대 15분, 최대 64개 보관. 영구 저장하지 않음. 독립 Runner는 끝난 프로세스의 상태와 출력을 게이트웨이가 확인할 때까지 보관하며, 핸들을 놓은 뒤에는 최대 64개까지 보관함([끝난 프로세스](runner-isolation.md#reconciliation)). 그 뒤에는 게이트웨이가 출력 없이 실행 기록으로 답하며 `lost_reason`은 `retention_expired` |
 
 로그와 데이터베이스는 토큰·게이트웨이 설정과 같이 관리 대상 작업 공간 밖에 두세요. stderr 로그의 보관·순환은 운영자가 관리합니다. Bearer 토큰을 로그나 커밋에 넣지 마세요. 데이터베이스를 삭제하면 패치 중복 실행 방지 기록과 확인 홀드 행도 사라집니다.
 
@@ -140,6 +140,43 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 **스키마 버전과 이전 버전.** 작업 데이터베이스에는 스키마 버전이 적혀 있습니다. CodeSpace는 자기보다 새 스키마 버전의 데이터베이스를 아무것도 쓰기 전에 거부하고 그대로 둡니다. 그런 데이터베이스는 그것을 쓴 CodeSpace 버전으로 여세요. [독립 Runner](runner-isolation.md#process-records)에 연결한 게이트웨이는 실행도 이 데이터베이스에 기록하고, [Runner를 Claim](runner-isolation.md#claim)할 때 밝히는 데이터베이스의 임의 식별자를 이 데이터베이스에 두며, 실행 중에는 그 옆의 lock 파일 `<database>.gateway.lock`을 잡고 있습니다. 실행 기록이 생기기 전의 CodeSpace 버전도 이런 데이터베이스를 열 수 있고 기록은 건드리지 않지만, 스키마 버전을 확인하지도 lock을 걸지도 않습니다. 그러니 독립 Runner의 게이트웨이가 쓰는 데이터베이스에서는 이전 버전을 실행하지 마세요. 독립 모드에서 되돌아갈 때는 그 모드를 쓰지 않고 데이터베이스는 그대로 둡니다. 이전 사본을 복원하면 그 뒤에 쓴 패치 중복 실행 방지 기록, 확인 홀드, 실행 기록이 사라집니다.
 
 패치 응답을 받지 못했다면 `operation_id` 또는 `operation_key` 중 하나만 지정해 `operation_status`를 조회합니다. 재시작 후 미완료 기록은 `unknown`이 되므로 파일을 확인한 뒤 다음 행동을 결정하세요. 프로세스는 `process_id`로 관리하며 `operation_status`로 복구할 수 없습니다. 프로세스가 죽을 때 `queued`이던 확인 홀드는 다시 acquire합니다. `resuming`이던 홀드는 패치 원장에서 복구하거나, 저장된 단말 결과를 재현하거나, `APPROVAL_AMBIGUOUS`를 반환할 수 있습니다. exec는 다시 spawn하지 않습니다. 독립 Runner에 연결한 게이트웨이는 `resuming`으로 남은 exec 홀드를 [대조](runner-isolation.md#reconciliation)할 때 정리합니다. Runner가 그 홀드를 위해 만든 프로세스로 consumed가 되거나, Runner가 아무것도 만들지 않았음이 증명되면 다시 granted가 됩니다. [재시도와 복구 규칙](agent-integration.md)을 참고하세요.
+
+<a id="runner-loss"></a>
+
+## Runner 손실
+
+[독립 Runner](runner-isolation.md#independent-runner)에 연결한 게이트웨이에만 해당하며, 이 모드는 아직 지원하지 않습니다. 그 Runner가 kill되거나, 크래시하거나, 멈추거나, 호스트가 재시작하면 Runner가 실행하던 것을 Runner에서 더는 알아낼 수 없고, 그 프로세스는 Runner보다 오래 살 수 있습니다([Runner 손실](runner-isolation.md#runner-loss)). 게이트웨이는 그 프로세스에 대해 기록으로 `lost_reason`과 함께 `unknown`이라고 답합니다. 그 프로세스가 점유하던 workspace는 운영자가 그중 아무것도 실행 중이지 않음을 확인하고 기록을 풀 때까지 계속 거부되며, 다음 게이트웨이에서는 `RECOVERY_PENDING`으로 거부됩니다. CodeSpace는 이 프로세스를 하나도 종료하지 않고, 아무것도 다시 시작하지 않으며, 이 프로세스에 대해 DevGuard에 묻지도 않습니다.
+
+1. **기록을 나열합니다.** 아직 workspace를 점유할 수 있는 기록을 보여 줍니다. 데이터베이스를 읽기만 하므로 게이트웨이가 실행 중이어도 됩니다.
+
+   ```bash
+   ./dist/codespace-mcp records list --operations-db "$CODESPACE_OPERATIONS_DB"
+   ```
+
+   결과는 JSON입니다. 각 기록에는 `process_id`와 `workspace_id`, `dispatching`·`running`·`unknown` 중 하나인 `phase`, 게이트웨이나 release가 손실로 표시했으면 `runner_lost` 또는 `host_rebooted`이고 그 전에는 null인 `lost`, `participation`과 DevGuard `attempt_id`, 그 실행이 재개한 `approval_id`, `tty`가 있습니다. `runner`에는 Runner의 PID와 부팅, 호스트의 이번 부팅에서 실행되었는지를 뜻하는 `this_boot`, 그 PID를 가진 프로세스가 지금 실행 중인지를 뜻하는 `pid_running`이 있습니다. 이 프로세스는 그 PID를 이어받은 다른 프로세스일 수 있습니다. `root`에는 root 프로세스와, 바로 그 프로세스가 아직 실행 중인지를 뜻하는 `running`이 있으며, 기록으로 알 수 없으면 `running`은 null입니다.
+
+2. **아직 실행 중인 것을 찾습니다.** 호스트가 재시작했다면(`host_rebooted`이거나 `this_boot`가 false) 아무것도 실행 중이지 않습니다. 그렇지 않다면 다음을 확인합니다.
+   - `running`이 true이면 root 프로세스가 실행 중입니다. `ps -o pid,pgid,sid,lstart,command -p <pid>`는 프로세스를 그 프로세스 그룹, 세션과 함께 보여 줍니다.
+   - pipe 프로세스와 그 프로세스가 시작한 것은, 스스로 벗어나지 않는 한 자신이 시작된 프로세스 그룹에 남습니다. 그 그룹은 Runner의 프로세스 그룹이거나, 네트워크를 허용한 샌드박스 도우미와 DevGuard의 launch helper처럼 root가 이끄는 그룹입니다. `pgrep -g <pgid>`는 그룹을, `pgrep -P <pid>`는 프로세스의 자식을 나열하고, `lsof -d cwd`는 어떤 프로세스가 workspace 디렉터리에서 작업하는지 보여 줍니다. Runner가 끝난 뒤 출력에 쓴 프로세스는, SIGPIPE를 무시하지 않았다면 그 신호로 끝났을 가능성이 큽니다.
+   - `tty: true` 프로세스는 자기 세션을 이끌며, `pgrep -s <root pid>`가 그 세션을 나열합니다. 이 프로세스는 Runner가 끝날 때 받았을 가능성이 큰 SIGHUP을 무시한 경우에만 Runner보다 오래 삽니다.
+   - Runner를 잃었을 때 아직 `dispatching`이어서 root가 없는 기록은 프로세스를 시작했을 수도, 시작하지 않았을 수도 있습니다. 위와 같이 찾아봅니다.
+   - Linux 명령 샌드박스에서 네트워크를 허용하지 않은 workspace의 명령은 Runner와 함께 끝나지만, 네트워크를 허용한 workspace의 명령은 그렇지 않습니다. 나머지는 Runner의 서비스가 멈출 때 서비스 관리자가 이미 종료했을 수 있습니다. systemd는 기본값 `KillMode=control-group`에 따라 서비스의 control group을, launchd는 job이 `AbandonProcessGroup`을 설정하지 않았다면 job의 프로세스 그룹을 종료합니다. 가정하지 말고 확인하세요.
+
+3. **아직 실행 중인 것을 종료합니다.** 끝까지 실행하지 않기로 정했다면 `kill -TERM <pid>`를 보내고, 끝나지 않으면 `kill -KILL <pid>`를 보냅니다. deadline을 지키게 하던 Runner가 없으므로 이제 deadline이 이 프로세스를 끝내지 않습니다.
+
+4. **`required` 기록은 DevGuard가 그 attempt를 더는 과금하지 않을 때까지 기다립니다.** 잃은 Runner는 DevGuard의 실행 소유자였고, DevGuard는 attempt의 프로세스가 끝났음을 관찰하거나 호스트가 재시작할 때까지 그 attempt를 과금합니다. macOS에서 `devguard admission --open`은 DevGuard의 `quiescence`를 출력합니다. `charged_attempts`는 과금 중인 attempt 수이고, `attempts`는 그 key를 최대 16개 보여 줍니다. 그 key 중 하나가 기록의 `attempt_id`를 가졌거나 `charged_attempts`가 나열된 key 수보다 크면 DevGuard가 아직 그 attempt를 과금하고 있을 수 있습니다. 이 명령은 admission이 닫혀 있으면 다시 엽니다. 중단된 DevGuard upgrade가 admission을 닫힌 채로 남기므로, 그런 upgrade는 [DevGuard 운영 문서](https://github.com/novelKR/DevGuard/blob/7cd86e4c56cdd6c6067ceda183b8f3f82075fcaa/docs/ko/operations.md#제공-명령)대로 먼저 마치세요. DevGuard에는 quiescence를 읽기만 하는 명령이 없습니다. [DevGuard 대조 계약](https://github.com/novelKR/DevGuard/blob/7cd86e4c56cdd6c6067ceda183b8f3f82075fcaa/docs/ko/contracts.md#대조)이 설명하듯 DevGuard가 attempt의 프로세스를 추적하지 못하게 되면, 프로세스가 모두 끝난 뒤에도 호스트가 재시작할 때까지 그 attempt를 과금합니다. DevGuard가 attempt를 과금하는 동안에는 `required` 기록을 풀지 마세요.
+
+5. **게이트웨이를 멈추고 기록을 풉니다.**
+
+   ```bash
+   ./dist/codespace-mcp records release --operations-db "$CODESPACE_OPERATIONS_DB" <process_id>...
+   ```
+
+   실행 중인 게이트웨이는 lock 파일을 잡고 있으므로, 이 명령은 그 데이터베이스에서 게이트웨이가 실행 중이지 않을 때만 기록을 바꿉니다. Runner를 잃은 기록을 그 root 프로세스가 더는 실행 중이지 않을 때 풀고, `released`, `already_released`, 그리고 각각 이유가 붙은 `refused`를 JSON으로 출력합니다. 하나라도 거부하면 종료 상태 1로 끝납니다. 끝난 기록은 workspace를 점유하지 않으므로 거부하고, root 프로세스가 아직 실행 중인 기록과 Runner가 아직 실행 중일 수 있는 기록도 거부합니다. 게이트웨이가 실행되지 않는 동안 멈춘 Runner는 자기 기록을 `running`으로 남깁니다. 이 명령은 그 Runner의 PID를 가진 프로세스가 하나도 없을 때만 그 기록을 그 Runner의 끝나지 않은 다른 기록과 함께 손실로 표시합니다. 이 명령은 프로세스를 종료하지 않습니다. 푼 기록은 `unknown`으로 남고, 그 실행이 재개한 승인에 대해 `operation_resume`은 `APPROVAL_AMBIGUOUS`로 답합니다. 그 명령은 다시 실행되지 않습니다.
+
+6. **Runner와 게이트웨이를 다시 시작합니다.** 게이트웨이는 각 workspace를 대조하며, 기록이 모두 끝났거나 풀린 workspace는 다시 새 작업을 받습니다. DevGuard를 쓰면 새 Runner는 `codespace` 소비자의 인스턴스 하나로 등록하는데, DevGuard는 잃은 Runner의 인스턴스를 retire한 뒤에만, 즉 그 Runner의 attempt가 더는 과금되지 않을 때만 이를 허용합니다. 그때까지 `workspace_info`는 `resource_authority.registration.state`를 `refused`로 보고하고 `required` workspace는 실행되지 않습니다. `off` workspace는 영향을 받지 않습니다. DevGuard는 소비자의 인스턴스가 하나라도 retire되지 않은 동안 그 소비자의 인스턴스 한도를 바꾸지 못하게 합니다.
+
+`RECOVERY_PENDING`이 기록, Runner, DevGuard가 서로 맞지 않는다고 알리는 workspace는 그 Runner가 실행 중인 동안 `records release`로 정리되지 않습니다. 그 Runner를 멈추면 그 Runner가 점유하던 모든 workspace에서 끝나지 않은 기록이 잃은 Runner의 기록이 되고, 그 뒤에는 위 단계를 따릅니다.
 
 <a id="linux-격리-픽스처"></a>
 <a id="linux-격리-픽스처"></a>
@@ -158,5 +195,6 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 | Linux에서 샌드박스가 없다고 표시 | 도우미 위치, bubblewrap, 네임스페이스 지원 확인 |
 | `enabled` 명령 시작 실패 | 사용 가능한 Linux 샌드박스 도우미 필요 |
 | HTTP 요청 거부 | `/mcp` 경로, Bearer 헤더, Host 검증 |
+| 게이트웨이가 Runner를 잃었다고 알리는 `RUNNER_DISCONNECTED`, 또는 `codespace-mcp records`를 알려 주는 `RECOVERY_PENDING` | [Runner 손실](#runner-loss) 절차를 따르기 |
 
 로컬 전송 테스트는 실제 ChatGPT 연결, 모든 패키지 관리자의 프록시 호환성, 커널·컨테이너 탈출 방어까지 검증하지 않습니다.

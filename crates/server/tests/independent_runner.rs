@@ -3,9 +3,11 @@
 //! leaves or stops the Runner as its exit intent says. Each gateway records its executions in
 //! the operations database, which it is the only writer of (P1R-C02), takes control of the
 //! Runner with a Claim for that database (P1R-C03), and reconciles what earlier controllers
-//! left before it starts work where they did (P1R-C04). The tests with a Runner need the
-//! worker binary (`CODESPACE_RUNTIME_BIN`) and return early without it, as the gateway's other
-//! worker tests do.
+//! left before it starts work where they did (P1R-C04). A gateway whose Runner is lost answers
+//! for its executions from their records, and an operator releases what they hold once nothing
+//! of them runs (P1R-C05). The tests with a Runner need the worker binary
+//! (`CODESPACE_RUNTIME_BIN`) and return early without it, as the gateway's other worker tests
+//! do.
 
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -190,6 +192,21 @@ async fn refused(mut command: Command) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// What `codespace-mcp records` prints with `args` for the operations database, and whether
+/// it did all it was asked (P1R-C05).
+async fn records(setup: &Setup, args: &[&str]) -> (serde_json::Value, bool) {
+    let args = [&["records"], args].concat();
+    let output = timeout(
+        Duration::from_secs(30),
+        setup.gateway_command(&args).stdin(Stdio::null()).output(),
+    )
+    .await
+    .expect("the records command ends")
+    .expect("run the records command");
+    let report = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"));
+    (report, output.status.success())
+}
+
 /// The lines a process writes to `stderr`, read for as long as it writes them.
 fn log_lines(stderr: tokio::process::ChildStderr) -> mpsc::UnboundedReceiver<String> {
     let (lines, logged) = mpsc::unbounded_channel();
@@ -265,6 +282,34 @@ impl Gateway {
         let body = payload(&started);
         assert_eq!(body["dispatch_status"], "confirmed", "{body}");
         body["process_id"].as_str().unwrap().to_string()
+    }
+
+    async fn read(&self, process_id: &str, cursor: u64) -> serde_json::Value {
+        let read = self
+            .client
+            .call_tool(
+                CallToolRequestParams::new(TOOL_READ_PROCESS)
+                    .with_arguments(object!({ "process_id": process_id, "cursor": cursor })),
+            )
+            .await
+            .expect("read_process");
+        payload(&read)
+    }
+
+    /// Start `command` once new work in `demo` is no longer refused while the gateway
+    /// reconciles (P1R-C04), and return its process id.
+    async fn started_once_reconciled(&self, command: &[&str]) -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let started = self.exec(command).await;
+            let body = payload(started.as_ref().expect("exec"));
+            if body["code"] != "RECOVERY_PENDING" {
+                assert_eq!(body["dispatch_status"], "confirmed", "{body}");
+                return body["process_id"].as_str().unwrap().to_string();
+            }
+            assert!(Instant::now() < deadline, "not reconciled: {body}");
+            sleep(Duration::from_millis(40)).await;
+        }
     }
 
     async fn status(&self, process_id: &str) -> serde_json::Value {
@@ -860,6 +905,171 @@ async fn a_sandboxed_command_cannot_reach_the_runner_socket() {
     gateway.output(&process_id, "after").await;
     let ended = gateway.shut_down().await;
     assert!(ended.success(), "{ended:?}");
+    let status = exited(&mut runner).await;
+    assert!(status.success(), "{status:?}");
+}
+
+/// The record of `process_id` once `done` holds of it.
+async fn record_once(
+    setup: &Setup,
+    process_id: &str,
+    done: impl Fn(&codespace_store::ProcessRecord) -> bool,
+) -> codespace_store::ProcessRecord {
+    let store = Store::open(&setup.database()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match store.process_record(process_id).unwrap() {
+            Some(record) if done(&record) => return record,
+            record => assert!(Instant::now() < deadline, "{record:?}"),
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// An independent Runner killed with SIGKILL is lost (P1R-C05). Its gateway answers for the
+/// executions it was sent from their records, one that had not ended as `unknown` and one that
+/// ended as it ended, each with `runner_lost`, and refuses new work. Where no command sandbox
+/// ties it to the Runner, a pipe process of the killed Runner keeps running: nothing ended it,
+/// and `records list` shows it. `records release` waits for the gateway to end and for that
+/// process, then releases the record, and a new Runner's gateway starts new work there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_killed_runners_processes_stay_held_until_an_operator_releases_them() {
+    let Some(bin) = runtime_bin() else {
+        return;
+    };
+    let setup = Setup::new();
+    let mut runner = setup.start_runner(&bin).await;
+    let gateway = setup.gateway("detach").await;
+    let ended = gateway
+        .started(&["/bin/sh", "-c", "echo ended; exit 5"])
+        .await;
+    gateway.ended(&ended).await;
+    gateway.output(&ended, "ended").await;
+    record_once(&setup, &ended, |record| {
+        record.phase == ProcessPhase::Terminal
+    })
+    .await;
+    let beat = setup.ws.join("beat");
+    let running = gateway
+        .started(&[
+            "/bin/sh",
+            "-c",
+            "i=0; while :; do i=$((i+1)); echo $i > beat; sleep 0.1; done",
+        ])
+        .await;
+    assert!(still_beating(&beat).await);
+
+    runner.kill().await.expect("SIGKILL the Runner");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        let status = gateway.status(&running).await;
+        if status["state"] == "unknown" {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the Runner is not lost: {status}"
+        );
+        sleep(Duration::from_millis(40)).await;
+    };
+    assert_eq!(status["lost_reason"], "runner_lost", "{status}");
+    assert_eq!(status["eof"], true, "{status}");
+    assert!(status.get("exit_code").is_none(), "{status}");
+    let read = gateway.read(&running, 0).await;
+    assert_eq!(
+        (&read["chunk"], &read["eof"], &read["output_lost"]),
+        (&"".into(), &true.into(), &true.into()),
+        "{read}"
+    );
+    assert_eq!(read["lost_reason"], "runner_lost", "{read}");
+    let status = gateway.status(&ended).await;
+    assert_eq!(
+        (
+            &status["state"],
+            &status["exit_code"],
+            &status["lost_reason"]
+        ),
+        (&"exited".into(), &5.into(), &"runner_lost".into()),
+        "{status}"
+    );
+    let new_work = error_body(&gateway.exec(&["/bin/echo", "new"]).await);
+    assert_eq!(new_work["code"], "RUNNER_DISCONNECTED", "{new_work}");
+    assert!(
+        new_work["message"]
+            .as_str()
+            .unwrap()
+            .contains("lost its independent Runner"),
+        "{new_work}"
+    );
+    // The command sandbox ends its processes with the Runner; without it, nothing does.
+    let survives = !codespace_runner::linux_sandbox_available();
+    assert_eq!(still_beating(&beat).await, survives);
+
+    // The list is read while the gateway runs.
+    let (listed, done) = records(&setup, &["list"]).await;
+    assert!(done, "{listed}");
+    let held = listed["records"].as_array().unwrap();
+    assert_eq!(held.len(), 1, "{listed}");
+    assert_eq!(
+        (&held[0]["process_id"], &held[0]["phase"], &held[0]["lost"]),
+        (
+            &running.as_str().into(),
+            &"unknown".into(),
+            &"runner_lost".into()
+        ),
+        "{listed}"
+    );
+    assert_eq!(held[0]["runner"]["this_boot"], true, "{listed}");
+    assert_eq!(held[0]["root"]["running"], survives, "{listed}");
+    let root_pid = held[0]["root"]["pid"].as_u64().unwrap();
+    let refusal = refused(setup.gateway_command(&["records", "release", &running])).await;
+    assert!(refusal.contains("while no gateway runs"), "{refusal}");
+    let shut = gateway.shut_down().await;
+    assert!(shut.success(), "{shut:?}");
+
+    if survives {
+        let (report, done) = records(&setup, &["release", &running]).await;
+        assert!(!done, "{report}");
+        assert!(
+            report["refused"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("still runs"),
+            "{report}"
+        );
+        let killed = std::process::Command::new("kill")
+            .args(["-KILL", &root_pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        assert!(!still_beating(&beat).await);
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let report = loop {
+        // An exited root that its new parent has not reaped yet runs no more.
+        let (report, done) = records(&setup, &["release", &running]).await;
+        if done {
+            break report;
+        }
+        assert!(Instant::now() < deadline, "{report}");
+        sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(report["released"], serde_json::json!([running]), "{report}");
+    let (listed, _) = records(&setup, &["list"]).await;
+    assert_eq!(listed["records"], serde_json::json!([]), "{listed}");
+
+    let mut runner = setup.start_runner(&bin).await;
+    let next = setup.gateway("stop").await;
+    let process_id = next.started_once_reconciled(&["/bin/echo", "after"]).await;
+    next.output(&process_id, "after").await;
+    let status = next.status(&running).await;
+    assert_eq!(
+        (&status["state"], &status["lost_reason"]),
+        (&"unknown".into(), &"runner_lost".into()),
+        "{status}"
+    );
+    let shut = next.shut_down().await;
+    assert!(shut.success(), "{shut:?}");
     let status = exited(&mut runner).await;
     assert!(status.success(), "{status:?}");
 }

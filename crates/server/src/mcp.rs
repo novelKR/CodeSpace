@@ -6,7 +6,7 @@ use codespace_domain::{
     ApprovalId, ApprovalResolveParams, ApprovalResolveResult, ApprovalState, ApprovalTargetTool,
     ClientEnvironmentKind, CoordinationHint, EffectivePermissionInfo, EnvironmentExecutionInfo,
     ErrorBody, ErrorCode, ExecCommandParams, ExecCommandResult, ExecDispatchStatus, FindParams,
-    FindResult, NetworkPolicyState, OperationResumeParams, OperationResumeResult,
+    FindResult, LostReason, NetworkPolicyState, OperationResumeParams, OperationResumeResult,
     OperationStatusParams, OperationStatusResult, PatchStatus, ProcessId, ProcessResizeParams,
     ProcessResizeResult, ProcessState, ProcessStatusParams, ProcessStatusResult, ReadParams,
     ReadProcessParams, ReadProcessResult, ReadResult, SteerClaimNextResult, SteerCompleteParams,
@@ -133,7 +133,9 @@ a successful exit. signaled, timeout, terminated, and unknown are not success \
 even when eof is true.
 
 read_process results include output_lost and retained_from. If output_lost is \
-true, the retained window is not the complete log.
+true, the retained window is not the complete log, and lost_reason says why; \
+ring_overflow means that only the most recent output was kept. process_status \
+gives the same lost_reason when output_retained_from is above 0.
 
 Managed process lifetime is owned by the runner instance, not the MCP \
 session. Client or HTTP disconnect keeps the process running. Losing the \
@@ -193,7 +195,17 @@ without a sandbox, can take control of it. Terminating a pipe process \
 signals that process only, not its process group, so processes it started \
 may outlive it. If you lose the spawn response before receiving \
 process_id, do not search for the lost handle and do not start a duplicate \
-command.";
+command. Once the Runner no longer keeps an ended process, process_status and \
+read_process answer from the gateway's records with lost_reason \
+retention_expired: how it ended, with no output retained. If the gateway \
+loses the Runner itself, because nothing accepts connections at its socket \
+any more or another Runner answers there, what becomes of its processes \
+cannot be learned, and some may still run: process_status reports state \
+unknown with lost_reason runner_lost for each process whose end was not \
+recorded, which is not an end, or exited with termination unknown and \
+lost_reason host_rebooted when the host restarted since. Do not start a \
+duplicate of such a process. New work in its workspace is refused until an \
+operator confirms that nothing of it runs and releases it.";
 
 const DETACH_SHUTDOWN: &str = "\
 When this gateway shuts down it detaches: the Runner keeps the processes, \
@@ -500,20 +512,32 @@ impl CodeSpace {
 
     #[tool(
         name = "read_process",
-        description = "Read output from a managed process starting at cursor. Output is bounded; output_lost means the retained window is not the complete log. process_id cannot be invented."
+        description = "Read output from a managed process starting at cursor. Output is bounded; output_lost means the retained window is not the complete log, and lost_reason says why: ring_overflow, retention_expired, runner_lost, or host_rebooted. process_id cannot be invented."
     )]
     async fn read_process(
         &self,
         Parameters(params): Parameters<ReadProcessParams>,
     ) -> Result<Json<ReadProcessResult>, String> {
-        let result = self
+        let result = match self
             .runner
             .read_process(RunnerReadProcess {
                 process_id: params.process_id.clone(),
                 cursor: params.cursor,
             })
             .await
-            .map_err(runner_err_json)?;
+        {
+            Ok(result) => result,
+            // The Runner no longer holds it, or was lost: the records answer (P1R-C05).
+            Err(err) => match self.recorded(&params.process_id, &err) {
+                Some(recorded) => {
+                    return Ok(Json(ReadProcessResult {
+                        coordination: self.process_hint(&params.process_id.0).await,
+                        ..recorded.read(params.cursor)
+                    }))
+                }
+                None => return Err(runner_err_json(err)),
+            },
+        };
         if let Some(records) = &self.records {
             records.observed_output(&result.process_id, result.cursor);
         }
@@ -524,23 +548,32 @@ impl CodeSpace {
             eof: result.eof,
             output_lost: result.output_lost,
             retained_from: result.retained_from,
+            lost_reason: result.output_lost.then_some(LostReason::RingOverflow),
             coordination: self.process_hint(&params.process_id.0).await,
         }))
     }
 
     #[tool(
         name = "process_status",
-        description = "Observe a managed process lifecycle. state is running or exited. termination is present only after exit (exited, signaled, timeout, terminated, or unknown). exit_code is present only when termination is exited; signal only when it is signaled, a signal CodeSpace did not send. A tty process reports a signal death as exited with exit_code 1, or 128 plus the signal number when it was launched through DevGuard. EOF is not success. Unknown process_id is rejected."
+        description = "Observe a managed process lifecycle. state is running, exited, or unknown: unknown means the independent Runner that ran it was lost, so the process may still run and what becomes of it cannot be learned; it is not an end. termination is present only after exit (exited, signaled, timeout, terminated, or unknown). exit_code is present only when termination is exited; signal only when it is signaled, a signal CodeSpace did not send. A tty process reports a signal death as exited with exit_code 1, or 128 plus the signal number when it was launched through DevGuard. lost_reason says why output is missing or the state is uncertain: ring_overflow, retention_expired, runner_lost, or host_rebooted. EOF is not success. Unknown process_id is rejected."
     )]
     async fn process_status(
         &self,
         Parameters(params): Parameters<ProcessStatusParams>,
     ) -> Result<Json<ProcessStatusResult>, String> {
-        let result = self
-            .runner
-            .process_status(&params.process_id)
-            .await
-            .map_err(runner_err_json)?;
+        let result = match self.runner.process_status(&params.process_id).await {
+            Ok(result) => result,
+            // The Runner no longer holds it, or was lost: the records answer (P1R-C05).
+            Err(err) => match self.recorded(&params.process_id, &err) {
+                Some(recorded) => {
+                    return Ok(Json(ProcessStatusResult {
+                        coordination: self.process_hint(&params.process_id.0).await,
+                        ..recorded.status()
+                    }))
+                }
+                None => return Err(runner_err_json(err)),
+            },
+        };
         if let Some(records) = &self.records {
             match result.state {
                 ProcessState::Exited => {
@@ -549,6 +582,8 @@ impl CodeSpace {
                 ProcessState::Running => {
                     records.observed_output(&result.process_id, result.output_total)
                 }
+                // A Runner reports no process it lost.
+                ProcessState::Unknown => {}
             }
         }
         Ok(Json(ProcessStatusResult {
@@ -560,8 +595,19 @@ impl CodeSpace {
             output_total: result.output_total,
             output_retained_from: result.output_retained_from,
             eof: result.eof,
+            lost_reason: (result.output_retained_from > 0).then_some(LostReason::RingOverflow),
             coordination: self.process_hint(&params.process_id.0).await,
         }))
+    }
+
+    /// What the process records say of `process_id`, which the Runner did not answer about but
+    /// with `err` (P1R-C05).
+    fn recorded(
+        &self,
+        process_id: &ProcessId,
+        err: &RunnerError,
+    ) -> Option<crate::records::Recorded> {
+        self.records.as_ref()?.recorded(process_id, err)
     }
 
     #[tool(
@@ -4527,12 +4573,13 @@ mod independent_tests {
         ProcessTermination, TerminateProcessParams, WorkspaceId,
     };
     use codespace_runner::{
-        host_worker, IndependentRunner, LinkEvent, RunnerIdentity, RunnerOp, RunnerOpResult,
+        host_boot_id, host_worker, host_worker_with_retention, InProcessRunner, IndependentRunner,
+        LinkEvent, RetentionPolicy, RunnerEvents, RunnerIdentity, RunnerOp, RunnerOpResult,
         StopHandle, UdsRunner,
     };
     use codespace_store::{
-        NewProcessRecord, ProcessOutcome, ProcessPhase, ProcessRecord, RecordedParticipation,
-        RunnerRef,
+        NewProcessRecord, ProcessEnd, ProcessLoss, ProcessOutcome, ProcessPhase, ProcessRecord,
+        RecordedParticipation, RunnerRef,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
@@ -4552,7 +4599,16 @@ mod independent_tests {
 
     impl Runner {
         fn start() -> Self {
-            let (runner, events) = host_worker();
+            Self::serving(host_worker())
+        }
+
+        /// One that keeps an ended process, once a controller acknowledged it, as `retention`
+        /// says.
+        fn keeping(retention: RetentionPolicy) -> Self {
+            Self::serving(host_worker_with_retention(retention))
+        }
+
+        fn serving((runner, events): (InProcessRunner, RunnerEvents)) -> Self {
             let independent = IndependentRunner::new(runner, events);
             let stop = independent.stop_handle();
             let (streams, incoming) = mpsc::unbounded_channel::<UnixStream>();
@@ -4618,6 +4674,7 @@ mod independent_tests {
             .expect("an independent Runner's identity");
         let backend = RuntimeBackend::Uds(runner.clone());
         let records = ProcessRecords::start(store.clone(), &identity, backend.clone(), exits);
+        records.follow_loss(runner.lost());
         let recovery = Recovery::start(store.clone(), runner, records.clone(), leases, claim);
         CodeSpace::with_store_and_runner(participation_registry(root, "off"), store, backend)
             .with_lifecycle(DETACHING)
@@ -6182,10 +6239,10 @@ mod independent_tests {
     }
 
     /// A workspace where another Runner was sent an execution whose record does not say it
-    /// ended stays blocked (P1R-C04): only that Runner could prove what became of it. New work
-    /// there is refused with RECOVERY_PENDING, an approval resume before its approval is
-    /// claimed, so a granted approval stays granted; the record stays as it was, and the other
-    /// workspaces work.
+    /// ended stays blocked (P1R-C04): only that Runner could prove what became of it, and it is
+    /// lost, here to a restart of the host, so the record says so until an operator releases
+    /// it (P1R-C05). New work there is refused with RECOVERY_PENDING, an approval resume before
+    /// its approval is claimed, so a granted approval stays granted; the other workspaces work.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_independent_gateway_blocks_a_workspace_another_runner_left_work_in() {
         let dir = tempfile::tempdir().unwrap();
@@ -6213,8 +6270,8 @@ mod independent_tests {
             assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
             assert!(
                 refusal.message.contains("proc-elsewhere")
-                    && refusal.message.contains("another Runner")
-                    && refusal.message.contains("operator"),
+                    && refusal.message.contains("the host's restart")
+                    && refusal.message.contains("codespace-mcp records"),
                 "{refusal:?}"
             );
             assert_eq!(
@@ -6267,11 +6324,388 @@ mod independent_tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            (record.phase, record.runner),
-            (ProcessPhase::Running, elsewhere)
+            (record.phase, record.runner, record.lost),
+            (
+                ProcessPhase::Unknown,
+                elsewhere,
+                Some(ProcessLoss::HostRebooted)
+            )
         );
         assert!(!root.join("runs").exists());
         assert!(!root.join("added.txt").exists());
+    }
+
+    /// The status of `process_id`, as the gateway answers it.
+    async fn status_of(gateway: &CodeSpace, process_id: &str) -> ProcessStatusResult {
+        gateway
+            .process_status(Parameters(ProcessStatusParams {
+                process_id: ProcessId(process_id.into()),
+            }))
+            .await
+            .unwrap()
+            .0
+    }
+
+    /// A read of `process_id` from `cursor`, as the gateway answers it.
+    async fn read_from(gateway: &CodeSpace, process_id: &str, cursor: u64) -> ReadProcessResult {
+        gateway
+            .read_process(Parameters(ReadProcessParams {
+                process_id: ProcessId(process_id.into()),
+                cursor,
+            }))
+            .await
+            .unwrap()
+            .0
+    }
+
+    /// An ended process is re-queried as the Runner reported it for as long as the Runner keeps
+    /// it, and once the Runner let it go after its retention time, from its record (P1R-C05):
+    /// how it ended, with nothing of its output retained, and why: `retention_expired`. The
+    /// next gateway answers the same.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ended_process_is_answered_from_its_record_once_the_runner_let_it_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::keeping(RetentionPolicy {
+            ttl: Duration::from_millis(300),
+            max_completed: 64,
+        });
+        let gateway = runner.gateway(&root, &database).await;
+        let started = gateway
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/sh", "-c", "echo done; exit 3"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        let process_id = started.process_id.0.as_str();
+        let read = output_of(&gateway, &started.process_id).await;
+        assert_eq!(
+            (read.chunk.as_str(), read.output_lost, read.lost_reason),
+            ("done\n", false, None)
+        );
+        let status = status_of(&gateway, process_id).await;
+        assert_eq!(
+            (status.state, status.exit_code, status.lost_reason),
+            (ProcessState::Exited, Some(3), None)
+        );
+
+        // Its end recorded and acknowledged, the Runner lets it go after its retention time.
+        record_once(&database, &started.process_id, terminal).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            let status = status_of(&gateway, process_id).await;
+            if status.lost_reason.is_some() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "{status:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let expected = ProcessStatusResult {
+            process_id: started.process_id.clone(),
+            state: ProcessState::Exited,
+            exit_code: Some(3),
+            termination: Some(ProcessTermination::Exited),
+            signal: None,
+            output_total: 5,
+            output_retained_from: 5,
+            eof: true,
+            lost_reason: Some(LostReason::RetentionExpired),
+            coordination: None,
+        };
+        assert_eq!(
+            ProcessStatusResult {
+                coordination: None,
+                ..status
+            },
+            expected
+        );
+        let read = read_from(&gateway, process_id, 0).await;
+        assert_eq!(
+            ReadProcessResult {
+                coordination: None,
+                ..read
+            },
+            ReadProcessResult {
+                process_id: started.process_id.clone(),
+                cursor: 5,
+                chunk: String::new(),
+                eof: true,
+                output_lost: true,
+                retained_from: 5,
+                lost_reason: Some(LostReason::RetentionExpired),
+                coordination: None,
+            }
+        );
+        detach(&gateway).await;
+
+        let next = runner.gateway(&root, &database).await;
+        let status = status_of(&next, process_id).await;
+        assert_eq!(
+            ProcessStatusResult {
+                coordination: None,
+                ..status
+            },
+            expected
+        );
+    }
+
+    /// Executions sent to Runners that are lost are answered from their records (P1R-C05): one
+    /// whose Runner was lost on this boot of the host is `unknown`, since it may still run, and
+    /// one whose Runner the host's restart ended exited, how is not known. Each says why, keeps
+    /// its deadline and the output offset a gateway saw, with nothing of its output retained.
+    /// Their workspace stays blocked, and nothing starts for them, until an operator releases
+    /// their records; the next gateway then starts new work there. An execution that ended on
+    /// another Runner is answered as it ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_independent_gateway_answers_for_a_lost_runners_processes_until_released() {
+        const DEADLINE: u64 = 1_900_000_000_000;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let lost = runner_ref(RunnerIdentity {
+            boot_id: host_boot_id(),
+            ..fake_identity()
+        });
+        let rebooted = runner_ref(fake_identity());
+        {
+            let store = Store::open(&database).unwrap();
+            for (runner, process_id) in [
+                (&lost, "proc-lost"),
+                (&rebooted, "proc-rebooted"),
+                (&lost, "proc-ended"),
+            ] {
+                store
+                    .record_dispatch(&NewProcessRecord {
+                        process_id,
+                        runner,
+                        controller_epoch: Some(1),
+                        workspace_id: "demo",
+                        approval_id: None,
+                        attempt_id: None,
+                        participation: RecordedParticipation::Off,
+                        tty: false,
+                        argv: &["/bin/sleep".to_string(), "30".to_string()],
+                    })
+                    .unwrap();
+                store
+                    .record_running(runner, process_id, None, Some(DEADLINE))
+                    .unwrap();
+                store.record_output(runner, process_id, 12).unwrap();
+            }
+            store
+                .record_end(
+                    &lost,
+                    "proc-ended",
+                    &ProcessEnd::Ended {
+                        termination: Some(ProcessTermination::Exited),
+                        exit_code: Some(3),
+                        signal: None,
+                        output_total: Some(15),
+                    },
+                )
+                .unwrap();
+        }
+        let runner = Runner::start();
+        let gateway = runner.gateway(&root, &database).await;
+
+        let status = status_of(&gateway, "proc-lost").await;
+        assert_eq!(
+            (
+                status.state,
+                status.exit_code,
+                status.termination,
+                status.signal.clone()
+            ),
+            (ProcessState::Unknown, None, None, None),
+            "{status:?}"
+        );
+        assert_eq!(
+            (
+                status.output_total,
+                status.output_retained_from,
+                status.eof,
+                status.lost_reason
+            ),
+            (12, 12, true, Some(LostReason::RunnerLost))
+        );
+        for (cursor, after) in [(0, 12), (20, 20)] {
+            let read = read_from(&gateway, "proc-lost", cursor).await;
+            assert_eq!(
+                (
+                    read.chunk.as_str(),
+                    read.cursor,
+                    read.eof,
+                    read.output_lost,
+                    read.retained_from,
+                    read.lost_reason
+                ),
+                ("", after, true, true, 12, Some(LostReason::RunnerLost))
+            );
+        }
+        let status = status_of(&gateway, "proc-rebooted").await;
+        assert_eq!(
+            (
+                status.state,
+                status.termination,
+                status.exit_code,
+                status.lost_reason
+            ),
+            (
+                ProcessState::Exited,
+                Some(ProcessTermination::Unknown),
+                None,
+                Some(LostReason::HostRebooted)
+            )
+        );
+        let read = read_from(&gateway, "proc-rebooted", 0).await;
+        assert_eq!(read.lost_reason, Some(LostReason::HostRebooted));
+        let status = status_of(&gateway, "proc-ended").await;
+        assert_eq!(
+            (
+                status.state,
+                status.exit_code,
+                status.output_retained_from,
+                status.lost_reason
+            ),
+            (
+                ProcessState::Exited,
+                Some(3),
+                15,
+                Some(LostReason::RetentionExpired)
+            )
+        );
+        let missing = refused(
+            gateway
+                .process_status(Parameters(ProcessStatusParams {
+                    process_id: ProcessId("proc-unrecorded".into()),
+                }))
+                .await,
+        );
+        assert_eq!(missing.code, ErrorCode::ProcessNotFound);
+
+        let refusal = refused(
+            gateway
+                .exec_command(Parameters(exec_params(
+                    "demo",
+                    &["/bin/echo", "new"],
+                    false,
+                )))
+                .await,
+        );
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert!(
+            refusal.message.contains("proc-lost")
+                && refusal.message.contains("may still run")
+                && refusal.message.contains("codespace-mcp records"),
+            "{refusal:?}"
+        );
+        for (process_id, loss) in [
+            ("proc-lost", ProcessLoss::RunnerLost),
+            ("proc-rebooted", ProcessLoss::HostRebooted),
+        ] {
+            let record = gateway.store.process_record(process_id).unwrap().unwrap();
+            assert_eq!(
+                (record.phase, record.lost, record.deadline_at_ms),
+                (ProcessPhase::Unknown, Some(loss), Some(DEADLINE)),
+                "{process_id}"
+            );
+            assert_eq!(record.released_at_ms, None);
+        }
+        detach(&gateway).await;
+        assert_eq!(recorded_executions(&database), 3);
+
+        // An operator confirmed that nothing of them runs, and released them.
+        let store = Store::open(&database).unwrap();
+        for process_id in ["proc-lost", "proc-rebooted"] {
+            assert!(store.release_record(process_id).unwrap(), "{process_id}");
+        }
+        let next = runner.gateway(&root, &database).await;
+        admitted(&next, "demo").await;
+        let status = status_of(&next, "proc-lost").await;
+        assert_eq!(
+            (status.state, status.lost_reason),
+            (ProcessState::Unknown, Some(LostReason::RunnerLost))
+        );
+        let started = next
+            .exec_command(Parameters(exec_params(
+                "demo",
+                &["/bin/echo", "new"],
+                false,
+            )))
+            .await
+            .unwrap()
+            .0;
+        record_once(&database, &started.process_id, terminal).await;
+        assert_eq!(recorded_executions(&database), 4);
+    }
+
+    /// An approval whose execution was sent to a Runner that is lost is never run again
+    /// (P1R-C05): it stays resuming while its workspace is blocked, and once an operator
+    /// released the record, resuming it answers APPROVAL_AMBIGUOUS, every time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_approval_whose_execution_a_lost_runner_held_is_never_run_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let database = dir.path().join("operations.db");
+        let runner = Runner::start();
+        let first = runner.gateway(&root, &database).await;
+        let command = ["/bin/sh", "-c", "echo run >> runs"];
+        let approval_id = granted(&first, "gov-confirm", &command).await;
+        assert!(matches!(
+            first.store.claim_resume(&approval_id).unwrap(),
+            ResumeClaim::Execute(..)
+        ));
+        let lost = runner_ref(RunnerIdentity {
+            boot_id: host_boot_id(),
+            ..fake_identity()
+        });
+        first
+            .store
+            .record_dispatch(&NewProcessRecord {
+                process_id: "proc-lost",
+                runner: &lost,
+                controller_epoch: Some(1),
+                workspace_id: "gov-confirm",
+                approval_id: Some(&approval_id),
+                attempt_id: None,
+                participation: RecordedParticipation::Off,
+                tty: false,
+                argv: &command.map(String::from),
+            })
+            .unwrap();
+        first
+            .store
+            .record_running(&lost, "proc-lost", None, None)
+            .unwrap();
+        detach(&first).await;
+
+        let next = runner.gateway(&root, &database).await;
+        let refusal = refused(resume(&next, &approval_id).await);
+        assert_eq!(refusal.code, ErrorCode::RecoveryPending, "{refusal:?}");
+        assert_eq!(
+            next.store.inspect_approval(&approval_id).unwrap().0,
+            ApprovalState::Resuming
+        );
+        detach(&next).await;
+        assert!(Store::open(&database)
+            .unwrap()
+            .release_record("proc-lost")
+            .unwrap());
+
+        let last = runner.gateway(&root, &database).await;
+        for _ in 0..2 {
+            let refusal = refused(resume(&last, &approval_id).await);
+            assert_eq!(refusal.code, ErrorCode::ApprovalAmbiguous, "{refusal:?}");
+        }
+        assert!(!root.join("runs").exists());
+        assert_eq!(recorded_executions(&database), 1);
     }
 
     /// A workspace whose record and Runner disagree stays blocked, and so does one where the

@@ -43,7 +43,7 @@ pub use patch::{
     OperationEventName, OperationKind, OperationStatusParams, OperationStatusResult, PatchStatus,
 };
 pub use process::{
-    ExecCommandParams, ExecCommandResult, ExecDispatchStatus, ProcessResizeParams,
+    ExecCommandParams, ExecCommandResult, ExecDispatchStatus, LostReason, ProcessResizeParams,
     ProcessResizeResult, ProcessSignal, ProcessState, ProcessStatusParams, ProcessStatusResult,
     ProcessTermination, ReadProcessParams, ReadProcessResult, TerminateProcessParams,
     WriteStdinParams,

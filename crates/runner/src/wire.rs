@@ -28,9 +28,9 @@ use tokio::task::JoinSet;
 
 use crate::lifecycle::{RunnerIdentity, RunnerLifecycle};
 use crate::{
-    InProcessRunner, Recalled, Runner, RunnerApplyPatchRequest, RunnerApplyPatchResult,
-    RunnerError, RunnerExecRequest, RunnerExecResult, RunnerProcessStatus, RunnerReadProcess,
-    RunnerReadResult, RunnerResizeResult, RunnerWriteStdin, ShellRelease,
+    InProcessRunner, Recalled, RetentionPolicy, Runner, RunnerApplyPatchRequest,
+    RunnerApplyPatchResult, RunnerError, RunnerExecRequest, RunnerExecResult, RunnerProcessStatus,
+    RunnerReadProcess, RunnerReadResult, RunnerResizeResult, RunnerWriteStdin, ShellRelease,
     DEFAULT_MAX_UNACKNOWLEDGED,
 };
 
@@ -488,6 +488,11 @@ pub struct RunnerEvents {
 
 /// Host worker: `InProcessRunner` plus its numbered `ProcessExited` events.
 pub fn host_worker() -> (InProcessRunner, RunnerEvents) {
+    host_worker_with_retention(RetentionPolicy::default())
+}
+
+/// A host worker that keeps its ended processes as `retention` says.
+pub fn host_worker_with_retention(retention: RetentionPolicy) -> (InProcessRunner, RunnerEvents) {
     let (tx, receiver) = mpsc::unbounded_channel();
     let numbered = Arc::new(std::sync::Mutex::new(0u64));
     let numbering = numbered.clone();
@@ -503,7 +508,7 @@ pub fn host_worker() -> (InProcessRunner, RunnerEvents) {
         ));
     });
     (
-        InProcessRunner::new(on_release),
+        InProcessRunner::with_retention(on_release, retention),
         RunnerEvents { receiver, numbered },
     )
 }
@@ -4221,8 +4226,8 @@ mod tests {
         }
 
         /// A client stops claiming its Runner again once another Runner answers at the socket
-        /// or nothing accepts connections there, and refuses every request with
-        /// RUNNER_DISCONNECTED from then on, saying why (P1R-C03).
+        /// or nothing accepts connections there: it lost the Runner, says so, and refuses
+        /// every request with RUNNER_DISCONNECTED from then on, saying why (P1R-C03, P1R-C05).
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn a_client_that_cannot_claim_its_runner_again_is_disconnected() {
             let host = Host::start();
@@ -4244,18 +4249,28 @@ mod tests {
             )
             .await
             .unwrap();
+            let lost = gateway.lost();
+            assert_eq!(*lost.borrow(), None);
             relay.retarget(&other.socket);
             relay.cut();
             assert_eq!(next_link_event(&mut events).await, LinkEvent::Lost);
             match next_link_event(&mut events).await {
-                LinkEvent::Gone(reason) => {
+                LinkEvent::RunnerLost(reason) => {
                     assert!(reason.contains("another Runner answers"), "{reason}")
                 }
                 other => panic!("unexpected {other:?}"),
             }
+            assert!(
+                lost.borrow()
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("another Runner answers")),
+                "{:?}",
+                *lost.borrow()
+            );
             let refusal = disconnected(&gateway, &ProcessId("proc-1".into())).await;
             assert!(
-                refusal.message.contains("another Runner answers"),
+                refusal.message.contains("another Runner answers")
+                    && refusal.message.contains("lost its independent Runner"),
                 "{refusal:?}"
             );
             // The other Runner was asked nothing but its `Hello`.
@@ -4275,12 +4290,17 @@ mod tests {
             assert_eq!(stopping.served().await, Served::Stopped { terminated: 0 });
             assert_eq!(next_link_event(&mut events).await, LinkEvent::Lost);
             match next_link_event(&mut events).await {
-                LinkEvent::Gone(reason) => {
+                LinkEvent::RunnerLost(reason) => {
                     assert!(reason.contains("nothing accepts connections"), "{reason}")
                 }
                 other => panic!("unexpected {other:?}"),
             }
-            disconnected(&gateway, &ProcessId("proc-1".into())).await;
+            let refusal = disconnected(&gateway, &ProcessId("proc-1".into())).await;
+            assert!(
+                refusal.message.contains("lost its independent Runner"),
+                "{refusal:?}"
+            );
+            assert!(gateway.lost().borrow().is_some());
         }
 
         /// An explicit stop ends the processes, a tty's process group included, and the Runner.

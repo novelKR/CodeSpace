@@ -1500,7 +1500,7 @@ fn live_count(map: &HashMap<String, Slot>) -> usize {
 }
 
 /// A signal number of this host, named when it is one of the standard signals.
-fn process_signal(number: i32) -> ProcessSignal {
+pub fn process_signal(number: i32) -> ProcessSignal {
     const NAMES: [(i32, &str); 21] = [
         (libc::SIGHUP, "SIGHUP"),
         (libc::SIGINT, "SIGINT"),

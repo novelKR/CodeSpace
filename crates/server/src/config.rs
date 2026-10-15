@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 pub const MCP_PATH: &str = "/mcp";
 pub const INBOX_PATH: &str = "/inbox";
@@ -48,6 +48,32 @@ pub enum GatewayLifecycle {
     Independent { exit_intent: RunnerExitIntent },
 }
 
+/// An operator's command instead of serving MCP (P1R-C05).
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum Command {
+    /// The process records of a gateway with an independent Runner, in the database that
+    /// --operations-db names.
+    #[command(subcommand)]
+    Records(RecordsCommand),
+}
+
+/// What an operator does with process records (P1R-C05, D8).
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum RecordsCommand {
+    /// Print, as JSON, every record that may still hold a workspace: those that have not ended
+    /// and were not released, with whether their root process still runs. Reads only, so a
+    /// gateway may be running.
+    List,
+    /// Release the workspaces that these records hold after their Runner was lost, once nothing
+    /// of their processes runs. Refused while a gateway records into the database, for a record
+    /// whose root process still runs, and for one whose Runner may still run.
+    Release {
+        /// The process IDs of the records to release.
+        #[arg(required = true)]
+        process_ids: Vec<String>,
+    },
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "codespace-mcp",
@@ -55,6 +81,10 @@ pub enum GatewayLifecycle {
     about = "CodeSpace execution-tools MCP"
 )]
 pub struct Cli {
+    /// An operator's command; without one, the gateway serves MCP.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Use Streamable HTTP instead of stdio.
     #[arg(long)]
     pub http: bool,
@@ -79,8 +109,8 @@ pub struct Cli {
 
     /// SQLite file for operations. Unset uses an in-memory database (no replay across restarts).
     /// Required with `--runner-lifecycle independent`, whose gateway records its executions there
-    /// and holds the lock file beside it (P1R-C02).
-    #[arg(long, env = "CODESPACE_OPERATIONS_DB")]
+    /// and holds the lock file beside it (P1R-C02), and with `records`.
+    #[arg(long, env = "CODESPACE_OPERATIONS_DB", global = true)]
     pub operations_db: Option<std::path::PathBuf>,
 
     /// Runner backend. Allowed values: `in-process` (default host supervisor) or `uds`.
@@ -300,6 +330,41 @@ mod tests {
         let err = Cli::try_parse_from(["codespace-mcp", "--runner-lifecycle", "detached"])
             .expect_err("an unknown lifecycle");
         assert!(err.to_string().contains("detached"), "{err}");
+    }
+
+    /// The operator's records commands name the operations database, before or after the
+    /// command, and release at least one record (P1R-C05).
+    #[test]
+    fn the_records_commands_take_the_operations_database() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["codespace-mcp"];
+            argv.extend_from_slice(args);
+            Cli::try_parse_from(argv)
+        };
+        let cli = parse(&["records", "list", "--operations-db", "/var/cs/ops.sqlite"]).unwrap();
+        assert_eq!(cli.command, Some(Command::Records(RecordsCommand::List)));
+        assert_eq!(
+            cli.operations_db.as_deref(),
+            Some(std::path::Path::new("/var/cs/ops.sqlite"))
+        );
+        let cli = parse(&[
+            "--operations-db",
+            "/var/cs/ops.sqlite",
+            "records",
+            "release",
+            "proc-1",
+            "proc-2",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Records(RecordsCommand::Release {
+                process_ids: vec!["proc-1".into(), "proc-2".into()]
+            }))
+        );
+        assert!(parse(&["records", "release"]).is_err());
+        assert!(parse(&["records"]).is_err());
+        assert_eq!(parse(&[]).unwrap().command, None);
     }
 
     /// Without the `devguard` feature the gateway has no DevGuard setting at all.

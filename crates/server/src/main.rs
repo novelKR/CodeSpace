@@ -10,6 +10,7 @@ use codespace_server::config::{
 };
 use codespace_server::http::serve_http_handler;
 use codespace_server::logging;
+use codespace_server::operator;
 use codespace_server::records::{Leases, ProcessRecords};
 use codespace_server::recovery::Recovery;
 use codespace_server::runtime::RuntimeProcess;
@@ -32,6 +33,12 @@ fn main() -> Result<()> {
         .expect("Failed building the Runtime");
     logging::init();
     let cli = Cli::parse();
+    // An operator's command on the process records, instead of a gateway (P1R-C05).
+    if let Some(command) = &cli.command {
+        let done =
+            operator::run(command, cli.operations_db.as_deref()).map_err(anyhow::Error::msg)?;
+        std::process::exit(if done { 0 } else { 1 });
+    }
     let lifecycle = cli.lifecycle().map_err(anyhow::Error::msg)?;
     // Released as the gateway exits, once its runtime is shut down.
     let _writer = lock_operations_db(&cli, lifecycle)?;
@@ -251,6 +258,9 @@ async fn start_runner(
                 let backend = RuntimeBackend::Uds(runner.clone());
                 let records =
                     ProcessRecords::start(store.clone(), &identity, backend.clone(), exits);
+                // Once the Runner is lost, what was sent to it and had not ended becomes
+                // unknown, and keeps its workspace (P1R-C05).
+                records.follow_loss(runner.lost());
                 // What earlier claims left is reconciled before new work starts where they
                 // started work, and again after each later Claim (P1R-C04).
                 let recovery = Recovery::start(store, runner, records.clone(), leases, &claim);

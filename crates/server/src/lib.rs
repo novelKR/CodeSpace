@@ -8,6 +8,7 @@ pub mod http;
 pub mod inbox;
 pub mod logging;
 pub mod mcp;
+pub mod operator;
 pub mod patch_helper;
 pub mod protocol;
 pub mod records;

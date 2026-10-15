@@ -133,8 +133,9 @@ pub use files::VERSION_ABSENT;
 pub use fork_handlers::prepare_fork_spawns;
 pub use patch_helper::ensure_helper_for_tests;
 pub use process::{
-    InProcessRunner, RetentionPolicy, ShellRelease, SlotReservation, DEFAULT_COMPLETED_TTL,
-    DEFAULT_MAX_COMPLETED, DEFAULT_MAX_PROCESSES, DEFAULT_MAX_UNACKNOWLEDGED, DEFAULT_TIMEOUT,
+    process_signal, InProcessRunner, RetentionPolicy, ShellRelease, SlotReservation,
+    DEFAULT_COMPLETED_TTL, DEFAULT_MAX_COMPLETED, DEFAULT_MAX_PROCESSES,
+    DEFAULT_MAX_UNACKNOWLEDGED, DEFAULT_TIMEOUT,
 };
 
 /// True when this process probed a working Linux sandbox helper.
@@ -143,7 +144,9 @@ pub fn linux_sandbox_available() -> bool {
     linux_sandbox::probe()
 }
 
-pub use lifecycle::{RunnerIdentity, RunnerLifecycle};
+pub use lifecycle::{
+    host_boot_id, pid_runs, process_runs, process_start_identity, RunnerIdentity, RunnerLifecycle,
+};
 #[cfg(feature = "devguard")]
 pub use registration::OwnerRegistration;
 pub use socket::{
@@ -151,18 +154,18 @@ pub use socket::{
     reclaim_leftover_socket, runner_socket_path, RUNNER_SOCKET_NAME,
 };
 pub use uds::{
-    runner_disconnected, runner_reconnecting, ClaimError, DisconnectHook, LinkEvent, LinkObserver,
-    RunnerHello, RunnerStopped, UdsRunner, CLAIM_START_BOUND, RECLAIM_BACKOFF_MAX,
+    runner_disconnected, runner_lost, runner_reconnecting, ClaimError, DisconnectHook, LinkEvent,
+    LinkObserver, RunnerHello, RunnerStopped, UdsRunner, CLAIM_START_BOUND, RECLAIM_BACKOFF_MAX,
     RUNNER_CALL_DEADLINE,
 };
 pub use watch::{FsWatchEvent, FsWatchKind, WatchClosed, WatchSubscription};
 #[cfg(feature = "devguard")]
 pub use wire::serve_runner_connection_with_registration;
 pub use wire::{
-    host_worker, read_frame, recovery_pending, serve_runner_connection, write_frame, ClaimNote,
-    ClaimObserver, ClaimRefusal, IndependentRunner, RecalledProcess, RunnerClaim, RunnerEvent,
-    RunnerEvents, RunnerInventoryEntry, RunnerOp, RunnerOpResult, Served, StopHandle, WireEnvelope,
-    WireKind, CLAIM_WAIT_BOUND, STOP_DRAIN_BOUND, WIRE_PROTOCOL,
+    host_worker, host_worker_with_retention, read_frame, recovery_pending, serve_runner_connection,
+    write_frame, ClaimNote, ClaimObserver, ClaimRefusal, IndependentRunner, RecalledProcess,
+    RunnerClaim, RunnerEvent, RunnerEvents, RunnerInventoryEntry, RunnerOp, RunnerOpResult, Served,
+    StopHandle, WireEnvelope, WireKind, CLAIM_WAIT_BOUND, STOP_DRAIN_BOUND, WIRE_PROTOCOL,
 };
 
 /// Execution-plane API. Control-plane fields (`work_id`, coordination,

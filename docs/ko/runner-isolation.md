@@ -23,7 +23,7 @@
 
 ## 독립 Runner
 
-> **아직 지원하는 모드가 아닙니다.** 독립 Runner와 그 실행의 기록, 한 게이트웨이에서 다음 게이트웨이로 제어권을 넘기는 Claim, 그리고 Claim마다 뒤따르는 대조는 게이트웨이 복구의 첫 단계입니다. 게이트웨이는 연결을 잃으면 Runner를 다시 Claim하고, 이전 controller가 작업을 시작한 곳에서는 그 controller가 남긴 것을 대조한 뒤에야 새 작업을 시작합니다. Runner 자체를 잃은 뒤의 처리는 다음 단계에서 더하며, 이 모드는 qualification을 마친 뒤에야 지원합니다.
+> **아직 지원하는 모드가 아닙니다.** 독립 Runner와 그 실행의 기록, 한 게이트웨이에서 다음 게이트웨이로 제어권을 넘기는 Claim, 그리고 Claim마다 뒤따르는 대조는 게이트웨이 복구의 첫 단계입니다. 게이트웨이는 연결을 잃으면 Runner를 다시 Claim하고, 이전 controller가 작업을 시작한 곳에서는 그 controller가 남긴 것을 대조한 뒤에야 새 작업을 시작합니다. Runner 자체를 잃으면 게이트웨이는 그 실행들에 대해 기록으로 답하고, 운영자가 풀 때까지 그 workspace를 점유한 채로 둡니다([Runner 손실](#runner-loss)). 이 모드는 qualification을 마친 뒤에야 지원합니다.
 
 독립 Runner는 자신에게 연결하는 게이트웨이보다 오래 삽니다. 게이트웨이가 종료되거나 재시작되거나 강제로 종료되어도 프로세스와 그 출력, timeout은 계속됩니다. 운영자나 하네스가 독립 Runner를 시작하고, 게이트웨이는 연결만 합니다.
 
@@ -57,27 +57,46 @@ Claim을 받아들일 때마다 Runner의 controller epoch가 하나 올라갑�
 
 다른 연결이 Runner를 제어하는 동안이나 그 연결의 요청이 처리되는 동안 시작한 게이트웨이는 간격을 늘려 가며 최대 30초 동안 다시 요청하고, 그래도 안 되면 시작을 거부합니다. 다른 작업 데이터베이스를 쓰는 경우처럼 다른 이유로 거부된 게이트웨이는 바로 시작을 거부하며, Runner는 그대로 남습니다.
 
-**연결을 잃었을 때.** Runner와의 연결을 잃었거나, 호출이 deadline을 넘겨 연결을 닫은 게이트웨이는 다시 연결해 같은 Runner를 Claim합니다. 먼저 소켓에서 응답하는 Runner가 시작할 때 찾은 Runner와 같은 식별 정보를 가졌는지 확인합니다. 바로 한 번 시도하고, 실패하면 100밀리초를 기다린 뒤 다시 시도하며, 실패할 때마다 기다리는 시간을 두 배씩 최대 5초까지 늘립니다. 그동안에는 Runner가 필요한 요청을 모두 `RUNNER_RECONNECTING`으로 거부합니다. 그 요청을 위해서는 아무것도 보내거나 예약하거나 기록하지 않으며, 재개하려던 승인은 소비되지 않습니다. 소켓에서 더 이상 연결을 받지 않거나, 다른 Runner가 응답하거나, 기다려도 풀리지 않는 이유로 Runner가 Claim을 거부하면 게이트웨이는 시도를 멈추고 그런 요청을 모두 `RUNNER_DISCONNECTED`로 거부합니다. 그러면 Runner의 프로세스에 다시 닿으려면 게이트웨이를 재시작해야 합니다. 연결을 잃을 때 이미 보낸 요청은 지금처럼 불확실한 결과를 받습니다. 실행이라면 `dispatch_status: unknown`입니다. Runner가 전하지 못한 종료 이벤트는 다음 controller에게 가고, 게이트웨이는 각 종료를 한 번만 전달합니다.
+**연결을 잃었을 때.** Runner와의 연결을 잃었거나, 호출이 deadline을 넘겨 연결을 닫은 게이트웨이는 다시 연결해 같은 Runner를 Claim합니다. 먼저 소켓에서 응답하는 Runner가 시작할 때 찾은 Runner와 같은 식별 정보를 가졌는지 확인합니다. 바로 한 번 시도하고, 실패하면 100밀리초를 기다린 뒤 다시 시도하며, 실패할 때마다 기다리는 시간을 두 배씩 최대 5초까지 늘립니다. 그동안에는 Runner가 필요한 요청을 모두 `RUNNER_RECONNECTING`으로 거부합니다. 그 요청을 위해서는 아무것도 보내거나 예약하거나 기록하지 않으며, 재개하려던 승인은 소비되지 않습니다. 소켓에서 더 이상 연결을 받지 않거나 다른 Runner가 응답하면 Runner를 [잃은](#runner-loss) 것입니다. 기다려도 풀리지 않는 이유로 Runner가 Claim을 거부할 때도 게이트웨이는 시도를 멈춥니다. 어느 쪽이든 그런 요청을 모두 `RUNNER_DISCONNECTED`로 거부하며, Runner의 프로세스에 다시 닿으려면 게이트웨이를 재시작해야 합니다. 연결을 잃을 때 이미 보낸 요청은 지금처럼 불확실한 결과를 받습니다. 실행이라면 `dispatch_status: unknown`입니다. Runner가 전하지 못한 종료 이벤트는 다음 controller에게 가고, 게이트웨이는 각 종료를 한 번만 전달합니다.
 
 **이전 controller가 있었을 때.** 새로 시작한 Runner를 처음 Claim한 게이트웨이는 관리 worker와 같이 동작합니다. 한 controller가 어떤 workspace에서 작업(실행, 패치, DevGuard를 쓰면 준비나 launch)을 시작한 뒤에는, 그 뒤의 controller들이 Runner의 프로세스를 넘겨받습니다. 연결을 잃었다가 Runner를 다시 Claim한 같은 게이트웨이도 마찬가지이며, Claim의 응답은 앞선 controller가 작업을 시작한 workspace를 모두 알립니다. 게이트웨이는 넘겨받은 프로세스를 `process_id`로 바로 조회하고, 출력을 읽고, stdin에 쓰고, 크기를 바꾸고, 종료할 수 있으며, DevGuard가 응답하지 못할 때도 마찬가지입니다. Claim이 알린 workspace, Runner가 실행 중인 프로세스를 가진 workspace, [대조](#reconciliation)할 기록이 남은 workspace에서는 먼저 앞선 controller들이 남긴 것을 대조합니다. 그때까지는 그 workspace의 새 실행, 패치, 승인 재개를 승인을 가져가기 전에 `RECOVERY_PENDING`으로 거부하므로 승인은 그대로 남습니다. Runner도 Claim이 알린 workspace에서는 게이트웨이가 그 workspace를 대조했다고 알릴 때까지 이런 요청을 거부합니다. 다른 workspace는 바로 새 작업을 받습니다. 게이트웨이는 Runner의 식별 정보(프로세스 ID, 부팅과 시작 시각), Claim의 epoch, 앞선 controller가 작업을 시작한 workspace, 넘겨받은 프로세스 수, 그 목록에 반영된 마지막 종료 이벤트의 번호를 로그에 남깁니다.
 
 <a id="reconciliation"></a>
 
-**대조.** 게이트웨이는 Claim할 때마다, `terminal`이 아니면서 이 Runner에 이번 Claim이나 그 뒤의 Claim으로 보낸 것이 아닌 기록과, 아직 `resuming`인 승인의 기록을 대조합니다. 각 실행에 대해 세 가지를 맞춰 봅니다. 그 실행의 [기록](#process-records), 기록이 가리키는 Runner가 그 프로세스에 대해 가진 것이나 기억하는 것, 그리고 DevGuard를 쓰면 `required` workspace의 실행에 대해 Runner가 DevGuard로 조회한 attempt입니다. Runner는 시작하라고 받은 `process_id`마다, 프로세스를 만들었는지 아니면 요청을 받고도 아무것도 만들지 않았는지를 ID만으로 수명 내내 기억합니다. 요청을 받은 적이 없다는 증명은 Runner 자신에 대해서만 할 수 있으므로, 중지되었거나 잃은 Runner를 포함해 다른 Runner를 가리키는 기록은 이렇게 정리하지 않습니다.
+**대조.** 게이트웨이는 Claim할 때마다, `terminal`이 아니면서 이 Runner에 이번 Claim이나 그 뒤의 Claim으로 보낸 것이 아닌 기록과, 아직 `resuming`인 승인의 기록을 대조합니다. 각 실행에 대해 세 가지를 맞춰 봅니다. 그 실행의 [기록](#process-records), 기록이 가리키는 Runner가 그 프로세스에 대해 가진 것이나 기억하는 것, 그리고 DevGuard를 쓰면 `required` workspace의 실행에 대해 Runner가 DevGuard로 조회한 attempt입니다. Runner는 시작하라고 받은 `process_id`마다, 프로세스를 만들었는지 아니면 요청을 받고도 아무것도 만들지 않았는지를 ID만으로 수명 내내 기억합니다. 요청을 받은 적이 없다는 증명은 Runner 자신에 대해서만 할 수 있습니다. 다른 Runner를 가리키면서 끝나지 않은 기록은 그 소켓에서 다른 Runner가 응답하므로 그 Runner를 [잃었다](#runner-loss)는 뜻이고, 운영자만 정리할 수 있습니다.
 
 | 기록 | 기록이 가리키는 Runner | DevGuard attempt(`required`만) | 결과 |
 | --- | --- | --- | --- |
 | `dispatching` 또는 `running` | 프로세스를 실행 중으로 가짐 | launch됨 | 기록은 `running`이 되고, 프로세스가 다시 workspace를 점유합니다. 그 workspace의 새 작업은 프로세스가 끝나거나 종료될 때까지 `WORKSPACE_BUSY`를 받습니다 |
 | `dispatching` 또는 `running` | 끝난 프로세스를 가짐, 또는 만들었지만 더는 갖지 않음 | scope가 끝나 해제됨, 또는 시작 전에 끝남 | 기록은 프로세스가 어떻게 끝났는지 남기며, Runner가 더는 갖지 않으면 종료 방식은 `unknown`입니다. workspace 점유는 해제됩니다 |
 | `dispatching` | 요청을 받은 적 없음, 또는 받고 아무것도 만들지 않음 | 없음, 또는 시작 전에 끝남 | 기록은 실행이 시작되지 않았다고 남기고, workspace 점유는 해제됩니다 |
+| `dispatching`, `running` 또는 `unknown` | 다른 Runner이며, 잃었음 | 무엇이든 | 기록은 이유와 함께 `unknown`이 되고, 운영자가 기록을 풀 때까지 workspace는 계속 거부됩니다 |
 | 없음 | 프로세스를 실행 중으로 가짐 | 무엇이든 | workspace는 계속 거부됩니다 |
 | 그 밖의 모든 경우 | | | workspace는 계속 거부됩니다 |
 
-Runner나 DevGuard에 묻지 못했거나 DevGuard가 attempt를 아직 정리하지 않아 답을 기다리는 workspace는 500밀리초 뒤에 다시 대조하며, 다시 시도할 때마다 기다리는 시간을 두 배씩 최대 30초까지 늘립니다. 세 가지가 서로 맞지 않거나 기록이 다른 Runner를 가리키는 workspace는 운영자가 해결할 때까지 계속 거부되며, 그 절차는 다음 단계에서 더합니다. Runner가 실행 중인 프로세스를 가졌지만 그 프로세스를 설명하는 기록이 없는 workspace는 그 프로세스가 끝나거나 종료될 때까지 계속 거부됩니다. 게이트웨이는 종료가 있을 때마다 다시 대조합니다. 계속 거부하는 workspace는 그 이유와 함께 로그에 남기고, 그 이유는 `RECOVERY_PENDING`에도 들어갑니다. 대조를 마친 workspace도 로그에 남깁니다. 대조할 수 없는 workspace의 점유는 풀지 않습니다.
+Runner나 DevGuard에 묻지 못했거나 DevGuard가 attempt를 아직 정리하지 않아 답을 기다리는 workspace는 500밀리초 뒤에 다시 대조하며, 다시 시도할 때마다 기다리는 시간을 두 배씩 최대 30초까지 늘립니다. 세 가지가 서로 맞지 않는 workspace는 운영자가 해결할 때까지, 잃은 Runner의 기록이 있는 workspace는 운영자가 그 기록을 풀 때까지 계속 거부됩니다([운영](operations.md#runner-loss)). Runner가 실행 중인 프로세스를 가졌지만 그 프로세스를 설명하는 기록이 없는 workspace는 그 프로세스가 끝나거나 종료될 때까지 계속 거부됩니다. 게이트웨이는 종료가 있을 때마다 다시 대조합니다. 계속 거부하는 workspace는 그 이유와 함께 로그에 남기고, 그 이유는 `RECOVERY_PENDING`에도 들어갑니다. 대조를 마친 workspace도 로그에 남깁니다. 대조할 수 없는 workspace의 점유는 풀지 않습니다.
 
 앞선 controller가 `resuming`으로 남긴 승인은 Runner가 그 승인을 위해 만든 실행으로 consumed가 되며, 그 뒤의 `operation_resume`은 그 실행의 `process_id`를 `dispatch_status: confirmed`와 함께 돌려줍니다. Runner가 아무것도 만들지 않았음이 증명되면 승인은 다시 granted가 되어 한 번 더 재개할 수 있습니다. 그 밖의 경우에는 `resuming`으로 남고, `operation_resume`은 지금처럼 `APPROVAL_AMBIGUOUS`를 돌려줍니다. 실행이 시작되었을 수도 있는 승인은 다시 granted가 되지 않습니다.
 
-**끝난 프로세스.** 독립 Runner는 끝난 프로세스와 그 상태, 출력을 controller가 그 기록에 프로세스가 어떻게 끝났는지 남겼다고 확인할 때까지 보관합니다. 그래서 어떤 게이트웨이도 받지 못한 종료도 다음 controller에게 갑니다. 프로세스의 핸들은 관리 worker와 같이 15분이 지나거나 끝난 프로세스가 64개를 넘으면 놓고, 핸들을 놓은 끝난 프로세스는 64개까지 보관하며 가장 오래된 것부터 버립니다. 버린 프로세스에 대해서는 Runner가 그 프로세스를 만들었다는 것만 기억합니다.
+**끝난 프로세스.** 독립 Runner는 끝난 프로세스와 그 상태, 출력을 controller가 그 기록에 프로세스가 어떻게 끝났는지 남겼다고 확인할 때까지 보관합니다. 그래서 어떤 게이트웨이도 받지 못한 종료도 다음 controller에게 갑니다. 프로세스의 핸들은 관리 worker와 같이 15분이 지나거나 끝난 프로세스가 64개를 넘으면 놓고, 핸들을 놓은 끝난 프로세스는 64개까지 보관하며 가장 오래된 것부터 버립니다. 버린 프로세스에 대해서는 Runner가 그 프로세스를 만들었다는 것만 기억합니다. Runner가 더는 갖지 않는 끝난 프로세스에 대해서는 `process_status`와 `read_process`가 그 기록으로 답하며, `lost_reason`은 `retention_expired`입니다.
+
+<a id="runner-loss"></a>
+
+**Runner 손실.** Runner와의 연결을 잃은 게이트웨이는 소켓에서 더 이상 연결을 받지 않거나, 그 소켓의 worker가 다른 식별 정보를 알리거나 아무 식별 정보도 알리지 않으면 Runner를 잃었다고 봅니다. Runner가 강제로 종료되었거나, 비정상 종료했거나, 중지되었고, 다른 Runner로 바뀌었을 수도 있습니다. 그때부터는 그 Runner에 보낸 실행이 어떻게 되었는지 알 수 없습니다. 강제로 종료된 Runner는 아무것도 끝내지 않으므로, 그 파이프 프로세스는 자신이 시작한 프로세스와 함께, 자신이 시작된 프로세스 그룹 안에서 계속 실행됩니다. 그 그룹은 Runner의 프로세스 그룹이거나, 네트워크를 허용한 샌드박스 도우미와 DevGuard의 launch helper처럼 root가 이끄는 그룹입니다. 그 뒤 출력에 쓰는 파이프 프로세스는 SIGPIPE를 받을 가능성이 크고, `tty: true` 프로세스는 Runner가 끝나며 터미널이 닫힐 때 SIGHUP을 받을 가능성이 크지만, 어느 쪽이든 이를 무시할 수 있으므로 끝났다고 보지 않습니다. Linux 명령 샌드박스 안에서 네트워크를 허용하지 않은 workspace의 명령은, 샌드박스가 그 프로세스를 Runner의 수명에 묶으므로 그 명령을 시작한 Runner와 함께 끝납니다. 이 경우의 시험이 이를 확인합니다. 네트워크를 허용하면 명령과 그 네트워크 프록시를 실행하는 샌드박스 도우미가 Runner에 묶이지 않으므로, 명령이 Runner보다 오래 살 수 있습니다. 게이트웨이는 손실과 그에 해당하는 프로세스를 로그에 남기고, Runner가 필요한 요청을 모두 `RUNNER_DISCONNECTED`로 거부합니다.
+
+잃은 Runner에 보낸 것 중 끝나지 않은 기록은 모두 이유와 함께 `unknown`이 되고 workspace를 계속 점유합니다. Runner를 잃은 게이트웨이에서도, [대조](#reconciliation)하며 다른 Runner의 기록을 찾는 다음 게이트웨이에서도 그렇습니다. Runner가 호스트의 이전 부팅에서 실행된 기록은 호스트가 재시작해 실행이 끝났다고 남깁니다. Runner가 손실 전에 알린 종료는 그대로 그 기록을 끝냅니다. 이런 실행은 다시 시작하지 않으며, 다음 게이트웨이는 운영자가 그 실행이 하나도 남아 있지 않음을 확인하고 기록을 풀 때까지 그 workspace의 새 작업을 `RECOVERY_PENDING`으로 거부합니다([운영](operations.md#runner-loss)). 이 오류는 프로세스와 `codespace-mcp records`를 알려 줍니다. 이런 실행이 재개한 승인은 `resuming`으로 남고, 그 기록을 풀면 `operation_resume`은 그 승인에 대해 `APPROVAL_AMBIGUOUS`를 돌려줍니다. 기록의 deadline과 argv digest는 그대로입니다.
+
+Runner가 더는 갖지 않는 실행, 또는 게이트웨이가 Runner와 함께 잃은 실행에 대해서는 `process_status`와 `read_process`가 기록으로 답합니다.
+
+| 기록 | `state` | `lost_reason` |
+| --- | --- | --- |
+| 끝났고 Runner가 더는 갖지 않음 | 기록된 종료 방식, 종료 코드, 신호와 함께 `exited` | `retention_expired` |
+| 끝났고 게이트웨이가 Runner를 잃음 | 기록대로 `exited` | `runner_lost` |
+| 호스트 재시작 전에 끝남 | 기록대로 `exited` | `host_rebooted` |
+| 끝나지 않았고, 이번 부팅에서 Runner를 잃음 | `unknown`: 프로세스가 아직 실행 중일 수 있으며, 종료가 아닙니다 | `runner_lost` |
+| 끝나지 않았고, Runner가 이전 부팅에서 실행됨 | 종료 방식 `unknown`과 함께 `exited` | `host_rebooted` |
+
+이런 답에는 출력이 없습니다. `read_process`는 빈 `chunk`와 함께 `eof`와 `output_lost`를 true로 돌려주고, `retained_from`과 cursor는 게이트웨이가 본 가장 먼 출력 위치에 둡니다. 요청한 cursor가 더 멀면 그 cursor에 둡니다. Runner가 프로세스는 갖고 있지만 출력의 일부만 갖고 있는 동안에는 `lost_reason`이 `ring_overflow`이고, `read_process`에서는 `output_lost`가, `process_status`에서는 0보다 큰 `output_retained_from`이 함께 옵니다. Runner 손실 뒤에는 출력을 되살리지 않습니다.
 
 <a id="claim-exposure"></a>
 

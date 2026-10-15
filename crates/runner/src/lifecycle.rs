@@ -67,6 +67,12 @@ impl RunnerIdentity {
     }
 }
 
+/// The host's current boot session, when it reports one (P1R-C05): Linux's `boot_id`, macOS's
+/// `kern.bootsessionuuid`. A process recorded under another boot ended with it.
+pub fn host_boot_id() -> Option<String> {
+    boot_id()
+}
+
 #[cfg(target_os = "linux")]
 fn boot_id() -> Option<String> {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
@@ -108,7 +114,7 @@ fn boot_id() -> Option<String> {
 /// been reaped yet, as a child that only its own reaper waits for, it is that process's. `None`
 /// where the host does not report it.
 #[cfg(target_os = "linux")]
-pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
+pub fn process_start_identity(pid: u32) -> Option<String> {
     // `stat`'s 22nd field: the start time in clock ticks since boot. The command name before it
     // is in parentheses and may itself hold spaces and parentheses.
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -122,7 +128,83 @@ pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
 /// been reaped yet, as a child that only its own reaper waits for, it is that process's. `None`
 /// where the host does not report it.
 #[cfg(target_os = "macos")]
-pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
+pub fn process_start_identity(pid: u32) -> Option<String> {
+    bsd_info(pid).map(|info| macos_start(&info))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn process_start_identity(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Whether process `pid` still runs as the process whose start identity is `started`
+/// (P1R-C05): a later process with the same PID is another one, and one that exited does not
+/// run, even while its parent has not reaped it yet.
+#[cfg(target_os = "linux")]
+pub fn process_runs(pid: u32, started: &str) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some(close) = stat.rfind(')') else {
+        return false;
+    };
+    let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+    // `stat`'s 3rd field is the state, Z or X once the process exited; its 22nd the start time.
+    match (
+        fields.first(),
+        fields.get(19).and_then(|ticks| ticks.parse::<u64>().ok()),
+    ) {
+        (Some(state), Some(ticks)) => {
+            !matches!(*state, "Z" | "X" | "x") && format!("linux-start-ticks:{ticks}") == started
+        }
+        _ => false,
+    }
+}
+
+/// Whether process `pid` still runs as the process whose start identity is `started`
+/// (P1R-C05): a later process with the same PID is another one, and one that exited does not
+/// run, even while its parent has not reaped it yet.
+#[cfg(target_os = "macos")]
+pub fn process_runs(pid: u32, started: &str) -> bool {
+    bsd_info(pid)
+        .is_some_and(|info| info.pbi_status != libc::SZOMB && macos_start(&info) == started)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn process_runs(_pid: u32, _started: &str) -> bool {
+    false
+}
+
+/// Whether some process that has not exited holds the PID `pid` (P1R-C05). A process that
+/// exited and that its parent has not reaped yet does not count. Where the host cannot tell,
+/// every PID is taken as held.
+#[cfg(target_os = "linux")]
+pub fn pid_runs(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let state = stat
+        .rfind(')')
+        .and_then(|close| stat[close + 1..].split_whitespace().next());
+    !matches!(state, None | Some("Z" | "X" | "x"))
+}
+
+/// Whether some process that has not exited holds the PID `pid` (P1R-C05). A process that
+/// exited and that its parent has not reaped yet does not count. Where the host cannot tell,
+/// every PID is taken as held.
+#[cfg(target_os = "macos")]
+pub fn pid_runs(pid: u32) -> bool {
+    bsd_info(pid).is_some_and(|info| info.pbi_status != libc::SZOMB)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn pid_runs(_pid: u32) -> bool {
+    true
+}
+
+/// What macOS reports of process `pid`, an exited one that is not reaped yet included.
+#[cfg(target_os = "macos")]
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     // SAFETY: an all-zero `proc_bsdinfo` is a valid value of this plain C structure.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
@@ -137,18 +219,15 @@ pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
             size,
         )
     };
-    if written != size || info.pbi_pid != pid {
-        return None;
-    }
-    Some(format!(
-        "macos-start:{}.{:06}",
-        info.pbi_start_tvsec, info.pbi_start_tvusec
-    ))
+    (written == size && info.pbi_pid == pid).then_some(info)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn process_start_identity(_pid: u32) -> Option<String> {
-    None
+#[cfg(target_os = "macos")]
+fn macos_start(info: &libc::proc_bsdinfo) -> String {
+    format!(
+        "macos-start:{}.{:06}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    )
 }
 
 /// 128 random bits in hex. A host without `/dev/urandom` gets the time and the process ID
@@ -212,14 +291,15 @@ mod tests {
             assert_eq!(own, None);
             return;
         }
-        let own = own.expect("this process's start identity");
+        assert!(own.is_some(), "this process's start identity");
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .unwrap();
         let pid = child.id();
+        // Only with its PID does an identity name one process: on Linux, two processes that
+        // start within one clock tick, as this one and its child may, have the same start time.
         let started = process_start_identity(pid).expect("a running child's start identity");
-        assert_ne!(started, own);
         assert_eq!(process_start_identity(pid).as_ref(), Some(&started));
         child.kill().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -241,6 +321,48 @@ mod tests {
             Some(&started),
             "a reaped child"
         );
+    }
+
+    /// A process runs, for an operator who looks for what a lost Runner left (P1R-C05), only
+    /// by its PID and its start identity together, and not once it exited, even before it is
+    /// reaped: a later process with its PID is never taken for it.
+    #[test]
+    fn a_process_runs_as_itself_until_it_exits() {
+        if cfg!(not(any(target_os = "linux", target_os = "macos"))) {
+            assert!(!process_runs(std::process::id(), "any"));
+            return;
+        }
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = process_start_identity(pid).expect("a running child's start identity");
+        assert!(process_runs(pid, &started));
+        assert!(pid_runs(pid));
+        assert!(
+            !process_runs(pid, &format!("{started}0")),
+            "another start identity with the same PID"
+        );
+        child.kill().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !exited_unreaped(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !process_runs(pid, &started),
+            "an exited child that is not reaped yet"
+        );
+        assert!(!pid_runs(pid), "an exited child that is not reaped yet");
+        child.wait().unwrap();
+        assert!(!process_runs(pid, &started), "a reaped child");
+        assert!(pid_runs(std::process::id()));
+        // Beyond the largest PID that Linux and macOS give a process.
+        assert!(!pid_runs(4_194_999));
     }
 
     #[test]

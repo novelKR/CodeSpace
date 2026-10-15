@@ -44,7 +44,7 @@ Linux 도우미가 없으면 restricted 정책의 작업 공간에서도 비격�
 
 ## 작업과 복구의 안전성
 
-버전 검사는 예상하지 못한 파일 버전에 패치를 적용하는 것을 막습니다. 작업 키는 패치 중복 요청을 구분하며 인증 토큰이 아닙니다. 작업 공간 점유는 파일을 변경할 수 있는 패치·명령 실행을 직렬화합니다. 요청 소유 충돌은 `acquire()`에서 시작하는 인메모리 FIFO에서 기다리고, 라이브 프로세스는 뒤 대기자와 새 요청에 `WORKSPACE_BUSY`를 반환합니다. 점유 상태는 재시작 후에도 남지 않습니다. 영속적인 프로세스 복구는 없습니다. 다만 [독립 Runner](runner-isolation.md#reconciliation)에 연결한 게이트웨이는 대조할 때 실행 중으로 확인한 프로세스마다 점유를 복원하며, 그 전에는 그 workspace에서 새 작업을 시작하지 않습니다.
+버전 검사는 예상하지 못한 파일 버전에 패치를 적용하는 것을 막습니다. 작업 키는 패치 중복 요청을 구분하며 인증 토큰이 아닙니다. 작업 공간 점유는 파일을 변경할 수 있는 패치·명령 실행을 직렬화합니다. 요청 소유 충돌은 `acquire()`에서 시작하는 인메모리 FIFO에서 기다리고, 라이브 프로세스는 뒤 대기자와 새 요청에 `WORKSPACE_BUSY`를 반환합니다. 점유 상태는 재시작 후에도 남지 않습니다. 영속적인 프로세스 복구는 없습니다. 다만 [독립 Runner](runner-isolation.md#reconciliation)에 연결한 게이트웨이는 대조할 때 실행 중으로 확인한 프로세스마다 점유를 복원하며, 그 전에는 그 workspace에서 새 작업을 시작하지 않습니다. 그 Runner를 잃으면 끝나지 않은 실행마다, 운영자가 그중 아무것도 실행 중이지 않음을 확인하고 프로세스 하나씩 풀 때까지 workspace를 점유합니다. 아무것도 다시 실행하지 않습니다([Runner 손실](operations.md#runner-loss)).
 
 `CODESPACE_OPERATIONS_DB`의 `approvals` 확인 홀드는 행이 `pending`·`granted`·`queued`·`resuming`인 동안 V4A 패치나 exec argv를 보관합니다. 패치 원장은 패치 본문이 아니라 해시를 보관합니다. `denied` 또는 `consumed` 뒤에는 홀드 본문을 digest 메타(도구, 작업 공간, fingerprint)로 바꿉니다. [독립 Runner](runner-isolation.md#process-records)에 연결한 게이트웨이는 실행도 여기에 기록하는데(`processes`), argv는 SHA-256 digest로만 남기고 argv 자체와 그 환경, secret은 남기지 않습니다. 또 Runner를 Claim할 때 밝히는 데이터베이스의 임의 식별자(`store_identity`)를 여기에 둡니다. 이 식별자는 데이터베이스를 서로 구별할 뿐 secret이 아닙니다. 이 데이터베이스는 토큰·게이트웨이 설정과 같이 작업 공간 루트 밖에 두세요. 홀드는 워크플로 일시정지이며 같은 MCP 호출자가 grant할 수 있습니다. 격리 경계가 아닙니다.
 
