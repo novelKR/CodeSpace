@@ -4575,7 +4575,7 @@ mod independent_tests {
     use codespace_runner::{
         host_boot_id, host_worker, host_worker_with_retention, InProcessRunner, IndependentRunner,
         LinkEvent, RetentionPolicy, RunnerEvents, RunnerIdentity, RunnerOp, RunnerOpResult,
-        StopHandle, UdsRunner,
+        RunnerProcessStatus, StopHandle, UdsRunner,
     };
     use codespace_store::{
         NewProcessRecord, ProcessEnd, ProcessLoss, ProcessOutcome, ProcessPhase, ProcessRecord,
@@ -5903,6 +5903,80 @@ mod independent_tests {
         released(&gateway, "gov").await;
     }
 
+    /// An exit that the gateway hears of while it claims its Runner again, as when the Runner
+    /// sends it right after the Claim's answer, is recorded as the Runner reports it once the
+    /// gateway has claimed the Runner (P1R-C04), not as an end whose kind is unknown.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exit_heard_while_claiming_again_is_recorded_as_the_runner_reports_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("operations.db");
+        let identity = fake_identity();
+        left_running(
+            &database,
+            &runner_ref(identity.clone()),
+            "proc-ended",
+            Some(1),
+            "demo",
+        );
+        let ended = ProcessId("proc-ended".into());
+        let (client, server) = UnixStream::pair().unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let acknowledged = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn(fake_runner_answering(server, identity.clone(), {
+            let (asked, acknowledged) = (asked.clone(), acknowledged.clone());
+            move |op| match op {
+                RunnerOp::ProcessStatus { process_id } => {
+                    // The first request is refused as the client refuses it while it claims
+                    // the Runner again.
+                    if asked.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return Some(Err(codespace_runner::runner_reconnecting()));
+                    }
+                    Some(Ok(RunnerOpResult::ProcessStatus(RunnerProcessStatus {
+                        process_id,
+                        state: ProcessState::Exited,
+                        exit_code: Some(4),
+                        termination: Some(ProcessTermination::Exited),
+                        signal: None,
+                        output_total: 0,
+                        output_retained_from: 0,
+                        eof: true,
+                    })))
+                }
+                RunnerOp::Acknowledge { process_ids } => {
+                    acknowledged.lock().unwrap().extend(process_ids);
+                    Some(Ok(RunnerOpResult::Acknowledged))
+                }
+                other => panic!("a request the fake Runner does not answer: {other:?}"),
+            }
+        }));
+        let store = Arc::new(Store::open(&database).unwrap());
+        let (release, exits) = ProcessRecords::release_hook(Leases::new(store.clone()));
+        let uds = UdsRunner::from_stream(client, Arc::new(|_: &str| {}));
+        uds.handshake().await.unwrap();
+        uds.claim(&store.store_id().unwrap()).await.unwrap();
+        let _records = ProcessRecords::start(store, &identity, RuntimeBackend::Uds(uds), exits);
+
+        // The Runner reports that the process exited.
+        release(&ended.0);
+        let record = record_once(&database, &ended, terminal).await;
+        assert_eq!(
+            (record.outcome, record.exit_code),
+            (
+                Some(ProcessOutcome::Ended(ProcessTermination::Exited)),
+                Some(4)
+            ),
+            "{record:?}"
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while acknowledged.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "the end is not acknowledged");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*acknowledged.lock().unwrap(), [ended]);
+    }
+
     /// An execution, a patch or an approval resume that the Runner refuses as sent under an
     /// earlier Claim never ran (P1R-C03): the approval is given back granted and can be resumed
     /// again, the patch's operation_key begins afresh, the workspace is free again, and the
@@ -6721,7 +6795,7 @@ mod independent_tests {
         // A record that says this Runner started an execution it never received.
         let this = runner_ref(RunnerIdentity::this_process());
         left_running(&database, &this, "proc-phantom", None, "gov");
-        // A process that a controller started without recording it.
+        // A process that a controller started without recording it. It says when it runs.
         let unrecorded = ProcessId("proc-unrecorded".into());
         {
             let (client, server) = UnixStream::pair().unwrap();
@@ -6736,7 +6810,11 @@ mod independent_tests {
                 &raw,
                 ws,
                 RunnerExecRequest::for_host(
-                    vec!["/bin/sleep".into(), "30".into()],
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "echo started; exec /bin/sleep 30".into(),
+                    ],
                     unrecorded.clone(),
                     ws.profile,
                 ),
@@ -6787,6 +6865,24 @@ mod independent_tests {
             .0;
         assert_eq!(status.state, ProcessState::Running);
 
+        // Terminate it once it runs: a sandboxed command whose launcher is killed while its
+        // sandbox is still being set up runs on outside it, and keeps its output open.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let read = gateway
+                .read_process(Parameters(ReadProcessParams {
+                    process_id: unrecorded.clone(),
+                    cursor: 0,
+                }))
+                .await
+                .unwrap()
+                .0;
+            if read.chunk.contains("started") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{read:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         gateway
             .terminate_process(Parameters(TerminateProcessParams {
                 process_id: unrecorded.clone(),
