@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import resource
 import socket
 import sqlite3
 import struct
@@ -317,6 +318,21 @@ class HostTests(unittest.TestCase):
         lines = (self.dir / 'w/rows.jsonl').read_text().splitlines()
         self.assertEqual([json.loads(line)['n'] for line in lines], list(range(100)))
 
+    def test_the_writer_keeps_few_files_open(self):
+        writer = host.Writer()
+        paths = [self.dir / f'w/{n:02d}.jsonl' for n in range(3 * host.WRITER_OPEN_FILES)]
+        for number in range(4):
+            for path in paths:
+                writer.write(path, {'round': number})
+        deadline = time.monotonic() + 30
+        while writer.written < 4 * len(paths) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertLessEqual(len(writer.files), host.WRITER_OPEN_FILES)
+        report = writer.close()
+        self.assertEqual((report['lines'], report['error_count']), (4 * len(paths), 0))
+        for path in paths:
+            self.assertEqual([json.loads(line)['round'] for line in path.read_text().splitlines()], [0, 1, 2, 3])
+
     def journal(self):
         database = self.dir / 'authority.sqlite'
         connection = sqlite3.connect(database)
@@ -410,8 +426,6 @@ class McpClientTests(unittest.TestCase):
 
     def tearDown(self):
         self.gateway.close(limit=10)
-        self.gateway.process.stdout.close()
-        self.gateway.process.stderr.close()
         self.scratch.cleanup()
 
     def test_answers_errors_and_server_requests(self):
@@ -436,6 +450,82 @@ class McpClientTests(unittest.TestCase):
         with self.assertRaises(host.ToolError) as raised:
             self.gateway.call('echo', {}, timeout=10)
         self.assertTrue(raised.exception.transport)
+
+
+FAKE_FIXTURE = textwrap.dedent("""
+    import json, sys
+    print(json.dumps({'base': sys.argv[1]}), flush=True)
+    for line in sys.stdin:
+        print(json.dumps({'command': line.strip()}), flush=True)
+""")
+
+
+def open_descriptors(expected=None, limit=5.0):
+    """The test process's open descriptors; with `expected`, once they are that many or `limit`
+    seconds have passed, so that another test's thread that is still ending cannot make a leak
+    seem to come or go."""
+    deadline = time.monotonic() + limit
+    while True:
+        count = len(os.listdir('/dev/fd'))
+        if expected is None or count == expected or time.monotonic() >= deadline:
+            return count
+        time.sleep(0.05)
+
+
+class DescriptorTests(unittest.TestCase):
+    """Gateways and fixture authorities that ended leave none of their pipes open in the harness,
+    which starts hundreds of them in one run under a terminal's limit of 256 open files and keeps
+    each one referenced until the run settles."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.dir = Path(self.scratch.name)
+        self.server = self.dir / 'server.py'
+        self.server.write_text(FAKE_SERVER)
+
+    def tearDown(self):
+        self.scratch.cleanup()
+
+    def gateway(self, name):
+        gateway = host.Gateway(sys.executable, [str(self.server)], dict(os.environ), self.dir / f'{name}.log')
+        gateway.initialize(timeout=30)
+        return gateway
+
+    def test_ended_gateways_close_their_pipes(self):
+        started = [self.gateway('first')]
+        started[0].close(limit=10)
+        before = open_descriptors()
+        for _ in range(3):
+            for how in host.GATEWAY_ENDS:
+                started.append(self.gateway(how))
+                self.assertIsNone(host.end_gateway(started[-1], how, limit=10)['stopped'])
+            started.append(self.gateway('killed'))
+            started[-1].process.kill()
+            started[-1].process.wait()
+            started[-1].join_readers()
+            started.append(self.gateway('closed'))
+            started[-1].close(limit=10)
+        self.assertEqual(open_descriptors(before), before)
+
+    def test_stopped_fixture_authorities_close_their_pipes(self):
+        binary = self.dir / 'fixture'
+        binary.write_text(f'#!{sys.executable}\n' + FAKE_FIXTURE)
+        binary.chmod(0o755)
+
+        def start(name):
+            return host.FixtureAuthority(binary, self.dir / name, dict(os.environ), self.dir / f'{name}.log')
+        started = [start('first')]
+        started[0].stop()
+        before = open_descriptors()
+        for number in range(5):
+            started.append(start(f'fixture-{number}'))
+            self.assertEqual(started[-1].settings, {'base': str(self.dir / f'fixture-{number}')})
+            self.assertEqual(started[-1].charged(), {'command': 'charged'})
+            if number % 2:
+                started[-1].kill()
+            else:
+                self.assertEqual(started[-1].stop(), 0)
+        self.assertEqual(open_descriptors(before), before)
 
 
 class HarnessTests(unittest.TestCase):
@@ -480,6 +570,9 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(settings, expected)
             self.assertNotIn('a' * 64, json.dumps(settings))
         self.assertEqual(qualify.consumer_settings('[consumers.dev-cli]\nrole = "workload"\n'), {})
+
+    def test_the_harness_records_its_open_file_limit(self):
+        self.assertEqual(qualify.harness()['open_files_limit'], list(resource.getrlimit(resource.RLIMIT_NOFILE)))
 
     def test_documentation_keeps_the_candidate(self):
         repo = self.dir / 'repo'
@@ -1151,6 +1244,24 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(analysis.recovery_verdict('passed', 'inconclusive'), 'inconclusive')
         self.assertEqual(analysis.recovery_verdict('incomplete', 'qualified'), 'inconclusive')
         self.assertEqual(analysis.recovery_verdict('passed', 'failed'), 'failed')
+
+    def test_an_unreadable_journal_at_the_drain_is_recorded(self):
+        interval = qualify.RecoveryInterval.__new__(qualify.RecoveryInterval)
+        interval.governed, interval.number, interval.invalid = True, 6, []
+        interval.args = SimpleNamespace(journal=self.dir / 'missing/authority.sqlite')
+
+        def no_gateway(*args, **kwargs):
+            raise OSError(24, 'Too many open files')
+        interval.bench = SimpleNamespace(gateway=no_gateway, socket=self.dir / 'runner.sock',
+                                         authority={'consumer': host.CONSUMER},
+                                         database=self.dir / 'missing/authority.sqlite')
+        interval.runner = SimpleNamespace(pid=4242, wait=lambda limit: 0,
+                                          log=lambda: 'stopped; 0 processes were terminated\n')
+        drain = interval.drain()
+        self.assertEqual(drain['error'], 'OSError: [Errno 24] Too many open files')
+        self.assertTrue(drain['journal_error'].startswith('OperationalError: '), drain)
+        self.assertEqual(interval.invalid, [f"the journal could not be read: {drain['journal_error']}"])
+        self.assertEqual((drain['runner_exit'], drain['socket_left'], drain['terminated']), (0, False, 0))
 
     def test_verify_recovery(self):
         path, _ = self.recovery_run()

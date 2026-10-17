@@ -8,6 +8,7 @@ needs are copied from it, never a permit's hash or a lease ID. Gateways and fixt
 run in a minimal environment (HOME, PATH, TMPDIR, LANG and CodeSpace's own settings) in their own
 sessions, so a terminal's interrupt reaches only the harness, which then settles what it started.
 """
+from collections import OrderedDict
 import hashlib
 import json
 import os
@@ -40,10 +41,26 @@ CALL_TIMEOUT_S = 30.0
 NO_ANSWER = 'no_answer'
 # Codes that are the transport's, not CodeSpace's answer.
 TRANSPORT_CODES = (TRANSPORT, NO_ANSWER)
+# The evidence writer keeps at most this many files open, closing the least recently written
+# first, so that a run that writes to many files stays far below the open-file limit (256 by
+# default in a macOS terminal). A recovery interval writes about 17 files at once, which all
+# stay open.
+WRITER_OPEN_FILES = 32
 
 
 def default_socket():
     return Path(f'/private/tmp/devguard-{os.getuid()}/authority.sock')
+
+
+def close_quietly(handle):
+    """Close a pipe or file that may be closed already or whose other end is gone; the
+    descriptor is released either way."""
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except (OSError, ValueError):
+        pass
 
 
 def sha256(path):
@@ -136,12 +153,13 @@ def verify_manifest(directory):
 
 class Writer(threading.Thread):
     """Appends JSON lines on its own thread, as DevGuard's measure.py does, so no sampler waits on
-    a disk write: a disk the load saturates delays the evidence, never a sample."""
+    a disk write: a disk the load saturates delays the evidence, never a sample. It keeps at most
+    WRITER_OPEN_FILES files open and opens a closed one again to append to it."""
 
     def __init__(self):
         super().__init__(daemon=True)
         self.lines = queue.Queue()
-        self.files = {}
+        self.files = OrderedDict()
         self.errors = []
         self.written = 0
         self.lag_max = 0.0
@@ -164,10 +182,7 @@ class Writer(threading.Thread):
             batch = [item for item in batch if item is not None]
             for _, path, line in batch:
                 try:
-                    if path not in self.files:
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        self.files[path] = open(path, 'a')
-                    self.files[path].write(line)
+                    self._file(path).write(line)
                     self.written += 1
                 except OSError as error:
                     self.errors.append(f'{path.name}: {error}')
@@ -178,6 +193,22 @@ class Writer(threading.Thread):
                     self.errors.append(f'{path.name}: {error}')
             if batch:
                 self.lag_max = max(self.lag_max, time.monotonic() - batch[0][0])
+
+    def _file(self, path):
+        """The open file for `path`, the most recently written last; the least recently written
+        one is closed when too many are open."""
+        if path in self.files:
+            self.files.move_to_end(path)
+            return self.files[path]
+        while len(self.files) >= WRITER_OPEN_FILES:
+            name, handle = self.files.popitem(last=False)
+            try:
+                handle.close()
+            except OSError as error:
+                self.errors.append(f'{name.name}: {error}')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.files[path] = open(path, 'a')
+        return self.files[path]
 
     def close(self, limit=120):
         """Write every line handed over and close the files; a disk that does not take them within
@@ -288,6 +319,11 @@ class McpClient:
             self.pending.clear()
         for waiter in waiters:
             waiter['event'].set()
+        # The connection is over, so this side of both pipes is closed: a run of many gateways
+        # must not keep a descriptor of each.
+        close_quietly(self.process.stdout)
+        with self.write_lock:
+            close_quietly(self.process.stdin)
 
     def _answer_server(self, message):
         if 'id' not in message:
@@ -461,14 +497,22 @@ class Gateway:
         self.info = None
 
     def _log(self):
-        with open(self.log_path, 'ab') as log:
-            for line in self.process.stderr:
-                log.write(line)
-                log.flush()
-                entry = launch_line(line.decode('utf-8', 'replace'))
-                if entry:
-                    with self.lock:
-                        self.executions.setdefault(entry['process_id'], []).append(entry)
+        try:
+            with open(self.log_path, 'ab') as log:
+                for line in self.process.stderr:
+                    log.write(line)
+                    log.flush()
+                    entry = launch_line(line.decode('utf-8', 'replace'))
+                    if entry:
+                        with self.lock:
+                            self.executions.setdefault(entry['process_id'], []).append(entry)
+        finally:
+            close_quietly(self.process.stderr)
+
+    def join_readers(self, limit=10):
+        """Wait for the readers of the gateway's output and log, which close its pipes as they end."""
+        self.log_reader.join(timeout=limit)
+        self.client.reader.join(timeout=limit)
 
     def initialize(self, timeout=60):
         result, latency = self.client.request('initialize', {
@@ -599,7 +643,7 @@ class Gateway:
                 stopped = 'SIGKILL'
                 self.process.kill()
                 self.process.wait()
-        self.log_reader.join(timeout=10)
+        self.join_readers()
         return {'returncode': self.process.returncode, 'stopped': stopped,
                 'malformed_lines': self.client.malformed}
 
@@ -631,7 +675,7 @@ def end_gateway(gateway, how, limit=60):
         stopped = 'SIGKILL'
         gateway.process.kill()
         gateway.process.wait()
-    gateway.log_reader.join(timeout=10)
+    gateway.join_readers()
     return {'how': how, 'returncode': gateway.process.returncode, 'stopped': stopped,
             'exit_ms': round((time.monotonic() - began) * 1000, 3)}
 
@@ -1200,16 +1244,22 @@ class FixtureAuthority:
                                         stdout=subprocess.PIPE, stderr=self.log, env=env, text=True,
                                         start_new_session=True)
         self.lines = queue.Queue()
-        threading.Thread(target=self._read, daemon=True).start()
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
         self.settings = self._answer(timeout)
         if self.settings is None:
             self.kill()
             raise RuntimeError('the fixture authority did not start')
 
     def _read(self):
-        for line in self.process.stdout:
-            self.lines.put(line)
-        self.lines.put(None)
+        try:
+            for line in self.process.stdout:
+                self.lines.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            close_quietly(self.process.stdout)
+            self.lines.put(None)
 
     def _answer(self, timeout):
         try:
@@ -1237,15 +1287,16 @@ class FixtureAuthority:
         if self.process.poll() is None:
             self.process.kill()
         self.process.wait()
+        close_quietly(self.process.stdin)
+        close_quietly(self.log)
+        self.reader.join(timeout=10)
 
     def stop(self, limit=30):
-        try:
-            self.process.stdin.close()
-        except OSError:
-            pass
+        close_quietly(self.process.stdin)
         try:
             self.process.wait(timeout=limit)
         except subprocess.TimeoutExpired:
             self.kill()
-        self.log.close()
+        close_quietly(self.log)
+        self.reader.join(timeout=10)
         return self.process.returncode

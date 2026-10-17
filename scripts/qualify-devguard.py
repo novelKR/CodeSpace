@@ -39,6 +39,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import resource
 import secrets
 import shutil
 import signal
@@ -727,9 +728,10 @@ def scenario_authority_unavailable(bench):
 def scenario_runner_socket(bench):
     """`uds` with a worker the gateway did not start: governed executions are unsupported."""
     socket = bench.work / 'standalone.sock'
-    worker = subprocess.Popen([str(bench.args.runtime_bin), str(socket)], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=open(bench.evidence.file(f'{bench.mode}/standalone-worker.log'), 'ab'),
-                              env=host.minimal_env(bench.work), start_new_session=True)
+    with open(bench.evidence.file(f'{bench.mode}/standalone-worker.log'), 'ab') as log:
+        worker = subprocess.Popen([str(bench.args.runtime_bin), str(socket)], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=log, env=host.minimal_env(bench.work),
+                                  start_new_session=True)
     bench.live.workers.append(worker)
     deadline = time.monotonic() + 15
     while not socket.exists() and time.monotonic() < deadline and worker.poll() is None:
@@ -2258,7 +2260,7 @@ class RecoveryBench(Bench):
             if gateway.process.poll() is None:
                 gateway.process.kill()
                 gateway.process.wait()
-                gateway.log_reader.join(timeout=10)
+            gateway.join_readers()
         stopped = [runner.stop(limit=20) for runner in self.runners if runner.alive()]
         killed = kill_leftovers(self.roots.values(), self.began_unix)
         self.evidence.append(f'{self.prefix}/teardown.jsonl', {'runners_stopped': stopped, 'leftovers_killed': killed})
@@ -2667,10 +2669,10 @@ def recovery_invalid_settings(bench):
     managed_dir = bench.work / 'mw'
     managed_dir.mkdir(mode=0o700)
     managed_socket = managed_dir / 'runner.sock'
-    worker = subprocess.Popen([str(bench.args.runtime_bin), str(managed_socket)], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL,
-                              stderr=open(bench.evidence.file(f'{bench.prefix}/managed-worker.log'), 'ab'),
-                              env=host.minimal_env(bench.work), start_new_session=True)
+    with open(bench.evidence.file(f'{bench.prefix}/managed-worker.log'), 'ab') as log:
+        worker = subprocess.Popen([str(bench.args.runtime_bin), str(managed_socket)], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=log, env=host.minimal_env(bench.work),
+                                  start_new_session=True)
     bench.live.workers.append(worker)
     # A managed worker serves the first connection it accepts and no other, so it is not probed.
     deadline = time.monotonic() + 15
@@ -4574,14 +4576,18 @@ class RecoveryInterval:
         found = re.findall(r'stopped; (\d+) processes were terminated', self.runner.log())
         drain['terminated'] = int(found[-1]) if found else None
         if self.governed:
-            drain['retired'], drain['instances'] = wait_retired(self.bench, self.runner.pid)
-            deadline = time.monotonic() + 60
-            while True:
-                charged = host.journal_charged(self.args.journal)['attempts'].get(host.CONSUMER, 0)
-                if not charged or time.monotonic() >= deadline:
-                    break
-                time.sleep(1.0)
-            drain['charged'] = charged
+            try:
+                drain['retired'], drain['instances'] = wait_retired(self.bench, self.runner.pid)
+                deadline = time.monotonic() + 60
+                while True:
+                    charged = host.journal_charged(self.args.journal)['attempts'].get(host.CONSUMER, 0)
+                    if not charged or time.monotonic() >= deadline:
+                        break
+                    time.sleep(1.0)
+                drain['charged'] = charged
+            except (OSError, sqlite3.Error) as error:
+                drain['journal_error'] = f'{type(error).__name__}: {error}'
+                self.invalid.append(f"the journal could not be read: {drain['journal_error']}")
         return drain
 
 
@@ -4952,8 +4958,10 @@ HARNESS = ('qualify-devguard.py', 'qualify_analysis.py', 'qualify_host.py')
 
 
 def harness():
-    """The harness that ran: its files' SHA-256 and the CodeSpace commit."""
-    found = {'files': {name: host.sha256(ROOT / 'scripts' / name) for name in HARNESS}}
+    """The harness that ran: its files' SHA-256, the CodeSpace commit, and the open-file limit it
+    and every process it started ran under (soft and hard; a macOS terminal's soft limit is 256)."""
+    found = {'files': {name: host.sha256(ROOT / 'scripts' / name) for name in HARNESS},
+             'open_files_limit': list(resource.getrlimit(resource.RLIMIT_NOFILE))}
     try:
         found.update(commit=git('rev-parse', 'HEAD'), dirty=dirty())
     except (OSError, subprocess.CalledProcessError):
