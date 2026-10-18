@@ -2376,17 +2376,26 @@ def stopped_checks(bench, runner, label, terminated=None):
     return checks
 
 
-def once_reconciled(call, limit=30.0, period=0.05):
-    """`call()` again while it is refused with RECOVERY_PENDING, for up to `limit` seconds: its
-    last result, the refusals before it and how long that took (ms)."""
+def once_reconciled(call, limit=30.0, period=0.05, codes=('RECOVERY_PENDING',)):
+    """`call()` again while it is refused with RECOVERY_PENDING (or another of `codes`), for up
+    to `limit` seconds: its last result, the refusals before it and how long that took (ms)."""
     began = time.monotonic()
     pending = 0
     while True:
         result = call()
-        if result.get('code') != 'RECOVERY_PENDING' or time.monotonic() - began >= limit:
+        if result.get('code') not in codes or time.monotonic() - began >= limit:
             return result, pending, round((time.monotonic() - began) * 1000, 3)
         pending += 1
         time.sleep(period)
+
+
+def once_free(call, limit=30.0):
+    """`call()`, new work in a workspace, again while the workspace is not free yet: refused with
+    RECOVERY_PENDING while the gateway reconciles it, or with WORKSPACE_BUSY while the gateway
+    still holds it for a process it already reports exited. The Runner reports a process exited
+    once it has reaped it, and the gateway frees its workspace when the Runner's exit event
+    follows, once the process's output has closed. As once_reconciled."""
+    return once_reconciled(call, limit=limit, codes=('RECOVERY_PENDING', 'WORKSPACE_BUSY'))
 
 
 def resume_result(gateway, approval, timeout=host.CALL_TIMEOUT_S):
@@ -2837,7 +2846,9 @@ def recovery_writer_lock(bench):
                      'waiting for it to end' in log and 'the only writer of the operations database' in log
                      and ended['returncode'] == 0, ended=ended),
                check('it claimed the Runner under epoch 2', bool(claim and claim['epoch'] == 2), claim=claim)]
-    later, _, _ = ran(g3, g3.exec('a', ['/bin/echo', 'next']), 'next\n', 'the next gateway')
+    # The first gateway worked in `a`: the next one starts work there once it has reconciled it.
+    following, _, _ = once_reconciled(lambda: g3.exec('a', ['/bin/echo', 'next']))
+    later, _, _ = ran(g3, following, 'next\n', 'the next gateway')
     return checks + later, {'second': {key: second[key] for key in ('returncode', 'elapsed_s')}}
 
 
@@ -2878,7 +2889,8 @@ def recovery_schema(bench):
     claim = claimed_by(runner, g2.pid)
     checks.append(check('the gateway of the database the Runner knows claimed it under epoch 2',
                         bool(claim and claim['epoch'] == 2), claim=claim))
-    later, _, _ = ran(g2, g2.exec('a', ['/bin/echo', 'next']), 'next\n', 'it')
+    following, _, _ = once_reconciled(lambda: g2.exec('a', ['/bin/echo', 'next']))
+    later, _, _ = ran(g2, following, 'next\n', 'it')
     return checks + later, detail
 
 
@@ -3245,8 +3257,8 @@ def recovery_reconcile_running(bench, tty):
     """A gateway killed while its process runs: the next gateway refuses new work in that
     workspace with RECOVERY_PENDING until it has reconciled it, then holds the workspace for the
     process again (WORKSPACE_BUSY), while a workspace where no work was left takes new work at
-    once; terminating the inherited process frees its workspace. No refused command ran
-    (P1R-C04)."""
+    once; terminating the inherited process frees its workspace (once_free: as soon as the
+    Runner's exit event follows its exited status). No refused command ran (P1R-C04)."""
     runner = bench.runner()
     checks = registered_checks(bench, runner)
     g1 = bench.gateway('g1')
@@ -3262,7 +3274,7 @@ def recovery_reconcile_running(bench, tty):
     status = status_of(g2, held['process_id'])
     g2.terminate(held['process_id'])
     ended = wait_state(g2, held['process_id'], exited)
-    fresh, _, _ = once_reconciled(lambda: g2.exec('a', tagged(bench.roots['a'], 'fresh', ['/bin/echo', 'fresh']), tty=tty))
+    fresh, _, _ = once_free(lambda: g2.exec('a', tagged(bench.roots['a'], 'fresh', ['/bin/echo', 'fresh']), tty=tty))
     fresh_checks, _, _ = ran(g2, fresh, 'fresh\n', 'new work once it was free')
     checks += [check('a workspace where no work was left took new work at once', elsewhere['outcome'] == 'started',
                      result=elsewhere),
@@ -3312,7 +3324,9 @@ def recovery_reconcile_approval(bench):
     killed is resumed by the next gateway once, and resuming it again returns the same process;
     one resumed while the gateway was killed, at a range of moments, is resumed by the next
     gateway with the process the Runner created for it, or started then when the Runner proved
-    it created none: each command ran exactly once."""
+    it created none: each command ran exactly once. Each round's execution is held through the
+    gateway of the round before once it has reconciled `confirm`: when the Runner had already
+    started the resumed process, that gateway answers both resumes from its record at once."""
     runner = bench.runner()
     checks = registered_checks(bench, runner)
     root = bench.roots['confirm']
@@ -3320,7 +3334,7 @@ def recovery_reconcile_approval(bench):
     rounds = []
     for index, delay in enumerate((None,) + KILL_DELAYS_S):
         tag = f'approval-{index}'
-        held = gateway.exec('confirm', tagged(root, tag, ['/bin/sh', '-c', 'exit 0']))
+        held, _, _ = once_reconciled(lambda: gateway.exec('confirm', tagged(root, tag, ['/bin/sh', '-c', 'exit 0'])))
         approval = held.get('approval_id')
         row = {'tag': tag, 'held': held.get('code'), 'approval_id': approval, 'delay_s': delay}
         rounds.append(row)
@@ -3478,17 +3492,20 @@ def recovery_kill_during_exec(bench, tty):
 def recovery_kill_during_terminate(bench, tty):
     """Gateways killed while terminate_process is in flight, at a range of moments: the next
     gateway reports the process terminated, or still running and then terminates it; each process
-    ends once, terminated, and ran once; its workspace takes new work afterwards (P1R-C04)."""
+    ends once, terminated, and ran once; its workspace takes new work afterwards, once free
+    (once_free: the next gateway reconciles it, and frees it when the Runner's exit event follows
+    the exited status) (P1R-C04)."""
     runner = bench.runner()
     checks = registered_checks(bench, runner)
     gateway = bench.gateway('g1')
     rounds = []
     for index, delay in enumerate(KILL_DELAYS_S):
         tag = f'held-{index}'
-        started, _, _ = once_reconciled(lambda: gateway.exec('a', tagged(bench.roots['a'], tag, ['/bin/sleep', '600']),
-                                                             tty=tty))
+        started, refusals, waited = once_free(lambda: gateway.exec('a', tagged(bench.roots['a'], tag,
+                                                                               ['/bin/sleep', '600']), tty=tty))
         if started['outcome'] != 'started':
-            rounds.append({'tag': tag, 'delay_s': delay, 'started': started})
+            rounds.append({'tag': tag, 'delay_s': delay, 'started': started, 'start_refusals': refusals,
+                           'start_waited_ms': waited})
             break
         pid = tag_pid(bench.roots['a'], tag)
         flight = {}
@@ -3511,13 +3528,14 @@ def recovery_kill_during_terminate(bench, tty):
             status = wait_state(gateway, started['process_id'], exited)
         rounds.append({'tag': tag, 'delay_s': delay, 'in_flight': flight, 'terminated_again': again is not None,
                        'state': status.get('state'), 'termination': status.get('termination'),
-                       'pid_gone': gone(pid, limit=10) if pid else None})
+                       'pid_gone': gone(pid, limit=10) if pid else None, 'start_refusals': refusals,
+                       'start_waited_ms': waited})
     tags = markers(bench.roots['a'])
     checks += [check('each process ended once, terminated, whichever gateway terminated it',
                      len(rounds) == len(KILL_DELAYS_S) and all(row.get('termination') == 'terminated' and row.get('pid_gone')
                                                                for row in rounds), rounds=rounds),
                check('each process ran once', all(tags.count(row['tag']) == 1 for row in rounds), markers=tags)]
-    fresh, _, _ = once_reconciled(lambda: gateway.exec('a', ['/bin/echo', 'fresh'], tty=tty))
+    fresh, _, _ = once_free(lambda: gateway.exec('a', ['/bin/echo', 'fresh'], tty=tty))
     fresh_checks, _, _ = ran(gateway, fresh, 'fresh\n', 'new work in its workspace')
     return checks + fresh_checks, {'rounds': rounds}
 
@@ -3575,7 +3593,8 @@ def recovery_retention(bench):
     g1 = bench.gateway('g1')
     ids = []
     for index in range(RETENTION_COUNT):
-        started = g1.exec('off', ['/bin/sh', '-c', f'echo {index}; exit {index % 7}'])
+        # Each starts once the gateway has freed `off` from the one before (once_free).
+        started, _, _ = once_free(lambda: g1.exec('off', ['/bin/sh', '-c', f'echo {index}; exit {index % 7}']))
         if started['outcome'] != 'started':
             return [started_checks(f'process {index}', started)], {}
         ids.append(started['process_id'])
@@ -3833,6 +3852,9 @@ TIMEOUT_WAIT_S = 10.0
 # Refusals a tagged command meets while capacity, a reconciliation or the workspace's last
 # process stands in its way: it is tried again under a new tag.
 RETRIED = ('RESOURCE_UNAVAILABLE', 'RECOVERY_PENDING', 'WORKSPACE_BUSY')
+# A sample that starts new work (a termination's target, a refusal) right after a restart, while
+# the serving gateway still reconciles its workspace, is sent again for up to this long.
+RECONCILE_WAIT_S = 10.0
 # The workspace and terminal of each restart's timeout target, in turn.
 TIMEOUT_KINDS = (('timeout-a', False), ('timeout-off', False), ('timeout-a', True), ('timeout-off', True))
 RECOVERY_SAMPLES = analysis.SAMPLE_FILES + ('read_beat', 'read_burst')
@@ -3948,10 +3970,11 @@ class Execs:
     def __init__(self, bench, writer, path):
         self.bench, self.writer, self.path = bench, writer, path
 
-    def run(self, gateway, workspace, tag, command, tty=False, retry=0.0, approval=False):
-        """exec_command of a tagged command. Refused for capacity, for a reconciliation or for its
-        workspace's last process, it is sent again under a new tag for up to `retry` seconds; the
-        result names the tag that was sent last."""
+    def run(self, gateway, workspace, tag, command, tty=False, retry=0.0, approval=False, retried=RETRIED):
+        """exec_command of a tagged command. Refused with one of `retried` (for capacity, for a
+        reconciliation or for its workspace's last process), it is sent again under a new tag for up
+        to `retry` seconds; the result names the tag that was sent last and how many were refused
+        before it."""
         deadline = time.monotonic() + retry
         for attempt in itertools.count():
             name = tag if attempt == 0 else f'{tag}-{attempt}'
@@ -3959,26 +3982,32 @@ class Execs:
             self.writer.write(self.path, {'tag': name, 'workspace': workspace, 'outcome': result['outcome'],
                                           'code': result.get('code'), 'process_id': result.get('process_id'),
                                           'approval': approval, 'gateway': gateway.pid, 'unix': time.time()})
-            if result.get('code') not in RETRIED or time.monotonic() >= deadline:
-                return dict(result, tag=name)
+            if result.get('code') not in retried or time.monotonic() >= deadline:
+                return dict(result, tag=name, refused_before=attempt)
             time.sleep(0.2)
 
 
 class GatedTerminations:
     """Each slot starts a fresh target in `term` through the gateway that serves, alternating pipe
     and PTY, terminates it and times it as Terminations does: a governed target's end by its
-    scope's process group, an ungoverned one's by its own PID, its release by the watcher."""
+    scope's process group, an ungoverned one's by its own PID, its release by the watcher. Right
+    after a restart the gateway refuses new work in `term` with RECOVERY_PENDING until it has
+    reconciled it: the target is sent again meanwhile, for up to RECONCILE_WAIT_S, and one still
+    refused then is an error."""
 
     def __init__(self, bench, execs, watcher):
         self.bench, self.execs, self.watcher = bench, execs, watcher
 
     def __call__(self, gateway, slot):
         tty = bool(slot % 2)
-        started = self.execs.run(gateway, 'term', f'term-{slot}', ['/bin/sleep', '600'], tty=tty)
+        started = self.execs.run(gateway, 'term', f'term-{slot}', ['/bin/sleep', '600'], tty=tty,
+                                 retry=RECONCILE_WAIT_S, retried=('RECOVERY_PENDING',))
+        pending = started['refused_before']
         if started['outcome'] != 'started':
             code = started.get('code')
             return {'outcome': 'not_started' if code == 'RESOURCE_UNAVAILABLE' else 'error', 'code': code,
-                    'attempt_id': started.get('attempt_id'), 'latency_ms': started.get('latency_ms'), 'tty': tty}
+                    'attempt_id': started.get('attempt_id'), 'latency_ms': started.get('latency_ms'), 'tty': tty,
+                    'pending_refusals': pending}
         process_id = started['process_id']
         entry = (gateway.execution(process_id) or {}) if self.bench.governed else {}
         root, attempt = entry.get('scope_root_pid'), entry.get('attempt_id')
@@ -3992,15 +4021,19 @@ class GatedTerminations:
         ended = host.wait_group_gone(root, limit=30) is not None if root else bool(pid) and gone(pid, limit=30)
         return {'outcome': 'acknowledged', 'tty': tty, 'ack_ms': ack, 'termination': (status or {}).get('termination'),
                 'exited_ms': exited, 'scope_exit_ms': round((time.monotonic() - asked) * 1000, 3) if ended else None,
-                'attempt_id': attempt, 'scope_root_pid': root, 'pid': pid}
+                'attempt_id': attempt, 'scope_root_pid': root, 'pid': pid, 'pending_refusals': pending}
 
 
 def gated_admission(execs):
     """A governed execution in `hog`, which the authority must refuse for capacity; a command it
-    refused must never run (its tag never in the marker file)."""
+    refused must never run (its tag never in the marker file). As a termination's target, it is
+    sent again while the serving gateway reconciles `hog` (RECOVERY_PENDING), so that the refusal
+    timed is the authority's."""
     def sample(gateway, slot):
-        result = execs.run(gateway, 'hog', f'hog-{slot}', ['/usr/bin/true'])
-        row = {'latency_ms': result.get('latency_ms'), 'code': result.get('code'), 'attempt_id': result.get('attempt_id')}
+        result = execs.run(gateway, 'hog', f'hog-{slot}', ['/usr/bin/true'], retry=RECONCILE_WAIT_S,
+                           retried=('RECOVERY_PENDING',))
+        row = {'latency_ms': result.get('latency_ms'), 'code': result.get('code'), 'attempt_id': result.get('attempt_id'),
+               'pending_refusals': result['refused_before']}
         if result['outcome'] == 'started':
             row.update(outcome='admitted', attempt_id=attempt_of(gateway, result['process_id']))
             gateway.wait_exited(result['process_id'], limit=30)
