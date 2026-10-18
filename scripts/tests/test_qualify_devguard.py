@@ -407,6 +407,10 @@ FAKE_SERVER = textwrap.dedent("""
             send({'jsonrpc': '2.0', 'id': 'server-1', 'method': 'ping'})
             reply = json.loads(sys.stdin.readline())
             send({'jsonrpc': '2.0', 'id': message['id'], 'result': text({'pinged': reply.get('result') == {}})})
+        elif name == 'log':
+            sys.stderr.write(message['params']['arguments']['line'] + '\\n')
+            sys.stderr.flush()
+            send({'jsonrpc': '2.0', 'id': message['id'], 'result': text({})})
         elif name == 'silent':
             pass
         elif name == 'exit':
@@ -450,6 +454,60 @@ class McpClientTests(unittest.TestCase):
         with self.assertRaises(host.ToolError) as raised:
             self.gateway.call('echo', {}, timeout=10)
         self.assertTrue(raised.exception.transport)
+
+
+class GatewayLogTests(unittest.TestCase):
+    """A gateway's log is indexed as the gateway writes it, whatever the disk under its file does:
+    the harness waits on the index for a governed launch's attempt, and under DG-1's load the
+    evidence disk stalls for seconds."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.dir = Path(self.scratch.name)
+        self.server = self.dir / 'server.py'
+        self.server.write_text(FAKE_SERVER)
+
+    def tearDown(self):
+        self.scratch.cleanup()
+
+    def test_a_stalled_log_file_never_delays_the_index(self):
+        # Opening a FIFO to write waits until it has a reader, as a file on a stalled disk does.
+        path = self.dir / 'stalled.log'
+        os.mkfifo(path)
+        gateway = host.Gateway(sys.executable, [str(self.server)], dict(os.environ), path)
+        try:
+            gateway.initialize(timeout=30)
+            gateway.call('log', {'line': LAUNCHED})
+            self.assertEqual(gateway.execution('proc-7c1d', limit=5),
+                             {'attempt_id': 'cs-attempt-1f2e', 'process_id': 'proc-7c1d', 'launched': True,
+                              'scope_root_pid': 4242, 'dispatch': 'Confirmed'})
+            self.assertEqual(gateway.log(), LAUNCHED + '\n')
+            self.assertTrue(gateway.log_writer.is_alive())
+        finally:
+            reader = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            gateway.close(limit=10)
+        written = b''
+        try:
+            while chunk := os.read(reader, 65536):
+                written += chunk
+        finally:
+            os.close(reader)
+        self.assertEqual(written, (LAUNCHED + '\n').encode())
+        self.assertFalse(gateway.log_writer.is_alive())
+        self.assertIsNone(gateway.log_error)
+
+    def test_a_log_that_cannot_be_written_counts_as_unwritten_evidence(self):
+        writer = host.Writer()
+        gateway = host.Gateway(sys.executable, [str(self.server)], dict(os.environ), self.dir / 'gone' / 'gw.log',
+                               failed=writer.failed)
+        gateway.initialize(timeout=30)
+        gateway.call('log', {'line': LAUNCHED})
+        self.assertEqual(gateway.execution('proc-7c1d', limit=5)['attempt_id'], 'cs-attempt-1f2e')
+        gateway.close(limit=10)
+        self.assertEqual(gateway.log(), LAUNCHED + '\n')
+        self.assertTrue(gateway.log_error.startswith('gw.log: '))
+        report = writer.close()
+        self.assertEqual((report['error_count'], report['errors']), (1, [gateway.log_error]))
 
 
 FAKE_FIXTURE = textwrap.dedent("""

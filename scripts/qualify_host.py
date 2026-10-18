@@ -169,6 +169,11 @@ class Writer(threading.Thread):
     def write(self, path, row):
         self.lines.put((time.monotonic(), Path(path), json.dumps(row) + '\n'))
 
+    def failed(self, message):
+        """Count raw evidence that another thread could not write, such as a gateway's log, as one
+        of this writer's errors."""
+        self.errors.append(message)
+
     def run(self):
         ending = False
         while not ending:
@@ -479,18 +484,28 @@ def runner_flags(mode, runtime_bin=None, runner_dir=None, runner_socket=None):
 class Gateway:
     """A codespace-mcp process on stdio in its own session. Its log is kept as evidence, and the
     governed executions it reports are indexed by process ID, every report kept, so that a
-    second launch of one execution shows. Every process it starts through `exec` or a resumed
-    approval is tracked, so `settle` can end them before the gateway goes."""
+    second launch of one execution shows. The log's reader indexes each line as the gateway
+    writes it and hands it to a thread of its own that writes the log file, as the Writer keeps
+    samples off the disk: a disk that the load keeps busy delays the file, never the index the
+    harness waits on. A log that cannot be written is reported to `failed`, as raw evidence that
+    could not be written. Every process it starts through `exec` or a resumed approval is
+    tracked, so `settle` can end them before the gateway goes."""
 
-    def __init__(self, binary, flags, env, log_path, record=None, cwd=None):
+    def __init__(self, binary, flags, env, log_path, record=None, cwd=None, failed=None):
         self.argv = [str(binary), *flags]
         self.log_path = Path(log_path)
+        self.failed = failed
         self.executions = {}
+        self.lines = []
+        self.log_error = None
         self.started = set()
         self.lock = threading.Lock()
         self.process = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, env=env, cwd=cwd, start_new_session=True)
         self.pid = self.process.pid
+        self.unwritten = queue.Queue()
+        self.log_writer = threading.Thread(target=self._write_log, daemon=True)
+        self.log_writer.start()
         self.log_reader = threading.Thread(target=self._log, daemon=True)
         self.log_reader.start()
         self.client = McpClient(self.process, record)
@@ -498,21 +513,57 @@ class Gateway:
 
     def _log(self):
         try:
-            with open(self.log_path, 'ab') as log:
-                for line in self.process.stderr:
-                    log.write(line)
-                    log.flush()
-                    entry = launch_line(line.decode('utf-8', 'replace'))
+            for line in self.process.stderr:
+                text = line.decode('utf-8', 'replace')
+                entry = launch_line(text)
+                with self.lock:
+                    self.lines.append(text)
                     if entry:
-                        with self.lock:
-                            self.executions.setdefault(entry['process_id'], []).append(entry)
+                        self.executions.setdefault(entry['process_id'], []).append(entry)
+                self.unwritten.put(line)
         finally:
+            self.unwritten.put(None)
             close_quietly(self.process.stderr)
 
+    def _write_log(self):
+        """Append the lines the reader took to the log file as fast as the disk takes them, and
+        close it once the reader has read to the end. A log that cannot be written keeps its
+        error and reports it; the reader goes on."""
+        ended = False
+        try:
+            with open(self.log_path, 'ab') as log:
+                while not ended:
+                    lines = [self.unwritten.get()]
+                    while lines[-1] is not None:
+                        try:
+                            lines.append(self.unwritten.get_nowait())
+                        except queue.Empty:
+                            break
+                    ended = lines[-1] is None
+                    log.write(b''.join(lines[:-1] if ended else lines))
+                    log.flush()
+        except OSError as error:
+            self.log_error = f'{self.log_path.name}: {error}'
+            if self.failed is not None:
+                self.failed(self.log_error)
+            while not ended:
+                ended = self.unwritten.get() is None
+
+    def log(self, limit=10.0):
+        """What the gateway has logged so far, as its reader took it, whether or not the log file
+        has it yet: all of it once the gateway has exited, waiting up to `limit` seconds for the
+        reader to reach the end."""
+        if self.process.poll() is not None:
+            self.log_reader.join(timeout=limit)
+        with self.lock:
+            return ''.join(self.lines)
+
     def join_readers(self, limit=10):
-        """Wait for the readers of the gateway's output and log, which close its pipes as they end."""
+        """Wait for the readers of the gateway's output and log, which close its pipes as they end,
+        and for the log's writer, which closes the log file once it has written every line."""
         self.log_reader.join(timeout=limit)
         self.client.reader.join(timeout=limit)
+        self.log_writer.join(timeout=limit)
 
     def initialize(self, timeout=60):
         result, latency = self.client.request('initialize', {
