@@ -59,7 +59,7 @@ env -i HOME="$HOME" TMPDIR="$TMPDIR" PATH="<Rust 1.95.0>/bin:/usr/bin:/bin:/usr/
 
 ## 기능 스위트
 
-시나리오마다 작업 디렉터리, 작업 데이터베이스, Runner를 따로 쓰고, `required`이면 fixture authority도 따로 씁니다. 시나리오가 남긴 실행 중인 것은 그 뒤에 끝냅니다. 시나리오는 확인 항목이 모두 통과해야 통과합니다. 시나리오가 따로 말하지 않으면 gateway의 프로세스 timeout은 10분이고 종료 의도는 `detach`입니다. I/O 칸의 "둘 다"는 pipe로 한 번, PTY로 한 번 실행한다는 뜻이고, 참여 칸은 그 시나리오를 실행하는 참여를 나열합니다.
+시나리오마다 작업 디렉터리, 작업 데이터베이스, Runner를 따로 쓰고, `required`이면 fixture authority도 따로 씁니다. 시나리오가 남긴 실행 중인 것은 그 뒤에 끝냅니다. 시나리오는 확인 항목이 모두 통과해야 통과합니다. 시나리오가 따로 말하지 않으면 gateway의 프로세스 timeout은 10분이고 종료 의도는 `detach`입니다. I/O 칸의 "둘 다"는 pipe로 한 번, PTY로 한 번 실행한다는 뜻이고, 참여 칸은 그 시나리오를 실행하는 참여를 나열합니다. 재시작 직후 gateway는 작업이 시작된 적 있는 workspace마다 그 workspace를 대조할 때까지 새 작업을 `RECOVERY_PENDING`으로 거부합니다. 프로세스를 위해 workspace를 점유한 gateway는 Runner가 그 프로세스를 회수하면 끝났다고 보고하지만, workspace는 프로세스의 출력이 닫혀 Runner의 종료 이벤트가 뒤따를 때에야 풀며, 그때까지 그 workspace의 새 작업을 `WORKSPACE_BUSY`로 거부합니다. 시나리오가 새 작업을 시작해야 할 때는 이 거부 가운데 하나를 받는 동안 최대 30초까지 다시 보내고, 통과 조건이 이 거부 가운데 하나를 기대하는 시나리오는 그 거부를 확인합니다.
 
 <a id="recovery-lifecycle"></a>
 
@@ -147,7 +147,7 @@ env -i HOME="$HOME" TMPDIR="$TMPDIR" PATH="<Rust 1.95.0>/bin:/usr/bin:/bin:/usr/
 
 ### 구간, 주기, 표본
 
-한 번의 반복은 10분 유휴 구간과 그 뒤 30분 이상의 부하 구간이고, 절차는 세 번 반복합니다. 구간마다 새 Runner를 시작하며, 이 Runner는 `codespace` 소비자의 유일한 인스턴스로 등록합니다(결정 D12). 첫 gateway는 구간 내내 실행되는 프로세스를 시작합니다. 각각 25 mCPU, 16 MiB, 2 tasks를 요청하는 관리 대상 workspace의 `cat`(pipe)과 `sleep`(PTY), 그리고 관리하지 않는 workspace에서 0.2초마다 번호 붙은 줄을 쓰는 PTY와, 하네스가 신호를 줄 때마다 출력 ring이 담는 것보다 많은 번호 붙은 줄 40,000개를 한꺼번에 쓰는 pipe입니다. 요청을 받는 gateway가 무엇이든 그것을 통해 `control` 스위트의 일정대로 제어 경로를 표본으로 잽니다([구간과 표본](cs-rg-qualification.md#control-intervals)). status는 1초마다, 새 관리 대상 종료는 20초마다, I/O echo는 5초마다, 관리 대상 거부는 30초마다, 그리고 host, service, footprint(Runner와 gateway의 것)입니다. 두 출력 흐름은 2초마다 읽습니다. 요청을 받는 gateway가 없을 때 돌아온 일정은 표본이 아닌 `restarting`으로 기록하며, 기대하는 표본 수는 gateway가 요청을 받은 시간을 따릅니다.
+한 번의 반복은 10분 유휴 구간과 그 뒤 30분 이상의 부하 구간이고, 절차는 세 번 반복합니다. 구간마다 새 Runner를 시작하며, 이 Runner는 `codespace` 소비자의 유일한 인스턴스로 등록합니다(결정 D12). 첫 gateway는 구간 내내 실행되는 프로세스를 시작합니다. 각각 25 mCPU, 16 MiB, 2 tasks를 요청하는 관리 대상 workspace의 `cat`(pipe)과 `sleep`(PTY), 그리고 관리하지 않는 workspace에서 0.2초마다 번호 붙은 줄을 쓰는 PTY와, 하네스가 신호를 줄 때마다 출력 ring이 담는 것보다 많은 번호 붙은 줄 40,000개를 한꺼번에 쓰는 pipe입니다. 요청을 받는 gateway가 무엇이든 그것을 통해 `control` 스위트의 일정대로 제어 경로를 표본으로 잽니다([구간과 표본](cs-rg-qualification.md#control-intervals)). status는 1초마다, 새 관리 대상 종료는 20초마다, I/O echo는 5초마다, 관리 대상 거부는 30초마다, 그리고 host, service, footprint(Runner와 gateway의 것)입니다. gateway는 모든 workspace를 대조하기 전에 요청을 받기 시작하므로, 요청을 받는 gateway가 종료 대상이나 거부 표본의 실행을 `RECOVERY_PENDING`으로 거부하면 최대 10초까지 다시 보내며, 그때까지도 거부된 종료 대상은 오류입니다. 두 출력 흐름은 2초마다 읽습니다. 요청을 받는 gateway가 없을 때 돌아온 일정은 표본이 아닌 `restarting`으로 기록하며, 기대하는 표본 수는 gateway가 요청을 받은 시간을 따릅니다.
 
 구간은 gateway 주기의 연속입니다. 첫 주기는 20초이고, 그 뒤의 gateway는 모두 프로세스 timeout 20초로 실행을 시작하며, 그 주기의 길이는 그 주기의 timeout 대상이 정합니다. 각 주기에서:
 

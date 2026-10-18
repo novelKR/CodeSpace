@@ -909,6 +909,24 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(qualify.verify(self.dir / 'open')['verdict'], 'failed')
 
 
+class ScriptedGateway:
+    """A gateway whose exec_command answers in turn from `answers`, the last one again and again;
+    the processes it starts end at once when terminated."""
+
+    def __init__(self, answers, pid=4141):
+        self.answers, self.pid, self.sent = list(answers), pid, []
+
+    def exec(self, workspace, command, tty=False):
+        self.sent.append({'workspace': workspace, 'tag': command[3], 'tty': tty})
+        return dict(self.answers.pop(0) if len(self.answers) > 1 else self.answers[0])
+
+    def terminate(self, process_id, timeout=None):
+        return 12.5
+
+    def wait_exited(self, process_id, limit=30, period=0.02):
+        return {'state': 'exited', 'termination': 'terminated'}
+
+
 class RecoveryTests(unittest.TestCase):
     """P1R-C06: the recovery suites' analysis, the Runner's log and wire protocol, the serving gate,
     the command line and `verify` of a recovery run."""
@@ -1118,6 +1136,65 @@ class RecoveryTests(unittest.TestCase):
         time.sleep(0.02)
         self.assertEqual(serving.close(), 0)
         self.assertEqual(serving.served_s, served)
+
+    def test_new_work_is_sent_again_until_its_workspace_is_free(self):
+        def answers(*codes):
+            results = iter([{'outcome': 'refused', 'code': code} for code in codes]
+                           + [{'outcome': 'started', 'process_id': 'proc-1'}])
+            return lambda: next(results)
+
+        def busy():
+            return {'outcome': 'refused', 'code': 'WORKSPACE_BUSY'}
+        # once_reconciled waits for the reconciliation only: a workspace still held is its answer.
+        result, pending, _ = qualify.once_reconciled(answers('RECOVERY_PENDING', 'WORKSPACE_BUSY'), period=0)
+        self.assertEqual((result['code'], pending), ('WORKSPACE_BUSY', 1))
+        # once_free also waits while the gateway still holds the workspace for a process it
+        # reported exited, until the Runner's exit event frees it.
+        result, pending, _ = qualify.once_free(answers('RECOVERY_PENDING', 'WORKSPACE_BUSY', 'WORKSPACE_BUSY'))
+        self.assertEqual((result['outcome'], pending), ('started', 3))
+        # Any other refusal is the answer at once, and one that lasts is the answer at the limit.
+        result, pending, _ = qualify.once_free(answers('RESOURCE_UNAVAILABLE'))
+        self.assertEqual((result['code'], pending), ('RESOURCE_UNAVAILABLE', 0))
+        result, pending, waited = qualify.once_free(busy, limit=0.12)
+        self.assertEqual(result['code'], 'WORKSPACE_BUSY')
+        self.assertGreaterEqual(waited, 120)
+        self.assertGreater(pending, 0)
+
+    def test_samples_wait_for_the_reconciliation_of_their_workspace(self):
+        rows = []
+        bench = SimpleNamespace(roots={'term': self.dir, 'hog': self.dir}, governed=False)
+        execs = qualify.Execs(bench, SimpleNamespace(write=lambda path, row: rows.append(row)),
+                              self.dir / 'execs.jsonl')
+        terminations = qualify.GatedTerminations(bench, execs, None)
+        pending = {'outcome': 'refused', 'code': 'RECOVERY_PENDING'}
+        with mock.patch.object(qualify, 'tag_pid', return_value=4242), \
+                mock.patch.object(qualify, 'gone', return_value=True):
+            # A target the serving gateway refuses while it reconciles `term` is sent again, under
+            # a new tag, and timed once it started.
+            gateway = ScriptedGateway([pending, {'outcome': 'started', 'process_id': 'proc-1'}])
+            sample = terminations(gateway, 1)
+            self.assertEqual((sample['outcome'], sample['termination'], sample['ack_ms'], sample['pending_refusals']),
+                             ('acknowledged', 'terminated', 12.5, 1))
+            self.assertEqual([(row['tag'], row['code']) for row in rows],
+                             [('term-1', 'RECOVERY_PENDING'), ('term-1-1', None)])
+            self.assertTrue(all(sent['tty'] for sent in gateway.sent))
+            # A target refused for capacity is not a sample, and is not sent again.
+            gateway = ScriptedGateway([{'outcome': 'refused', 'code': 'RESOURCE_UNAVAILABLE'}, pending])
+            sample = terminations(gateway, 2)
+            self.assertEqual((sample['outcome'], sample['pending_refusals'], len(gateway.sent)), ('not_started', 0, 1))
+            # One still refused when the wait ends is an error, a missing sample.
+            gateway = ScriptedGateway([pending])
+            with mock.patch.object(qualify, 'RECONCILE_WAIT_S', 0.3):
+                sample = terminations(gateway, 3)
+            self.assertEqual((sample['outcome'], sample['code']), ('error', 'RECOVERY_PENDING'))
+            self.assertEqual(sample['pending_refusals'], len(gateway.sent) - 1)
+            self.assertGreater(sample['pending_refusals'], 0)
+        # The refusal timed is the authority's, not the reconciliation's.
+        gateway = ScriptedGateway([pending, {'outcome': 'refused', 'code': 'RESOURCE_UNAVAILABLE', 'latency_ms': 41.0}])
+        row = qualify.gated_admission(execs)(gateway, 4)
+        self.assertEqual((row['outcome'], row['code'], row['latency_ms'], row['pending_refusals']),
+                         ('refused', 'RESOURCE_UNAVAILABLE', 41.0, 1))
+        self.assertEqual([sent['tag'] for sent in gateway.sent], ['hog-4', 'hog-4-1'])
 
     def test_recovery_arguments(self):
         common = ['--out', 'x', '--mcp-bin', 'm', '--runtime-bin', 'r']
