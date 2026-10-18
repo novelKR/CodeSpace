@@ -335,7 +335,7 @@ class Bench:
         transcript = self.evidence.file(prefix + '.mcp.jsonl')
         gateway = host.Gateway(self.args.mcp_bin, flags, host.minimal_env(self.work, env),
                                self.evidence.file(prefix + '.gateway.log'),
-                               record=lambda row: self.writer.write(transcript, row))
+                               record=lambda row: self.writer.write(transcript, row), failed=self.writer.failed)
         self.live.gateways.append(gateway)
         self.gateways.append(gateway)
         self.evidence.append(f'{self.prefix}/gateways.jsonl', {'name': name, 'pid': gateway.pid, 'argv': gateway.argv,
@@ -2220,7 +2220,7 @@ class RecoveryBench(Bench):
         transcript = self.evidence.file(prefix + '.mcp.jsonl')
         gateway = host.Gateway(self.args.mcp_bin, self.flags(intent), self.environment(timeout_s, database),
                                self.evidence.file(prefix + '.gateway.log'),
-                               record=lambda row: self.writer.write(transcript, row))
+                               record=lambda row: self.writer.write(transcript, row), failed=self.writer.failed)
         self.live.gateways.append(gateway)
         self.gateways.append(gateway)
         self.evidence.append(f'{self.prefix}/gateways.jsonl', {
@@ -2841,7 +2841,7 @@ def recovery_writer_lock(bench):
     ended = bench.end(g1, 'eof')
     g3.initialize(timeout=60)
     claim = claimed_by(runner, g3.pid)
-    log = g3.log_path.read_text(errors='replace')
+    log = g3.log()
     checks += [check('a gateway started while the first one ended waited for it, then served',
                      'waiting for it to end' in log and 'the only writer of the operations database' in log
                      and ended['returncode'] == 0, ended=ended),
@@ -3240,7 +3240,7 @@ def recovery_concurrent_gateways(bench):
     checks += [check('exactly one of them serves', len(serving) == 1, outcomes=outcomes),
                check('the other refused to start, waiting for the writer',
                      len(losers) == 1 and losers[0].process.returncode not in (0, None)
-                     and 'has another writer' in losers[0].log_path.read_text(errors='replace'),
+                     and 'has another writer' in losers[0].log(),
                      returncode=[gateway.process.returncode for gateway in losers]),
                check('only the serving one claimed the Runner, under epoch 2',
                      len(serving) == 1 and granted == [g1.pid, serving[0].pid], claims=runner.claims())]

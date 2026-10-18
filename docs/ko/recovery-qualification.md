@@ -33,7 +33,7 @@
 
 ## 하네스 실행
 
-하네스는 CS-RG 스위트처럼 qualification 호스트에서 실행합니다([하네스 실행](cs-rg-qualification.md#running)). 시스템 Python을 쓰고, 외부 패키지를 쓰지 않으며, 하네스 자신과 하네스가 시작하는 모든 프로세스는 최소 환경만 받습니다. 독립 Runner는 하네스가 운영자처럼 직접 시작합니다. `codespace-codex-runtime <socket> --lifecycle independent`를 자기 세션에서, 전용 소켓 디렉터리로 실행하고, 그 로그를 증거로 남깁니다. `required`이면 쓰는 authority의 DevGuard 설정을 주며, credential 파일은 경로만 넘기고 하네스는 읽지 않습니다. LaunchAgent로 설치하는 것은 없고 정책도 바꾸지 않습니다. gateway는 `--runner uds --runner-socket <socket> --runner-lifecycle independent`, 종료 의도, 작업 데이터베이스로 실행하며, `required`이면 `--devguard register`도 줍니다.
+하네스는 CS-RG 스위트처럼 qualification 호스트에서 실행합니다([하네스 실행](cs-rg-qualification.md#running)). 시스템 Python을 쓰고, 외부 패키지를 쓰지 않으며, 하네스 자신과 하네스가 시작하는 모든 프로세스는 최소 환경만 받습니다. 독립 Runner는 하네스가 운영자처럼 직접 시작합니다. `codespace-codex-runtime <socket> --lifecycle independent`를 자기 세션에서, 전용 소켓 디렉터리로 실행하고, 그 로그를 증거로 남깁니다. `required`이면 쓰는 authority의 DevGuard 설정을 주며, credential 파일은 경로만 넘기고 하네스는 읽지 않습니다. LaunchAgent로 설치하는 것은 없고 정책도 바꾸지 않습니다. gateway는 `--runner uds --runner-socket <socket> --runner-lifecycle independent`, 종료 의도, 작업 데이터베이스로 실행하며, `required`이면 `--devguard register`도 줍니다. 관리 대상 실행의 attempt ID와 scope root는 gateway가 로그를 쓰는 대로 그 로그에서 가져오고, 그 로그는 별도 스레드에서 증거에 씁니다. 그래서 부하로 디스크가 바빠도 늦어지는 것은 로그 파일뿐이고 표본이 기다리는 attempt는 늦어지지 않으며, 쓰지 못한 로그는 쓰지 못한 원시 증거로 셉니다.
 
 | 스위트 | 보여 주는 것 | 추가 인자 |
 | --- | --- | --- |
