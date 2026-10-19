@@ -78,8 +78,8 @@
         "최소-도입-조건",
         "최초-gateway-복구-범위"
       ],
-      "source_sha256": "030dcad13f96bb7f9d9ae48e93cf9381b3774e61322218770fb353277ad3c1c6",
-      "translation_sha256": "e924382d4b0571900d5ef8b1c562b4445031d2d785ca25eeae3224b1a03569a5"
+      "source_sha256": "78a4f64e46a076a0420a0c702da64d83dacc8f23cabab166b1ce8b0d3a62a579",
+      "translation_sha256": "7c9f1669bd46318c3cccb62051919e7b24a5c6447d400edce19f739290c582cc"
     },
     {
       "id": "cs-rg-qualification",
@@ -249,8 +249,53 @@
         "회귀",
         "후보-조합"
       ],
-      "source_sha256": "8adac9dd635d082db99988c2213538346a2944578f243b7b93addd025c7fc00e",
-      "translation_sha256": "40136e6153849dfa854f655621ac3c09ba8d73af35a9b6ada8afad4dcc5c3253"
+      "source_sha256": "a85f4cb3fef6228e77ab7613e796bfd211732b66a88a639dc986c2a10292fad5",
+      "translation_sha256": "a249e22d93e288e16c88f4605c63b9faa2b722819049f3a619edac8508eaf415"
+    },
+    {
+      "id": "recovery-qualification-report",
+      "section": "project",
+      "order": 5,
+      "route": "/guide/recovery-qualification-report",
+      "source": "docs/recovery-qualification-report.md",
+      "translation": "docs/ko/recovery-qualification-report.md",
+      "anchors": [
+        "amendments-and-corrections",
+        "completion-evidence",
+        "evidence",
+        "functional-suites",
+        "gateway-recovery-qualification-report",
+        "gateway-restart-measurement",
+        "gateway-복구-qualification-보고서",
+        "gateway-재시작-측정",
+        "outside-p1-recovery",
+        "p1-recovery-밖에-남는-것",
+        "qualification한-조합",
+        "recovery-qualification-report",
+        "recovery-report-amendments",
+        "recovery-report-claims",
+        "recovery-report-combination",
+        "recovery-report-completion",
+        "recovery-report-evidence",
+        "recovery-report-functional",
+        "recovery-report-measurement",
+        "recovery-report-outside",
+        "recovery-report-regressions",
+        "recovery-report-runs",
+        "regressions",
+        "runs",
+        "the-qualified-combination",
+        "what-is-claimed",
+        "기능-스위트",
+        "수정-기록",
+        "실행",
+        "완료-증거",
+        "주장하는-것",
+        "증거",
+        "회귀"
+      ],
+      "source_sha256": "c4ca357c5e3cbf442293356d61255a6ca85841128c8db81c6e077365d549b0b0",
+      "translation_sha256": "2d82f676da2ec4e25d81cf65a874755111c1cac4cff306c346751afb24247147"
     },
     {
       "id": "overview",
@@ -381,8 +426,8 @@
         "작업-공간-등록",
         "첫-연결-확인"
       ],
-      "source_sha256": "da04d1227b65a31be67e5b841d42934ed410a9ab775033e1eed7d4c87264ddb5",
-      "translation_sha256": "dbd583fe19271b9db950726cbc1363d789c186405988539b3cdd1aa48b8d7871"
+      "source_sha256": "acb28d2cb1086f51e86612e3fab462cd80542224c32a581bcea0889390005603",
+      "translation_sha256": "69161270d53d48ed97deb72a5e94b59feb41ee965469c2e11a7700f45b9ecf80"
     },
     {
       "id": "chatgpt-connector",
@@ -685,8 +730,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "9f8118e96dc863babaae5e629fa924ab4ce7f6942eb968d96dd766f24f8851c7",
-      "translation_sha256": "a99a0c9ee574e71a8eb8035c7541f3e1019cc2226e58a39a0080e1cc05113768"
+      "source_sha256": "d3e6eef123f6f141c921e35d38d95cb6a160ee8cde031f674b397f8f132bd6c6",
+      "translation_sha256": "584fc9708b41e85bbb437656d027844223c79ff8fa954a25abcd86c88a49fc4c"
     },
     {
       "id": "error-codes",

@@ -145,7 +145,7 @@ worker는 같은 호스트에서 실행하는 별도 프로세스이며 컨테�
 
 ## 독립 Runner 도입과 되돌리기
 
-[독립 Runner](runner-isolation.md#independent-runner)는 [qualification](recovery-qualification.md)이 통과시킨 조합에서만 지원하며, 아직 통과한 조합은 없습니다. 이 모드는 opt-in이고 기본값은 계속 `in-process`입니다. 통과한 조합에서만, 그것도 qualification을 받은 CodeSpace 빌드, DevGuard release, 정책 그대로 도입하세요. 그 밖의 것은 모두 새 후보입니다.
+[독립 Runner](runner-isolation.md#independent-runner)는 [qualification](recovery-qualification.md)이 통과시킨 조합에서만 지원합니다. 그 조합은 macOS에서 [qualification 보고서](recovery-qualification-report.md#recovery-report-combination)가 기록한 하나뿐입니다. 이 모드는 opt-in이고 기본값은 계속 `in-process`입니다. 통과한 조합에서만, 그것도 qualification을 받은 CodeSpace 빌드, DevGuard release, 정책 그대로 도입하세요. 그 밖의 것은 모두 새 후보입니다.
 
 1. **준비합니다.** 모든 workspace 밖에 상태 디렉터리를 두고, 실행 기록이 생기기 전의 CodeSpace 버전이 열지 않을 작업 데이터베이스([스키마 버전](#operations-database))와 Runner용 mode 0700 소켓 디렉터리를 준비합니다. DevGuard를 쓰면 Runner가 실행 소유자로서 `codespace` 소비자의 인스턴스 하나로 등록하므로, 그 소비자로 등록하는 다른 게이트웨이가 있으면 먼저 멈춥니다.
 2. **Runner를 시작합니다.** qualification이 시작하듯 Runner를 자기 세션에서 시작해, 터미널이 닫히거나 어떤 게이트웨이가 끝나도 Runner에 닿지 않게 합니다. Linux에서는 `setsid`가 이렇게 하며, 아래 Python 줄은 macOS와 Linux 모두에서 같은 일을 합니다. DevGuard를 쓰면 [상태 전용 연결](devguard-integration.md#devguard-status-connection)의 소비자 설정과 release의 `devguard-launch`를 줍니다. DevGuard 없이 쓰면 `--devguard-*` 설정을 빼며, 이때 `required` workspace는 거부됩니다.
