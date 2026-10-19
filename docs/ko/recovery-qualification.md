@@ -6,7 +6,7 @@
 
 이 문서는 Gateway 복구(P1-RECOVERY)의 opt-in 모드인 [독립 Runner](runner-isolation.md#independent-runner)를 qualification하는 절차입니다. 어떤 조합을 지원한다고 주장하는지, 각 주장을 어떻게 시험하고 측정하는지, 무엇이 통과인지, 실행이 어떤 증거를 남기는지를 정합니다. [CS-RG qualification 절차](cs-rg-qualification.md)를 따르며, 그 후보 조합, 증거, 확인 방식을 그대로 쓰고, 하네스도 같은 [`scripts/qualify-devguard.py`](../../scripts/qualify-devguard.py)입니다. 이 절차는 첫 qualification 실행 전에 하네스와 함께 고정합니다. 첫 실행 뒤에 둘 중 하나라도 바꾸면 새 절차가 되며, 다른 변경처럼 검토하고 영향받는 실행은 다시 합니다. 각 단위가 무엇을 만들었는지는 [결합 로드맵](devguard-integration.md#resource-gateway-recovery)에 있고, 이 문서는 그 결과가 qualification을 통과하는지를 판단합니다.
 
-**현재 상태:** 첫 qualification 실행 전에 하네스와 함께 고정했습니다. 아직 통과한 조합이 없으므로, 독립 Runner는 어디에서도 지원하는 모드가 아닙니다.
+**현재 상태:** 첫 qualification 실행 전에 하네스와 함께 고정했습니다([#112](https://github.com/novelKR/CodeSpace/pull/112)). 통과한 실행이 나오기 전에 하네스 결함 세 개를 고쳤고([#113](https://github.com/novelKR/CodeSpace/pull/113), [#114](https://github.com/novelKR/CodeSpace/pull/114), [#115](https://github.com/novelKR/CodeSpace/pull/115)), 고칠 때마다 새 절차와 새 후보가 되어 실행을 다시 했습니다. 후보 `1c0eadd`의 실행이 통과해, 독립 Runner는 그 조합으로 qualification을 마쳤습니다. 결과와 증거는 [qualification 보고서](recovery-qualification-report.md)에 있고, 수정 내용은 그 [수정 기록](recovery-qualification-report.md#recovery-report-amendments)에 있습니다.
 
 <a id="recovery-candidate"></a>
 
