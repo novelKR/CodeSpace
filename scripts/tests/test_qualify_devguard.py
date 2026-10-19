@@ -24,6 +24,7 @@ from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
+import console  # noqa: E402
 import qualify_analysis as analysis  # noqa: E402
 import qualify_host as host  # noqa: E402
 spec = importlib.util.spec_from_file_location('qualify', SCRIPTS / 'qualify-devguard.py')
@@ -802,6 +803,75 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(qualify.repetition_outcome(dict(report, rehearsal=True), good, good)[0], 'inconclusive')
         cold = dict(report, prewarm=[{'result': 'completed', 'exit_code': 1}])
         self.assertEqual(qualify.early_outcome(cold)[1], ['the warm target directory could not be built'])
+
+    # ------------------------------------------------------------ terminal output
+
+    def test_lines_without_color_read_as_before(self):
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            qualify.verdict_line('uds pipe exits:', 'pass')
+            qualify.verdict_line('uds-1 load:', 'inconclusive', ['rehearsal durations are below the protocol'])
+            qualify.verdict_line('uds-1', 'pass', [])
+        self.assertEqual(printed.getvalue(), 'qualify: uds pipe exits: pass\n'
+                         "qualify: uds-1 load: inconclusive ['rehearsal durations are below the protocol']\n"
+                         'qualify: uds-1 pass []\n')
+
+    def test_lines_in_color(self):
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            with qualify.CONSOLE.session('always'):
+                qualify.verdict_line('uds-1 load:', 'fail', ['status: p99'])
+                qualify.verdict_line('uds-1', 'pass', [])
+        self.assertEqual(printed.getvalue(),
+                         "\x1b[2mqualify:\x1b[0m uds-1 load: \x1b[1;31mfail\x1b[0m \x1b[31m['status: p99']\x1b[0m\n"
+                         '\x1b[2mqualify:\x1b[0m uds-1 \x1b[1;32mpass\x1b[0m \x1b[2m[]\x1b[0m\n')
+
+    def test_a_run_keeps_a_plain_console_log(self):
+        def suite(args, live, evidence):
+            qualify.verdict_line('uds pipe exits:', 'pass')
+            return {'verdict': 'passed'}
+
+        def argv(name, *extra):
+            return ['matrix', '--out', str(self.dir / name), '--mcp-bin', 'm', '--runtime-bin', 'r', '--release', 'v',
+                    *extra]
+
+        log = self.dir / 'run.console.log'
+        with mock.patch.dict(qualify.SUITES, {'matrix': suite}):
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(qualify.main(argv('run', '--color', 'always', '--console-log', str(log))), 0)
+            out = (self.dir / 'run').resolve()
+            plain = ('qualify: uds pipe exits: pass\n'
+                     f'qualify: matrix: passed; evidence {out}, MANIFEST.json SHA-256 {host.sha256(out / "MANIFEST.json")}\n')
+            self.assertIn('\x1b[1;32mpassed\x1b[0m', printed.getvalue())
+            self.assertEqual(console.ANSI.sub('', printed.getvalue()), plain)
+            self.assertEqual(log.read_text(), plain)
+            self.assertIs(sys.stdout, sys.__stdout__)
+            report = json.loads((out / 'report.json').read_text())
+            self.assertIn('console.py', report['harness']['files'])
+            self.assertIn('--console-log', report['argv'])
+            # Without a terminal and without a log, the output is what it was before.
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(qualify.main(argv('plain')), 0)
+            self.assertNotIn('\x1b', printed.getvalue())
+            self.assertTrue(printed.getvalue().startswith('qualify: uds pipe exits: pass\nqualify: matrix: passed;'))
+            # A console log is never written over, and the run does not start.
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as refused:
+                qualify.main(argv('again', '--console-log', str(log)))
+            self.assertEqual(str(refused.exception.code), f'qualify: {log} already exists')
+            self.assertFalse((self.dir / 'again').exists())
+            self.assertEqual(log.read_text(), plain)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            qualify.arguments(argv('x', '--color', 'sometimes'))
+
+    def test_interval_status_lines(self):
+        now = [10.0]
+        with mock.patch.object(console.time, 'monotonic', lambda: now[0]):
+            interval = qualify.RecoveryInterval({'args': SimpleNamespace(), 'live': None, 'evidence': host.Evidence(
+                self.dir / 'status'), 'governed': False, 'combination': 'independent'}, 'load', 1800, 'independent-1')
+            self.assertEqual(interval.progress(), 'qualify: independent-1 load: starting')
+            interval.progress.begin(12.0)
+            interval.number = 29
+            interval.load = [SimpleNamespace(runs=[{}] * 3), SimpleNamespace(runs=[{}])]
+            now[0] = 735.0
+            self.assertEqual(interval.progress(), 'qualify: independent-1 load: 12:03 of 30:00, gateway 29, 4 load runs')
 
     def test_modes(self):
         self.assertEqual(qualify.modes('uds'), ['uds'])

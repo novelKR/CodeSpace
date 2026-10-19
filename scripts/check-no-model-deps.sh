@@ -17,6 +17,12 @@
 # Never skip the tree because the range could not be computed.
 set -euo pipefail
 
+# Outcomes in color on a terminal, unless NO_COLOR is set or TERM is dumb, as scripts/console.py
+# chooses; redirected, every line is as before.
+colors() { [[ -t "$1" && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; }
+if colors 1; then OK=$'\e[1;32mok\e[0m'; else OK=ok; fi
+if colors 2; then FORBIDDEN=$'\e[1;31mforbidden\e[0m'; else FORBIDDEN=forbidden; fi
+
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
@@ -237,7 +243,7 @@ scan_manifest() {
   out="$(grep -nE '^[[:space:]]*codex-[A-Za-z0-9_-]+[[:space:]]*=' "$file" || true)"
   if [[ -n "$out" ]]; then
     {
-      echo "forbidden (codex- cargo dep) in $file:"
+      echo "$FORBIDDEN (codex- cargo dep) in $file:"
       echo "$out"
     } >"$outfile"
   fi
@@ -286,7 +292,7 @@ scan_adapter_manifest() {
   done < <(grep -nE '^[[:space:]]*codex-[A-Za-z0-9_-]+[[:space:]]*=' "$file" || true)
   if [[ -n "$bad" ]]; then
     {
-      echo "forbidden (codex- key not on $kind allowlist) in $file:"
+      echo "$FORBIDDEN (codex- key not on $kind allowlist) in $file:"
       printf '%s' "$bad"
     } >"$outfile"
   fi
@@ -302,7 +308,7 @@ scan_source() {
   out="$(grep -R -n -E --exclude-dir=target --exclude-dir=.git -e "$pattern" "$dir" || true)"
   if [[ -n "$out" ]]; then
     {
-      echo "forbidden ($label) in $dir:"
+      echo "$FORBIDDEN ($label) in $dir:"
       echo "$out"
     } >"$outfile"
   fi
@@ -318,7 +324,7 @@ scan_no_helper_lib() {
   out="$(grep -nE '^[[:space:]]*codespace-linux-sandbox[[:space:]]*=' "$file" || true)"
   if [[ -n "$out" ]]; then
     {
-      echo "forbidden (codespace-linux-sandbox library path dep) in $file:"
+      echo "$FORBIDDEN (codespace-linux-sandbox library path dep) in $file:"
       echo "$out"
     } >"$outfile"
   fi
@@ -327,7 +333,7 @@ scan_no_helper_lib() {
 scan_helper_binary_only() {
   local outfile="$1"
   if [[ -f crates/linux-sandbox/src/lib.rs ]]; then
-    echo "forbidden: crates/linux-sandbox must be binary-only (src/lib.rs present)" >"$outfile"
+    echo "$FORBIDDEN: crates/linux-sandbox must be binary-only (src/lib.rs present)" >"$outfile"
   fi
 }
 
@@ -420,4 +426,4 @@ if [[ "$hits" -ne 0 ]]; then
   exit 1
 fi
 
-echo "no-model-deps ok"
+echo "no-model-deps $OK"

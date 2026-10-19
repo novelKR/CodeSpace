@@ -4,12 +4,20 @@
 # patch adapter tests fail. Never treat a red parity run as success.
 set -euo pipefail
 
+# Outcomes in color on a terminal, unless NO_COLOR is set or TERM is dumb, as scripts/console.py
+# chooses; redirected, every line is as before.
+colors() { [[ -t "$1" && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; }
+if colors 1; then OK=$'\e[1;32mok\e[0m'; else OK=ok; fi
+fail() {
+  if colors 2; then printf '\e[1;31m%s\e[0m\n' "$1" >&2; else printf '%s\n' "$1" >&2; fi
+}
+
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 LOCK_FILE="docs/upstream-lock.md"
 
 if [[ ! -f "$LOCK_FILE" ]]; then
-  echo "missing $LOCK_FILE" >&2
+  fail "missing $LOCK_FILE"
   exit 1
 fi
 
@@ -23,18 +31,18 @@ expected="$(awk -F'|' '
 ' "$LOCK_FILE")"
 
 if [[ ! "$expected" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "could not parse 40-char commit from $LOCK_FILE (got: ${expected:-empty})" >&2
+  fail "could not parse 40-char commit from $LOCK_FILE (got: ${expected:-empty})"
   exit 1
 fi
 
 if [[ ! -e third_party/codex ]]; then
-  echo "third_party/codex is missing; init the submodule" >&2
+  fail "third_party/codex is missing; init the submodule"
   exit 1
 fi
 
 actual="$(git -C third_party/codex rev-parse HEAD)"
 if [[ "$actual" != "$expected" ]]; then
-  echo "Codex submodule $actual does not match lock $expected" >&2
+  fail "Codex submodule $actual does not match lock $expected"
   echo "Do not git submodule update --remote onto Codex main. See docs/upstream-update.md." >&2
   exit 1
 fi
@@ -42,7 +50,7 @@ fi
 # The recorded downstream patches must be applied, and nothing else changed.
 python3 scripts/codex_patch.py check
 
-echo "upstream pin ok $actual"
+echo "upstream pin $OK $actual"
 
 if [[ "${PIN_ONLY:-}" == "1" ]]; then
   exit 0

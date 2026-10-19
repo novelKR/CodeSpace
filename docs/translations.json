@@ -133,8 +133,8 @@
         "회귀와-동등성",
         "후보-조합"
       ],
-      "source_sha256": "dc0a5ce31fcd3fc4ac9b27b53ed04e04cb448b14f13c8f0fe26f1bf0edc5d283",
-      "translation_sha256": "6396e29330c89d2b231cfef742ec7dc7927c2297ecefec52a93a67bf210497fb"
+      "source_sha256": "6bc422fd2b3212dc89055655b0fe25c6bce10ca8e93f6761e2488e6476d17de2",
+      "translation_sha256": "11f66274ae7e0ab09a88121a99274d68b2b7db78fe3b9114659fca397dbc3792"
     },
     {
       "id": "cs-rg-qualification-report",
@@ -249,8 +249,8 @@
         "회귀",
         "후보-조합"
       ],
-      "source_sha256": "a85f4cb3fef6228e77ab7613e796bfd211732b66a88a639dc986c2a10292fad5",
-      "translation_sha256": "a249e22d93e288e16c88f4605c63b9faa2b722819049f3a619edac8508eaf415"
+      "source_sha256": "e857af544c09ab653a7c703b44978be3c7545b3056e89f898e047bcb6d7f2f6e",
+      "translation_sha256": "01c3f33207f7b678b8e5e40d1f971ac2d7d4c7aa59bbab98b17646995dba63c7"
     },
     {
       "id": "recovery-qualification-report",
@@ -917,8 +917,8 @@
         "향후-crate와-백엔드의-경계",
         "후보-검토"
       ],
-      "source_sha256": "f0846a7de343b43410f0df86873ea3773b863baabc2379c27eb2f69d9bcd7409",
-      "translation_sha256": "9a99fb130cbd1099f3b58134ba0907f9edcd11f917bd1e3445209509bfc5098b"
+      "source_sha256": "7099124f690fb9a59ca6a9d3734405a8d1445bda46786e28bb89dd933c85699b",
+      "translation_sha256": "1f4148815546388e68621c1510b015ad82977b43710283e5a616fabdbf0ae11d"
     },
     {
       "id": "upstream-patches",

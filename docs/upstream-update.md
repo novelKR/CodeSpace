@@ -46,6 +46,9 @@ When a stage fails, the script also prints the lines of that stage's log that
 name what failed: the failed tests and where they panicked, the test counts, and
 the failed cargo or unittest target, so a CI job log names them. A test's own
 output stays in the log, since its messages can carry a child's environment.
+On a terminal the script also shows the running stage and its time on a status
+line, and failures in color; `--color never` leaves the color out, and output to
+a file or a pipe is plain.
 Choose a different ignored directory with `--output` for each attempt; preserve
 previous reports before repeating a run. Reports record the source HEAD, Codex
 SHA, Rust host, and source/lockfile hashes. A changed input invalidates the run.
