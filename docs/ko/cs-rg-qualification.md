@@ -71,6 +71,8 @@ env -i HOME="$HOME" TMPDIR="$TMPDIR" PATH="<Rust 1.95.0>/bin:/usr/bin:/bin:/usr/
 
 `--modes`로 스위트를 `in-process`나 `uds` 하나로 줄일 수 있으며, 기본은 둘 다입니다. 설치된 서비스를 쓰는 스위트는 기본으로 서비스의 socket, journal, 로그, `host.toml`, 소비자 credential 파일을 씁니다. credential 파일은 경로만 gateway에 넘기고 하네스는 읽지 않습니다. 종료 상태는 0 통과 또는 qualification, 1 실패, 2 미완료 또는 판정 불가, 3 하네스 실패, 130 중단입니다. `verify`는 실행 기록이 맞으면 0, 아니면 1로 끝납니다.
 
+**터미널 출력.** 시나리오, 단계, 구간, 반복, 실행마다 판정을 담은 `qualify:` 줄이 하나씩 나옵니다. 터미널에서는 판정에 색이 들어갑니다. 통과하거나 qualification을 마치면 초록, 실패하거나 하네스가 실패하면 빨강, 판정 불가, 미완료, 실행 안 함이면 노랑, 중단되면 자홍색입니다. 출력 아래의 상태 줄은 무엇이 얼마나 오래 실행 중인지 보여 줍니다. 측정 구간에서는 계획한 길이 가운데 지난 시간과 부하의 실행 수를, 복구 측정에서는 서비스 중인 gateway도 보여 줍니다. 기본값 `--color auto`는 `NO_COLOR`가 설정되지 않은 터미널에만 색을 넣고, `always`나 `never`로 이를 바꿀 수 있습니다. `--console-log <새 파일>`은 실행이 출력하는 모든 내용을 색과 상태 줄 없이 복사해 둡니다. `tee`로 파이프를 연결하면 출력이 파이프가 되어 색과 상태 줄이 모두 꺼지므로, 터미널에서 시작한 실행은 이 방법으로 콘솔 로그를 남깁니다. 증거, `verify`의 JSON, 콘솔 로그에는 색이 들어가지 않으며, 파일이나 파이프로 보낸 출력은 이전과 똑같습니다.
+
 하네스는 다른 MCP client와 마찬가지로 표준 입출력으로 `codespace-mcp`와 통신하며(protocol `2025-11-25`), 자체의 작은 client를 씁니다. 따라서 시간 값은 하네스에서 잰 도구 호출의 로컬 왕복 시간이고 네트워크 시간은 들어가지 않습니다. DevGuard의 journal은 DevGuard 자신의 측정처럼 읽기 전용으로 읽고, 관리 대상 실행의 attempt ID와 scope root는 gateway 로그에서 가져옵니다.
 
 <a id="functional-matrix"></a>

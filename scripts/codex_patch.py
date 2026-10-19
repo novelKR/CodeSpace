@@ -20,11 +20,16 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import console  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / 'docs' / 'upstream-lock.md'
 CHECKOUT = ROOT / 'third_party' / 'codex'
 PIN_SECTION = 'Deployment pin'
 PATCH_SECTION = 'Downstream patch'
+# The outcome in color on a terminal (scripts/console.py); redirected, the text as before.
+CONSOLE = console.Console('codex_patch')
 
 
 class PatchStateError(RuntimeError):
@@ -149,12 +154,15 @@ def revert(record: Record, checkout: Path = CHECKOUT) -> str:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['apply', 'check', 'revert'])
+    console.add_option(parser)
     args = parser.parse_args()
-    try:
-        print({'apply': apply, 'check': check, 'revert': revert}[args.command](read_record()))
-    except (OSError, PatchStateError) as error:
-        print(f'codex_patch {args.command} failed: {error}', file=sys.stderr)
-        return 1
+    with CONSOLE.session(args.color, live=False):
+        try:
+            message = {'apply': apply, 'check': check, 'revert': revert}[args.command](read_record())
+        except (OSError, PatchStateError) as error:
+            CONSOLE.line(f'codex_patch {args.command} {CONSOLE.err_style.verdict("failed")}: {error}', err=True)
+            return 1
+        CONSOLE.line(CONSOLE.style(message, 'green'))
     return 0
 
 

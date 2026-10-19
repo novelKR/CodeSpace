@@ -13,7 +13,12 @@ import sys
 import time
 
 import codex_patch
+import console
 from upstream_dependencies import ADAPTERS, DEVGUARD_SOURCE, ROOT
+
+# What the run prints for people: on a terminal, a status line with the running stage's time, and
+# failures in color (scripts/console.py). The stage logs and the report are never styled.
+CONSOLE = console.Console('validate-upstream')
 
 
 def capture(*cmd):
@@ -170,7 +175,7 @@ def devguard_binaries():
 
 def execute(commands, env, log):
     for command in commands:
-        print('+ ' + ' '.join(command), flush=True)
+        CONSOLE.line(CONSOLE.style('+ ' + ' '.join(command), 'dim'))
         log.write('+ ' + ' '.join(command) + '\n')
         log.flush()
         status = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
@@ -209,16 +214,18 @@ def failure_lines(path):
 def print_failures(stage, path):
     """Print what a failed stage's log names as failed. A log that cannot be read changes nothing
     but this summary."""
+    style = CONSOLE.style
     try:
         lines = failure_lines(path)
     except OSError as error:
-        print(f'{stage} failed; its log could not be read: {error}', flush=True)
+        CONSOLE.line(f'{stage} {style.verdict("failed")}; its log could not be read: {error}')
         return
-    print(f'{stage} failed; ' + (f'from {path.name}:' if lines else f'{path.name} names no failed test'), flush=True)
+    CONSOLE.line(f'{stage} {style.verdict("failed")}; '
+                 + (f'from {path.name}:' if lines else f'{path.name} names no failed test'))
     for line in lines[:FAILURES_SHOWN]:
-        print('  ' + line, flush=True)
+        CONSOLE.line('  ' + style(line, 'red'))
     if len(lines) > FAILURES_SHOWN:
-        print(f'  and {len(lines) - FAILURES_SHOWN} more lines in {path.name}', flush=True)
+        CONSOLE.line(style(f'  and {len(lines) - FAILURES_SHOWN} more lines in {path.name}', 'dim'))
 
 
 def run(selected, output):
@@ -267,7 +274,7 @@ def run(selected, output):
                 if stage == 'macos-fork-race':
                     # The harness's summary, trial lines and crash reports go to the report.
                     stage_env['CODESPACE_FORK_RACE_OUT'] = str(output / 'fork-race')
-                with (output / (stage + '.log')).open('w') as log:
+                with (output / (stage + '.log')).open('w') as log, CONSOLE.status(f'{stage}:'):
                     execute(commands, stage_env, log)
                 entry['status'] = 'passed'
             except (OSError, RuntimeError) as error:
@@ -278,7 +285,7 @@ def run(selected, output):
             fork_race = output / 'fork-race' / 'summary.json'
             if stage == 'macos-fork-race' and fork_race.is_file():
                 # The stage's counts for readers of the job log; the report keeps the details.
-                print('fork_race summary: ' + fork_race.read_text().strip(), flush=True)
+                CONSOLE.line(CONSOLE.style('fork_race summary:', 'bold') + ' ' + fork_race.read_text().strip())
         if fingerprint() != before:
             raise RuntimeError('source or validation inputs changed during execution')
         report['status'] = 'failed' if failed else ('incomplete' if any(s['status'] == 'not_run' for s in report['stages']) else 'passed')
@@ -301,13 +308,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('stage', nargs='+', choices=['all'] + list(stages()))
     parser.add_argument('--output', type=Path, default=ROOT / 'target/upstream-reports/local')
+    console.add_option(parser)
     args = parser.parse_args()
     selected = all_stages() if 'all' in args.stage else list(dict.fromkeys(args.stage))
     # Reports must be ignored; otherwise they would invalidate the source snapshot themselves.
     output = args.output.resolve()
     if subprocess.run(['git', 'check-ignore', '-q', str(output / 'report.json')], cwd=ROOT).returncode != 0:
         parser.error('--output must be inside a git-ignored directory (e.g. target/upstream-reports)')
-    return run(selected, output)
+    with CONSOLE.session(args.color):
+        return run(selected, output)
 
 
 if __name__ == '__main__':

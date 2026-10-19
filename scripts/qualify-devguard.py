@@ -29,6 +29,11 @@ itself, and the fault cases use DevGuard's fixture authority and throwaway crede
 own scratch directories. Exit status: 0 passed or qualified, 1 failed, 2 incomplete or
 inconclusive, 3 the harness failed, 130 interrupted; verify exits 0 when the sealed run checks out
 and 1 when it does not.
+
+On a terminal, each verdict is in color and a status line shows what runs and for how long;
+--color chooses otherwise, and --console-log keeps a plain copy of the output. The evidence,
+verify's JSON and the console log never hold color, and output to a file or a pipe is exactly what
+it was before.
 """
 import argparse
 import hashlib
@@ -57,11 +62,14 @@ import qualify_analysis as analysis  # noqa: E402
 from qualify_analysis import check  # noqa: E402
 import qualify_host as host  # noqa: E402
 from qualify_host import ToolError  # noqa: E402
+import console  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PINNED_RUST = '1.95.0'
 EXIT = {'passed': 0, 'qualified': 0, 'failed': 1, 'incomplete': 2, 'inconclusive': 2}
 EXIT_CRASH = 3
+# What the run prints for people (scripts/console.py): plain unless a suite's session colors it.
+CONSOLE = console.Console('qualify')
 IO = (False, True)
 MODES = ('in-process', 'uds')
 # What a matrix execution asks for; it runs one process at a time, never a descendant.
@@ -383,12 +391,15 @@ def run_scenario(results, evidence, mode, io, name, function, *args, suite=None,
     began = time.time()
     checks, detail = [], {}
     if not not_run:
-        try:
-            checks, detail = function(*args)
-        except Exception as error:  # noqa: BLE001 - every broken scenario is evidence
-            checks = [check('the scenario completed', False, error=f'{type(error).__name__}: {error}',
-                            trace=traceback.format_exc()[-3000:])]
-            detail = {}
+        label = scenario_label({'suite': suite, 'mode': mode, 'participation': participation, 'io': io,
+                                'scenario': name})
+        with CONSOLE.status(f'qualify: {label}: running'):
+            try:
+                checks, detail = function(*args)
+            except Exception as error:  # noqa: BLE001 - every broken scenario is evidence
+                checks = [check('the scenario completed', False, error=f'{type(error).__name__}: {error}',
+                                trace=traceback.format_exc()[-3000:])]
+                detail = {}
     entry = {'scenario': name, 'mode': mode, 'io': io, 'verdict': analysis.scenario_verdict(checks, not_run),
              'checks': checks, 'detail': detail, 'started_unix': began, 'ended_unix': time.time()}
     for key, value in (('suite', suite), ('participation', participation), ('not_run', not_run)):
@@ -396,8 +407,18 @@ def run_scenario(results, evidence, mode, io, name, function, *args, suite=None,
             entry[key] = value
     results.append(entry)
     evidence.append('scenarios.jsonl', entry)
-    print(f"qualify: {scenario_label(entry)}: {entry['verdict']}", flush=True)
+    verdict_line(f'{scenario_label(entry)}:', entry['verdict'])
     return entry
+
+
+def verdict_line(subject, verdict, reasons=None):
+    """One line for people: `qualify:`, the subject, its verdict and, when given, its reasons.
+    With color off it is the plain text, as the console log keeps it."""
+    style = CONSOLE.style
+    parts = [style('qualify:', 'dim'), subject, style.verdict(verdict)]
+    if reasons is not None:
+        parts.append(style.reasons(verdict, reasons))
+    CONSOLE.line(' '.join(parts))
 
 
 def scenario_label(entry):
@@ -818,8 +839,8 @@ def matrix(args, live, evidence):
                     run_scenario(results, evidence, mode, None, 'runner-socket', scenario_runner_socket, bench)
                 entry = run_scenario(results, evidence, mode, None, 'settled', lambda: (settled_checks(bench, mode), {}))
                 if entry['verdict'] != 'pass':
-                    print('qualify: work stayed charged or an instance stayed active; the matrix stops here',
-                          flush=True)
+                    CONSOLE.line(CONSOLE.style('qualify:', 'dim') + ' ' + CONSOLE.style(
+                        'work stayed charged or an instance stayed active; the matrix stops here', 'bold', 'red'))
                     break
             finally:
                 if bench is not None:
@@ -1696,7 +1717,7 @@ def authority_phase(bench, gateway, evidence, mode, targets, echo, phase, fault,
               'read_errors': watcher.read_errors, 'evidence_writer': written, 'raw': raw_hashes(raw)}
     record['verdict'], record['reasons'], record['metrics'] = phase_verdict(record, rows)
     evidence.write_json(f'{mode}/authority/{phase}/phase.json', record)
-    print(f"qualify: {mode} authority {phase}: {record['verdict']} {record['reasons']}", flush=True)
+    verdict_line(f'{mode} authority {phase}:', record['verdict'], record['reasons'])
     return record
 
 
@@ -1832,6 +1853,13 @@ def interval_metrics(record, rows, sampled, runs, release_id, service_pid, reser
 
 
 def control_interval(context, mode, kind, seconds, key, service_pid):
+    """One interval, with a status line on a terminal: the time into it and the load's runs."""
+    progress = console.Progress(f'qualify: {key} {kind}:', seconds)
+    with CONSOLE.status(progress):
+        return measured_control_interval(context, mode, kind, seconds, key, service_pid, progress)
+
+
+def measured_control_interval(context, mode, kind, seconds, key, service_pid, progress):
     args, live, evidence, measure, release, dg_release, work, reservation = (
         context[name] for name in ('args', 'live', 'evidence', 'measure', 'release', 'dg_release', 'work', 'reservation'))
     prefix = f'{key}/{kind}'
@@ -1882,6 +1910,7 @@ def control_interval(context, mode, kind, seconds, key, service_pid):
                     'service': host.Sampler(writer, raw / 'service.jsonl', SERVICE_PERIOD_S, release.state),
                     'footprint': host.Sampler(writer, raw / 'footprint.jsonl', FOOTPRINT_PERIOD_S,
                                               footprint(bench.owner_pid, gateway, mode))}
+        progress.begin(begin)
         until(begin)
         record['started_unix'] = time.time()
         for thread in list(schedules.values()) + list(samplers.values()):
@@ -1890,6 +1919,7 @@ def control_interval(context, mode, kind, seconds, key, service_pid):
             (raw / 'runs').mkdir()
             load = measure.consumers(SimpleNamespace(qualify_bin=Path(args.qualify_bin)), dg_release, args.load, work,
                                      raw / 'runs', begin + seconds, key, args.rehearsal)
+            progress.detail = lambda: load_runs(load)
             for consumer in load:
                 consumer.start()
             limit = begin + seconds + measure.LOAD_COMPLETION_LIMIT_S
@@ -1940,8 +1970,13 @@ def control_interval(context, mode, kind, seconds, key, service_pid):
     record['verdict'], record['reasons'] = analysis.interval_verdict(kind, invalid, metrics)
     record['metrics'] = metrics
     evidence.write_json(prefix + '/interval.json', record)
-    print(f"qualify: {key} {kind}: {record['verdict']} {record['reasons']}", flush=True)
+    verdict_line(f'{key} {kind}:', record['verdict'], record['reasons'])
     return record
+
+
+def load_runs(load):
+    """The load's runs so far, for a status line."""
+    return f'{sum(len(consumer.runs) for consumer in load)} load runs'
 
 
 def early_outcome(report):
@@ -1976,7 +2011,7 @@ def control_repetition(context, plan, mode, repetition):
     def conclude(outcome):
         report['verdict'], report['reasons'] = outcome
         evidence.write_json(f'{key}/report.json', report)
-        print(f"qualify: {key} {report['verdict']} {report['reasons']}", flush=True)
+        verdict_line(key, report['verdict'], report['reasons'])
         return report
 
     if report['service_before']['runs_release'] and args.load == 'warm':
@@ -4133,6 +4168,8 @@ class RecoveryInterval:
         self.pending_timeouts, self.pending_approval = [], None
         self.number = 0
         self.store_id = None
+        self.load = []
+        self.progress = console.Progress(f'qualify: {key} {kind}:', seconds, self.status_counts)
 
     # ---------------------------------------------------------- the interval
 
@@ -4161,10 +4198,11 @@ class RecoveryInterval:
                 if watcher is not None:
                     watcher.start()
                 begin = time.monotonic() + 0.5
+                self.progress.begin(begin)
                 schedules = self.schedules(watcher, begin)
                 samplers = self.samplers()
                 if self.kind == 'load' and self.context.get('measure') is not None:
-                    load = self.start_load(begin)
+                    load = self.load = self.start_load(begin)
                 until(begin)
                 self.serving.serve(self.gateway)
                 record['started_unix'] = time.time()
@@ -4230,8 +4268,15 @@ class RecoveryInterval:
         else:
             record['verdict'], record['reasons'] = 'inconclusive', list(invalid) or ['the interval did not begin']
         self.evidence.write_json(self.prefix + '/interval.json', record)
-        print(f"qualify: {self.key} {self.kind}: {record['verdict']} {record['reasons']}", flush=True)
+        verdict_line(f'{self.key} {self.kind}:', record['verdict'], record['reasons'])
         return record
+
+    def status_counts(self):
+        """The counts on the interval's status line: the serving gateway and the load's runs."""
+        parts = [f'gateway {self.number}'] if self.number else []
+        if self.load:
+            parts.append(load_runs(self.load))
+        return ', '.join(parts)
 
     def journal_before(self):
         if not self.governed:
@@ -4662,7 +4707,9 @@ def recovery_interval_metrics(record, rows, sampled, records, found, runs, relea
 
 
 def recovery_interval(context, kind, seconds, key):
-    return RecoveryInterval(context, kind, seconds, key).run()
+    interval = RecoveryInterval(context, kind, seconds, key)
+    with CONSOLE.status(interval.progress):
+        return interval.run()
 
 
 def recovery_repetition_outcome(report, idle, load):
@@ -4686,7 +4733,7 @@ def recovery_repetition(context, plan, repetition):
     def conclude(outcome):
         report['verdict'], report['reasons'] = outcome
         evidence.write_json(f'{key}/report.json', report)
-        print(f"qualify: {key} {report['verdict']} {report['reasons']}", flush=True)
+        verdict_line(key, report['verdict'], report['reasons'])
         return report
 
     if governed:
@@ -4987,7 +5034,7 @@ def verify_recovery(directory, problems):
 VERIFIERS = {'candidate': verify_candidate, 'matrix': verify_scenarios, 'faults': verify_scenarios,
              'authority': verify_authority, 'control': verify_control, 'recovery': verify_recovery,
              **{unit: verify_scenarios for unit in RECOVERY_UNITS}}
-HARNESS = ('qualify-devguard.py', 'qualify_analysis.py', 'qualify_host.py')
+HARNESS = ('qualify-devguard.py', 'qualify_analysis.py', 'qualify_host.py', 'console.py')
 
 
 def harness():
@@ -5093,6 +5140,10 @@ def arguments(argv=None):
     base.add_argument('--runtime-bin', type=Path, required=True,
                       help='codespace-codex-runtime built with --features devguard (the uds worker, or the '
                            'independent Runner)')
+    console.add_option(base)
+    base.add_argument('--console-log', type=Path,
+                      help='a new file for a plain copy of what the run prints, without color or the status '
+                           'line; unlike a pipe to tee, it leaves the terminal a terminal')
     common = argparse.ArgumentParser(add_help=False, parents=[base])
     common.add_argument('--modes', type=modes, default=list(MODES), help='in-process, uds or both (default both)')
     installed = installed_options(True)
@@ -5150,6 +5201,11 @@ def main(argv=None):
         result = verify(args.directory)
         print(json.dumps(result, indent=2))
         return 0 if result['verdict'] == 'verified' else 1
+    with CONSOLE.session(args.color, args.console_log):
+        return run_suite(args, argv)
+
+
+def run_suite(args, argv):
     evidence = host.Evidence(args.out)
     live = Live()
     for number in (signal.SIGTERM, signal.SIGHUP):
@@ -5159,7 +5215,8 @@ def main(argv=None):
               'harness': harness()}
     status = EXIT_CRASH
     try:
-        result = SUITES[args.suite](args, live, evidence)
+        with CONSOLE.status(f'qualify: {args.suite}'):
+            result = SUITES[args.suite](args, live, evidence)
         report.update(result=result, verdict=result['verdict'])
         status = EXIT[result['verdict']]
     except KeyboardInterrupt:
@@ -5173,8 +5230,9 @@ def main(argv=None):
         report['ended_unix'] = time.time()
         evidence.write_json('report.json', report)
         manifest = evidence.seal()
-        print(f"qualify: {args.suite}: {report['verdict']}; evidence {evidence.path}, MANIFEST.json SHA-256 {manifest}",
-              flush=True)
+        style = CONSOLE.style
+        CONSOLE.line(f"{style('qualify:', 'dim')} {style(args.suite, 'bold')}: {style.verdict(report['verdict'])}; "
+                     f"evidence {evidence.path}, MANIFEST.json SHA-256 {manifest}")
     return status
 
 

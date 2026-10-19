@@ -9,6 +9,10 @@ import re
 import sys
 from pathlib import Path
 
+# Loaded by its path too (docs-site's tests), so its own directory is made importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import console  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / 'docs' / 'translations.json'
 SCHEMA = 'codespace-documentation/v1'
@@ -16,10 +20,12 @@ KEYS = {
     'id', 'section', 'order', 'route', 'source', 'translation',
     'anchors', 'source_sha256', 'translation_sha256',
 }
+# The outcome in color on a terminal (scripts/console.py); redirected, the text as before.
+CONSOLE = console.Console('check_docs')
 
 
 def fail(message):
-    print('Documentation check failed: ' + message, file=sys.stderr)
+    CONSOLE.line('Documentation check ' + CONSOLE.err_style.verdict('failed') + ': ' + message, err=True)
     return 1
 
 
@@ -89,7 +95,8 @@ def check():
         missing_anchors = [item for item in document['anchors'] if item not in available]
         if missing_anchors:
             return fail('Missing anchors for ' + ident + ': ' + ', '.join(missing_anchors))
-    print('Documentation registry verified: ' + str(len(registry['documents'])) + ' paired documents')
+    CONSOLE.line('Documentation registry ' + CONSOLE.style.verdict('verified') + ': '
+                 + str(len(registry['documents'])) + ' paired documents')
     return 0
 
 
@@ -106,7 +113,7 @@ def record(ident=None):
         document['anchors'] = sorted(set(headings(source.read_text(encoding='utf-8')))
                                      | set(headings(translation.read_text(encoding='utf-8'))))
     REGISTRY.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    print('Recorded ' + ', '.join(document['id'] for document in selected))
+    CONSOLE.line(CONSOLE.style('Recorded', 'bold', 'green') + ' ' + ', '.join(document['id'] for document in selected))
     return 0
 
 
@@ -114,15 +121,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', nargs='?', default='check', choices=['check', 'record'])
     parser.add_argument('--id')
+    console.add_option(parser)
     args = parser.parse_args()
-    try:
-        if args.command == 'record':
-            return record(args.id)
-        if args.id:
-            return fail('check does not take --id')
-        return check()
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-        return fail(str(error))
+    with CONSOLE.session(args.color, live=False):
+        try:
+            if args.command == 'record':
+                return record(args.id)
+            if args.id:
+                return fail('check does not take --id')
+            return check()
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            return fail(str(error))
 
 
 if __name__ == '__main__':
