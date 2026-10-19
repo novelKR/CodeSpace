@@ -194,7 +194,7 @@ The candidate was frozen four times. Each of the first three froze after the fiv
 
 ## Evidence
 
-The evidence directories are on the qualification host, under the DevGuard checkout's `evidence/` directory. Each is sealed with a `MANIFEST.json` of every file's SHA-256, and its files are read-only. None holds a credential, a credential digest or a child's environment. A directory checks out when its `MANIFEST.json` has the SHA-256 below and `qualify-devguard.py verify` accepts it. The console and `verify` output of every run are kept beside its directory.
+The evidence directories are on the qualification host, under the DevGuard checkout's `evidence/` directory, and the console and `verify` output of every run are kept beside its directory. Each directory is sealed with a `MANIFEST.json` of every file's SHA-256, and its files are read-only. Nothing in the directories or in the logs beside them holds a credential, a credential digest or a child's environment: a scan of all 13,454 files on 2026-10-19 found none. A directory checks out when its `MANIFEST.json` has the SHA-256 below and `qualify-devguard.py verify` accepts it.
 
 | Directory | Run | `MANIFEST.json` SHA-256 |
 | --- | --- | --- |

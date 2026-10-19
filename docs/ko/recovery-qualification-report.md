@@ -194,7 +194,7 @@ qualification 호스트의 모든 실행은 최소 환경에서 후보의 바이
 
 ## 증거
 
-증거 디렉터리는 qualification 호스트의 DevGuard checkout 아래 `evidence/` 디렉터리에 있습니다. 각 디렉터리는 모든 파일의 SHA-256을 담은 `MANIFEST.json`으로 봉인했고, 파일은 읽기 전용입니다. 어떤 디렉터리에도 자격 증명, 자격 증명의 digest, 자식 프로세스의 환경은 없습니다. 디렉터리는 그 `MANIFEST.json`의 SHA-256이 아래와 같고 `qualify-devguard.py verify`가 받아들이면 확인된 것입니다. 모든 실행의 콘솔 출력과 `verify` 출력은 그 디렉터리 옆에 보관했습니다.
+증거 디렉터리는 qualification 호스트의 DevGuard checkout 아래 `evidence/` 디렉터리에 있고, 모든 실행의 콘솔 출력과 `verify` 출력은 그 디렉터리 옆에 보관했습니다. 각 디렉터리는 모든 파일의 SHA-256을 담은 `MANIFEST.json`으로 봉인했고, 파일은 읽기 전용입니다. 디렉터리에도, 그 옆의 로그에도 자격 증명, 자격 증명의 digest, 자식 프로세스의 환경은 없습니다. 2026-10-19에 파일 13,454개를 모두 검사해 하나도 찾지 못했습니다. 디렉터리는 그 `MANIFEST.json`의 SHA-256이 아래와 같고 `qualify-devguard.py verify`가 받아들이면 확인된 것입니다.
 
 | 디렉터리 | 실행 | `MANIFEST.json` SHA-256 |
 | --- | --- | --- |
