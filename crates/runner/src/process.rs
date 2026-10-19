@@ -148,6 +148,8 @@ enum SessionIo {
     Pipe {
         child: Arc<Mutex<Child>>,
         stdin: Arc<Mutex<Option<ChildStdin>>>,
+        /// Launched through the Linux command sandbox: killed with every process it started.
+        sandboxed: bool,
     },
     Pty {
         session: Arc<PtySession>,
@@ -833,6 +835,7 @@ impl InProcessRunner {
             io: SessionIo::Pipe {
                 child: child.clone(),
                 stdin: Arc::new(Mutex::new(stdin)),
+                sandboxed,
             },
             output: output.clone(),
             completed_at: completed_at.clone(),
@@ -882,7 +885,7 @@ impl InProcessRunner {
                 return;
             }
             life.note_kill(KillIntent::Timeout);
-            let _ = ch.start_kill();
+            let _ = kill_pipe_root(&mut ch, sandboxed);
             drop(life);
             after_kill(&on_kill);
             if let Ok(mut buf) = timeout_out.lock() {
@@ -1286,9 +1289,10 @@ impl InProcessRunner {
     }
 
     /// Terminate every process of every workspace, as `terminate_process` does each one: a pipe
-    /// process alone, a PTY process with its process group. How many were still running that
-    /// nothing had asked to end yet, through a timeout or a termination. An independent Runner
-    /// does this when it stops (P1R-C01).
+    /// process alone, or with every process it started when the Linux command sandbox runs it,
+    /// and a PTY process with its process group. How many were still running that nothing had
+    /// asked to end yet, through a timeout or a termination. An independent Runner does this
+    /// when it stops (P1R-C01).
     pub fn terminate_all(&self) -> u32 {
         let mut map = self.inner.lock().expect("runner");
         self.evict_completed(&mut map);
@@ -1398,6 +1402,19 @@ fn exited_unreaped(child: &Child) -> bool {
     unsafe { info.si_pid() != 0 }
 }
 
+/// Kill a pipe root that its reaper has not reaped. A root launched through the Linux command
+/// sandbox ends with every process it started, also while its sandbox is still being set up
+/// (#109); any other root is killed alone.
+fn kill_pipe_root(child: &mut Child, sandboxed: bool) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if let (true, Some(root)) = (sandboxed, child.id()) {
+        crate::sandbox_tree::kill_descendants(root);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = sandboxed;
+    child.start_kill()
+}
+
 async fn join_pump(handle: Option<JoinHandle<()>>) {
     if let Some(handle) = handle {
         let _ = handle.await;
@@ -1406,7 +1423,9 @@ async fn join_pump(handle: Option<JoinHandle<()>>) {
 
 fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
     match &slot.io {
-        SessionIo::Pipe { child, .. } => {
+        SessionIo::Pipe {
+            child, sandboxed, ..
+        } => {
             let mut child = child.lock().expect("child");
             let mut life = slot.lifecycle.lock().expect("lifecycle");
             // Only the reaper waits (see `reap_child`): an exited child is left to it.
@@ -1414,8 +1433,7 @@ fn request_kill(slot: &Slot) -> Result<bool, ErrorBody> {
                 return Ok(false);
             }
             life.note_kill(KillIntent::Terminated);
-            child
-                .start_kill()
+            kill_pipe_root(&mut child, *sandboxed)
                 .map_err(|err| ErrorBody::new(ErrorCode::InvalidPatch, err.to_string()))?;
             after_kill(&slot.on_kill);
             Ok(true)
@@ -2338,6 +2356,80 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(eof, "SIGTERM on the helper must reap the sandbox tree");
+    }
+
+    /// A terminate that lands while the sandbox is still being set up ends it with every
+    /// process it started (#109). Killing the helper alone could then leave the sandbox's first
+    /// process running without its parent, and the command with it, holding the output open.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn terminate_during_sandbox_setup_leaves_no_process_behind() {
+        use crate::sandbox_tree::tests::{left_running, running, sandbox_setting_up};
+        if !crate::linux_sandbox_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let ws = workspace(dir.path());
+        let runner = InProcessRunner::new(Arc::new(|_| {}));
+        let mut during_setup = 0;
+        for attempt in 0..40 {
+            if during_setup == 5 {
+                break;
+            }
+            let marker = format!("30.1094{attempt:02}");
+            let sleep = ["/bin/sleep", marker.as_str()];
+            let process_id = ProcessId(format!("proc-sandbox-setup-{attempt}"));
+            let root = runner
+                .exec(
+                    &ws,
+                    RunnerExecRequest::for_host(
+                        sleep.iter().map(|arg| arg.to_string()).collect(),
+                        process_id.clone(),
+                        Profile::WorkspaceWrite,
+                    ),
+                )
+                .await
+                .unwrap()
+                .root
+                .expect("a pipe root")
+                .pid;
+            // Terminate once the sandbox's first process exists and has not started the command.
+            let started = Instant::now();
+            let mut setting_up = false;
+            while !setting_up
+                && running(&sleep).is_empty()
+                && started.elapsed() < Duration::from_secs(5)
+            {
+                setting_up = sandbox_setting_up(root, &marker);
+            }
+            runner.kill_host(&process_id).unwrap();
+            during_setup += usize::from(setting_up);
+            let mut eof = false;
+            for _ in 0..100 {
+                let result = runner
+                    .read_process(RunnerReadProcess {
+                        process_id: process_id.clone(),
+                        cursor: 0,
+                    })
+                    .await
+                    .unwrap();
+                if result.eof {
+                    eof = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let left = left_running(&sleep);
+            assert!(
+                eof && left.is_empty(),
+                "attempt {attempt} (during setup: {setting_up}): output ended {eof}, \
+                 still running {left:?}"
+            );
+        }
+        assert!(
+            during_setup > 0,
+            "no terminate landed while the sandbox was being set up"
+        );
     }
 
     #[tokio::test]

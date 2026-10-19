@@ -44,7 +44,7 @@ A gateway does not start when its `--runner-lifecycle` differs from the Runner's
 | A gateway asks the Runner to stop, or the Runner receives SIGTERM or SIGINT | A managed worker refuses the request and does not handle these signals | The Runner ends its processes, waits up to 5 seconds for them, and exits |
 | A process reaches its timeout | The process is killed | The process is killed at its original deadline, whether or not a gateway is connected |
 
-Ending a process signals a tty process's process group, but a pipe process alone: a pipe process has no process group of its own, so the processes it started may outlive it, a stop included.
+Ending a process signals a tty process's process group, but a pipe process alone: a pipe process has no process group of its own, so the processes it started may outlive it, a stop included. Under the Linux command sandbox, a pipe process ends with every process it started, also while its sandbox is still being set up: the Runner first stops the sandbox helper and each process below it, then kills them all ([#109](https://github.com/novelKR/CodeSpace/issues/109)).
 
 <a id="claim"></a>
 
