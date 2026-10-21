@@ -116,6 +116,8 @@ mod process;
 #[cfg(feature = "devguard")]
 pub mod registration;
 mod rollback;
+#[cfg(target_os = "linux")]
+mod sandbox_tree;
 mod socket;
 mod uds;
 mod watch;

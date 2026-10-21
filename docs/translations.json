@@ -730,8 +730,8 @@
         "컨테이너-실험-구성과-검증",
         "호스트와-worker-실행"
       ],
-      "source_sha256": "d3e6eef123f6f141c921e35d38d95cb6a160ee8cde031f674b397f8f132bd6c6",
-      "translation_sha256": "584fc9708b41e85bbb437656d027844223c79ff8fa954a25abcd86c88a49fc4c"
+      "source_sha256": "b75bcfe64896dec48d60c355e208caa4e2360b79de5fc0751fed0d58cadeb46a",
+      "translation_sha256": "caa5b8c46cbf2268b435d2b4b54c9851ff82ff77f5ca356a2619d00a080b41a7"
     },
     {
       "id": "error-codes",
